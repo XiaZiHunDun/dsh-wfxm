@@ -147,26 +147,30 @@
     </div>
   </section>
 
-  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">所有入口必须经渠道（AR12）</span></div>
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">所有入口（渠道 + 事件源）归一到同一网关（AR12）</span></div>
 
-  <!-- 3 渠道 -->
+  <!-- 3 渠道 + 事件源 -->
   <section class="layer">
-    <div class="hd"><span class="bar" style="background:var(--chn)"></span><span class="t">渠道（连通性角色）</span><span class="s">契约 4 必需 + 3 可选 · 不可靠管道 · 不做业务（AR27）</span></div>
-    <div class="row c5">
-      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>飞书长连接 <span class="chip g">v1 唯一</span></div>
-        <ul><li>WebSocket 免公网</li><li><b>event_id</b> 幂等、<b>open_id</b> 配对</li><li>卡片按钮：approval_id + nonce</li></ul></div>
-      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>Web 渠道</div>
-        <ul><li>Hono + SSE / WS</li><li>AG-UI 仅作呈现层（条件触发）</li><li>管理面走这里</li></ul></div>
-      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>邮件</div>
-        <ul><li>P1 生活域入口</li><li>正文 = 不可信输入</li><li>发送必走审批</li></ul></div>
-      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>告警 / 系统入站</div>
-        <ul><li>无客户端也能进</li><li>仅 P0 兜底通知</li><li>降级通道</li></ul></div>
-      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>Agent ↔ Agent</div>
-        <ul><li>A2A 只作专家接入协议（P2）</li><li>需鉴权 + 准入</li><li>不实现自由协商</li></ul></div>
+    <div class="hd"><span class="bar" style="background:var(--chn)"></span><span class="t">渠道（人机） · 事件源（机器）</span><span class="s">只有人机渠道需要身份断言 / 能力协商 / 出站渲染</span></div>
+    <div class="row c2">
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>① 渠道 · 飞书长连接 <span class="chip g">v1 唯一</span></div>
+        <ul><li>WebSocket 免公网；<b>event_id</b> 幂等、<b>open_id</b> 配对</li><li>卡片按钮：approval_id + nonce</li><li>人发指令 / 收结果 / 点批准</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>① 渠道 · Web 渠道</div>
+        <ul><li>Hono + SSE / WS；AG-UI 仅作呈现层（条件触发）</li><li><b>管理面唯一入口</b>：配置 / Grant / 审计 / kill switch</li><li>不做原生客户端</li></ul></div>
+    </div>
+    <div class="box" style="margin-top:10px;background:#f5f9ff;border-color:#bfdbfe">
+      <div class="bt"><i class="dot" style="background:#3b82f6"></i>② 事件源（机器入口，<b>不是渠道</b>）</div>
+      <div class="chips">
+        <span class="chip b">告警 webhook</span><span class="chip b">CI / 部署回调</span><span class="chip b">定时器 schedule</span><span class="chip b">监控心跳</span><span class="chip b">A2A 入站（P2，须先改 AR12）</span>
+      </div>
+      <div style="font-size:11px;color:var(--ink3);margin-top:6px;line-height:1.6">只需准入 + 幂等；<b>不渲染、不对话、不建会话粘性</b>，只进 dispatcher 或建任务</div>
+    </div>
+    <div class="chips" style="margin-top:8px">
+      <span class="chip r">③ 邮件 / 日历 / 搜索 / 浏览器 / 模型 / SvcOps / A2A 委托 = 能力（端口 + 工具），<b>不在此层</b></span>
     </div>
   </section>
 
-  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">归一化为 InboundMessage</span></div>
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">归一化为 InboundMessage（只有人机渠道走对话路由）</span></div>
 
   <!-- 4 网关 -->
   <section class="layer">
@@ -285,6 +289,7 @@
           <div class="chips">
             <span class="chip a">编码类：opencode / Codex / Claude Code</span>
             <span class="chip a">进程外：dsh-sdk</span>
+            <span class="chip a">A2A 出站委托（P2，仅作传输）</span>
             <span class="chip">无自有审批</span><span class="chip">无自有凭据</span><span class="chip">不得出 A 域</span><span class="chip">事件必须回传审计</span><span class="chip">无状态、可替换</span>
           </div>
         </div>
