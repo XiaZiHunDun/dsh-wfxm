@@ -158,12 +158,17 @@
       <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>① 渠道 · Web 渠道</div>
         <ul><li>Hono + SSE / WS；AG-UI 仅作呈现层（条件触发）</li><li><b>管理面唯一入口</b>：配置 / Grant / 审计 / kill switch</li><li>不做原生客户端</li></ul></div>
     </div>
-    <div class="box" style="margin-top:10px;background:#f5f9ff;border-color:#bfdbfe">
-      <div class="bt"><i class="dot" style="background:#3b82f6"></i>② 事件源（机器入口，<b>不是渠道</b>）</div>
+    <div class="box" style="margin-top:10px;background:#fafafa;border-style:dashed;border-color:#cbd5e1">
+      <div class="bt" style="color:#64748b"><i class="dot" style="background:#94a3b8"></i>② 事件源（机器入口，<b>不是渠道</b>）<span class="chip" style="border-style:dashed">预留 · v1 不启用</span></div>
       <div class="chips">
-        <span class="chip b">告警 webhook</span><span class="chip b">CI / 部署回调</span><span class="chip b">定时器 schedule</span><span class="chip b">监控心跳</span><span class="chip b">A2A 入站（P2，须先改 AR12）</span>
+        <span class="chip" style="background:#f8fafc;border-style:dashed">告警 webhook</span>
+        <span class="chip" style="background:#f8fafc;border-style:dashed">CI / 部署回调</span>
+        <span class="chip" style="background:#f8fafc;border-style:dashed">A2A 入站（P2）</span>
       </div>
-      <div style="font-size:11px;color:var(--ink3);margin-top:6px;line-height:1.6">只需准入 + 幂等；<b>不渲染、不对话、不建会话粘性</b>，只进 dispatcher 或建任务</div>
+      <div style="font-size:11px;color:var(--ink3);margin-top:6px;line-height:1.6">
+        需公网入口，与<b>零入站</b>基线冲突 → v1 不实现；unit 失败 / 备份失败 / 磁盘水位由<b>本机巡检</b>观测。
+        若启用：只走 落库去重 → 鉴权准入 → 分诊=event → dispatcher，<b>不渲染、不对话、不建会话</b>。
+      </div>
     </div>
     <div class="chips" style="margin-top:8px">
       <span class="chip r">③ 邮件 / 日历 / 搜索 / 浏览器 / 模型 / SvcOps / A2A 委托 = 能力（端口 + 工具），<b>不在此层</b></span>
