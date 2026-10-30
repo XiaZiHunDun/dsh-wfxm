@@ -136,7 +136,7 @@
 
   <!-- 2 客户端 -->
   <section class="layer">
-    <div class="hd"><span class="bar" style="background:var(--cli)"></span><span class="t">客户端（交互面）</span><span class="s">只与「人」对接 · 不含业务逻辑 · 不持有状态 · 权限不按端区分</span></div>
+    <div class="hd"><span class="bar" style="background:var(--cli)"></span><span class="t">客户端（交互面）</span><span class="s">只与「人」对接 · 不含业务逻辑 · 不持有状态 · Web 端初期复用宿主 web-app</span></div>
     <div class="row c3">
       <div class="box"><div class="bt"><i class="dot" style="background:var(--cli)"></i>移动端 · 指挥台</div>
         <ul><li>随时下达、<b>审批主战场</b>、紧急中止</li><li>看进度、收通知</li><li>不做：大 diff / 配置 / Grant / 审计</li></ul></div>
@@ -175,7 +175,7 @@
     </div>
   </section>
 
-  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">归一化为 InboundMessage（只有人机渠道走对话路由）</span></div>
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">▼ 入站：归一化为 InboundMessage（只有人机渠道走对话路由）　　▲ 出站：结果 / 审批卡片（按渠道能力渲染）</span></div>
 
   <!-- 4 网关 -->
   <section class="layer">
@@ -200,7 +200,7 @@
 
       <!-- 5 内核 -->
       <section class="layer" style="border-color:#ddd6fe">
-        <div class="hd"><span class="bar" style="background:var(--krn)"></span><span class="t">内核（自有 · 不可替换）</span><span class="s">7 模块 · 每张表只有一个写者（AR23）</span></div>
+        <div class="hd"><span class="bar" style="background:var(--krn)"></span><span class="t">内核（自有 · 不可替换）</span><span class="s">共 7 模块：① 网关已在上方展开 · 这里是其余 6 个 · 每张表只有一个写者（AR23）</span></div>
         <div class="grid7">
           <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
             <div class="bt"><i class="dot" style="background:var(--krn)"></i>② 策略与判级</div>
@@ -208,11 +208,11 @@
           </div>
           <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
             <div class="bt"><i class="dot" style="background:var(--krn)"></i>③ 审批与授权</div>
-            <ul><li><b>approvals</b>（正本；卡片只是视图）</li><li><b>grants</b>：唯一长效授权形态</li><li>计划级授权 + 到期/撤销</li><li>kill switch（仅 Web）</li></ul>
+            <ul><li><b>approvals</b>（正本；卡片只是视图）</li><li><b>grants</b>：唯一长效授权形态</li><li>决定经 API 回 ⑤ / ①，<b>不直写任务表</b></li><li>计划级授权 + 到期/撤销 · kill switch（仅 Web）</li></ul>
           </div>
           <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
             <div class="bt"><i class="dot" style="background:var(--krn)"></i>⑤ 任务运行时</div>
-            <ul><li>状态机含 <b>waiting_approval / waiting_input</b></li><li>租约 + 心跳（失租即停）</li><li><b>Verifier</b>：7 种断言 DSL · 无判据只许 R0–R1</li><li>前置快照 · 重试分级 · Outbox · 幂等</li></ul>
+            <ul><li>状态机含 <b>waiting_approval / waiting_input</b></li><li>租约 + 心跳（失租即停）</li><li><b>Verifier</b>：7 种断言 DSL · 无判据只许 R0–R1</li><li>提交审批 → ③；结论回传只改本模块状态</li><li>前置快照（⑦ 产）· 重试分级 · Outbox · 幂等</li></ul>
           </div>
           <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
             <div class="bt"><i class="dot" style="background:var(--krn)"></i>⑥ 记忆与项目</div>
@@ -220,11 +220,11 @@
           </div>
           <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
             <div class="bt"><i class="dot" style="background:var(--krn)"></i>⑦ 运维域</div>
-            <ul><li>巡检：最小安全集（磁盘/内存/负载/unit/端口/日志）</li><li>告警分级 静默 / 摘要 / 即时</li><li>changes + snapshots + 回滚</li><li><b>只发现 + 报告，不擅自修复</b></li></ul>
+            <ul><li>巡检：最小安全集（磁盘/内存/负载/unit/端口/日志）</li><li>告警分级 静默 / 摘要 / 即时</li><li>changes + snapshots + 回滚</li><li>restic 备份 / 每月还原演练（<b>直连备份介质</b>）</li><li><b>只发现 + 报告，不擅自修复</b></li></ul>
           </div>
           <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
-            <div class="bt"><i class="dot" style="background:var(--krn)"></i>Agent 侧（17）</div>
-            <ul><li>5 preset：chat / task / dispatcher / subagent-ro / expert</li><li>提示六块（固定 ≤26% · 任务 ≥40% · 检索 ≤20%）</li><li>工具三件套：schema / 风险基线 / 端口</li><li>skill 按需加载 · 子代理深度 ≤2</li></ul>
+            <div class="bt"><i class="dot" style="background:var(--krn)"></i>Agent 治理（17）· 规则</div>
+            <ul><li>5 preset：chat / task / dispatcher / subagent-ro / expert</li><li>提示六块（固定 ≤26% · 任务 ≥40% · 检索 ≤20%）</li><li>工具三件套：schema / 风险基线 / 端口</li><li>skill 按需加载 · 子代理深度 ≤2</li><li><b>执行在底座 dsh，规则在此定</b></li></ul>
           </div>
           <div class="box wide" style="background:#fef2f2;border-color:#fecaca">
             <div class="bt"><i class="dot" style="background:var(--cross)"></i>④ 审计与证据 <span class="chip r">append-only · 不被任何模块依赖</span></div>
@@ -239,7 +239,7 @@
         </div>
       </section>
 
-      <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">只经端口调用（AR33 禁直读表）</span></div>
+      <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">对外动作只经端口；跨模块只经 API 或事件（AR32 / AR33）</span></div>
 
       <!-- 6 端口 -->
       <section class="layer" style="border-color:#99f6e4">
@@ -274,7 +274,7 @@
 
       <!-- 7 适配器 -->
       <section class="layer" style="border-color:#fde68a">
-        <div class="hd"><span class="bar" style="background:var(--adp)"></span><span class="t">适配器与执行域（全部可替换 · 四域即信任边界）</span><span class="s">被运维对象 / 第三方服务 / 备份介质<b>在这一层直连</b>，不经客户端</span></div>
+        <div class="hd"><span class="bar" style="background:var(--adp)"></span><span class="t">适配器与执行域（全部可替换 · 四域即信任边界）</span><span class="s">被运维对象 / 第三方服务 / 备份<b>在此直连</b>（双向：动作下发 + 结果回传）</span></div>
         <div class="row c4">
           <div class="box" style="background:#fffbeb;border-color:#fde68a">
             <div class="bt"><i class="dot" style="background:var(--adp)"></i>A · 工作区</div>
@@ -310,7 +310,7 @@
           <li><b>入口</b>：inbox、channel_bindings、inbound_seen</li>
           <li><b>判级</b>：decisions（rule_id / ruleset_version）</li>
           <li><b>授权</b>：approvals、grants</li>
-          <li><b>任务</b>：tasks、task_events、task_assertions、receipts</li>
+          <li><b>任务</b>：tasks、task_events、task_assertions、receipts、outbox</li>
           <li><b>记忆</b>：memory_facts、memory_edges</li>
           <li><b>项目</b>：projects</li>
           <li><b>运维</b>：inspections、changes、snapshots</li>
@@ -351,7 +351,7 @@
     </aside>
   </div>
 
-  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">内核使用底座，但底座不在判断链上</span></div>
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">内核与适配器都跑在底座上；但「该不该做」不由底座决定</span></div>
 
   <!-- 8 底座 -->
   <section class="layer base">
@@ -364,7 +364,7 @@
       <div class="box"><div class="bt"><i class="dot" style="background:var(--base)"></i>Agent 扩展点</div>
         <div class="chips"><span class="chip">agent-preset</span><span class="chip">skill</span><span class="chip">subagent</span><span class="chip">compaction</span></div></div>
       <div class="box"><div class="bt"><i class="dot" style="background:var(--base)"></i>宿主接缝</div>
-        <div class="chips"><span class="chip">llm</span><span class="chip">credentials</span><span class="chip">session log</span><span class="chip">GUI</span></div></div>
+        <div class="chips"><span class="chip">llm</span><span class="chip">credentials</span><span class="chip">session log</span></div></div>
     </div>
     <div class="chips" style="margin-top:9px">
       <span class="chip">启动自检：插件剖面比对（允许集只有一个）+ 工具三件套齐全，超出即拒绝启动</span>
