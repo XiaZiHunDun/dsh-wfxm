@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-wfxm 架构图 v1</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#111827; --ink2:#4b5563; --ink3:#6b7280;
+    --line:#d1d5db; --ext:#64748b; --cli:#0ea5e9; --chn:#0284c7; --gw:#2563eb;
+    --krn:#6d28d9; --prt:#0d9488; --adp:#d97706; --dat:#16a34a; --base:#475569;
+    --cross:#b91c1c;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:28px 24px 40px; background:var(--bg); color:var(--ink);
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{width:100%; max-width:1240px; margin:0 auto}
+  header h1{font-size:22px; margin:0 0 6px; letter-spacing:.5px}
+  header p{margin:0; color:var(--ink3); font-size:12.5px; line-height:1.7}
+  .meta{display:flex; gap:8px; flex-wrap:wrap; margin:14px 0 22px}
+  .tag{font-size:11px; padding:3px 9px; border-radius:999px; background:#fff; border:1px solid var(--line); color:var(--ink2)}
+  .tag b{color:var(--ink)}
+
+  .diagram{display:flex; flex-direction:column; gap:0}
+  .layer{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px 14px}
+  .layer.solid{background:#fff}
+  .hd{display:flex; align-items:center; gap:8px; margin-bottom:10px}
+  .num{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:12px;font-weight:700;color:#fff;flex:0 0 auto}
+  .hd .t{font-size:14px;font-weight:700}
+  .hd .s{font-size:11.5px;color:var(--ink3);margin-left:auto}
+  .bar{width:4px;height:20px;border-radius:2px;flex:0 0 auto}
+
+  .row{display:grid; gap:10px}
+  .row.c2{grid-template-columns:repeat(2,1fr)}
+  .row.c3{grid-template-columns:repeat(3,1fr)}
+  .row.c4{grid-template-columns:repeat(4,1fr)}
+  .row.c5{grid-template-columns:repeat(5,1fr)}
+
+  .box{border:1px solid var(--line); border-radius:8px; padding:9px 11px; background:#fbfcfd}
+  .box .bt{font-size:12.5px;font-weight:700;margin-bottom:5px;display:flex;align-items:center;gap:6px}
+  .box .bt .dot{width:6px;height:6px;border-radius:3px;flex:0 0 auto}
+  .box ul{margin:0;padding-left:14px}
+  .box li{font-size:11.5px;color:var(--ink2);line-height:1.65}
+  .box.empty{background:#fafafa;border-style:dashed;color:var(--ink3)}
+
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:11.5px;padding:3px 8px;border-radius:6px;background:#fff;border:1px solid var(--line);color:var(--ink2);white-space:nowrap}
+  .chip.k{background:#f5f3ff;border-color:#ddd6fe;color:#5b21b6;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .chip.g{background:#ecfdf5;border-color:#a7f3d0;color:#047857}
+  .chip.a{background:#fffbeb;border-color:#fde68a;color:#92400e}
+  .chip.b{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
+  .chip.r{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+
+  .arrow{display:flex;flex-direction:column;align-items:center;padding:2px 0;color:#9ca3af}
+  .arrow .stem{width:2px;height:14px;background:linear-gradient(#d1d5db,#9ca3af)}
+  .arrow .head{font-size:12px;line-height:1}
+  .arrow .lbl{font-size:10.5px;color:#9ca3af;letter-spacing:.5px;margin-top:2px}
+
+  .split{display:grid;grid-template-columns:1fr 286px;gap:14px;align-items:start}
+  .aside{position:sticky;top:16px;display:flex;flex-direction:column;gap:12px}
+  .aside .panel{background:var(--card);border:1px solid #bbf7d0;border-radius:10px;padding:11px 12px}
+  .aside .panel h3{margin:0 0 8px;font-size:12.5px;color:#15803d;display:flex;align-items:center;gap:6px}
+  .aside .panel .who{font-size:10.5px;color:var(--ink3);margin-top:8px;line-height:1.6}
+  .aside ul{margin:0;padding-left:14px}
+  .aside li{font-size:11px;color:var(--ink2);line-height:1.6}
+  .aside .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:#334155}
+
+  .steps{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .step{font-size:11px;padding:4px 9px;border-radius:6px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}
+  .sep{color:#9ca3af;font-size:11px}
+
+  .grid7{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .grid7 .wide{grid-column:1 / -1}
+
+  .base{background:#f1f5f9;border-color:#cbd5e1}
+  .base .box{background:#fff}
+
+  .foot{margin-top:22px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px}
+  .foot h2{font-size:13px;margin:0 0 10px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--ink2);margin-bottom:12px}
+  .legend span{display:flex;align-items:center;gap:5px}
+  .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .inv{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 18px}
+  .inv div{font-size:11.5px;color:var(--ink2);line-height:1.6}
+  .inv b{color:var(--ink)}
+  .note{font-size:11px;color:var(--ink3);margin-top:10px;line-height:1.7}
+  @media (max-width:1100px){
+    .split{grid-template-columns:1fr}
+    .aside{position:static; display:grid; grid-template-columns:repeat(2,1fr)}
+    .grid7,.row.c3,.row.c4,.row.c5{grid-template-columns:repeat(2,1fr)}
+    .inv{grid-template-columns:1fr}
+  }
+  @media (max-width:700px){
+    body{padding:18px 12px 28px}
+    .row.c2,.row.c3,.row.c4,.row.c5,.grid7,.aside{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>dsh-wfxm 架构图 · v1</h1>
+  <p>依据 <b>11-架构锚定（AR1–AR34）</b> + <b>12-技术栈选型</b> + <b>15-数据与契约</b> + <b>17-Agent 侧设计</b>；结构不随选型改变，选型只填槽位。</p>
+</header>
+
+<div class="meta">
+  <span class="tag">宿主锁 <b>dsh 0.2.1-rc.2</b></span>
+  <span class="tag">运行时 <b>Node 24 LTS + pnpm 11.28.5</b></span>
+  <span class="tag">内核 <b>7 模块</b></span>
+  <span class="tag">端口 <b>13</b>（外部 8 / 本地 2 / 接缝 3）</span>
+  <span class="tag">部署 <b>systemd 非 root + polkit</b></span>
+  <span class="tag">主通道 <b>飞书长连接</b></span>
+</div>
+
+<div class="diagram">
+
+  <!-- 1 外部世界 -->
+  <section class="layer">
+    <div class="hd"><span class="bar" style="background:var(--ext)"></span><span class="t">外部世界</span><span class="s">不可信 / 不可控 · 全部出站或双向受控</span></div>
+    <div class="row c4">
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--ext)"></i>owner（人）</div>
+        <ul><li>飞书手机 / 桌面 / Web</li><li>文字、语音、图片、文件</li><li>审批应答、紧急中止</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--ext)"></i>被运维对象</div>
+        <ul><li>systemd unit / docker（探测）</li><li>文件系统、进程、端口</li><li>目标服务器（域 A / 域 B）</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--ext)"></i>第三方服务</div>
+        <ul><li>模型 provider（主 / 备）</li><li>邮件 IMAP·SMTP、日历 CalDAV</li><li>搜索、网页、浏览器登录态</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--ext)"></i>备份与兜底</div>
+        <ul><li>restic → 本机磁盘 + B2 异地</li><li>P0 告警兜底通道</li><li>专家 agent（进程外）</li></ul></div>
+    </div>
+  </section>
+
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">消息 / 动作结果</span></div>
+
+  <!-- 2 客户端 -->
+  <section class="layer">
+    <div class="hd"><span class="bar" style="background:var(--cli)"></span><span class="t">客户端（交互面）</span><span class="s">不含业务逻辑 · 不持有状态 · 权限不按端区分</span></div>
+    <div class="row c3">
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--cli)"></i>移动端 · 指挥台</div>
+        <ul><li>随时下达、<b>审批主战场</b>、紧急中止</li><li>看进度、收通知</li><li>不做：大 diff / 配置 / Grant / 审计</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--cli)"></i>桌面端 · 值守台</div>
+        <ul><li>长时间盯任务、滚动进度</li><li>拖文件、复制大段输出</li><li>不做：深度查看 / 管理动作</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--cli)"></i>Web 端 · 控制台</div>
+        <ul><li><b>管理面唯一入口</b>：项目注册 / 配置 / Grant / 审计 / kill switch</li><li>多会话、diff、任务看板、审批中心</li><li>离线收不到通知（走渠道）</li></ul></div>
+    </div>
+  </section>
+
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">所有入口必须经渠道（AR12）</span></div>
+
+  <!-- 3 渠道 -->
+  <section class="layer">
+    <div class="hd"><span class="bar" style="background:var(--chn)"></span><span class="t">渠道（连通性角色）</span><span class="s">契约 4 必需 + 3 可选 · 不可靠管道 · 不做业务（AR27）</span></div>
+    <div class="row c5">
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>飞书长连接 <span class="chip g">v1 唯一</span></div>
+        <ul><li>WebSocket 免公网</li><li><b>event_id</b> 幂等、<b>open_id</b> 配对</li><li>卡片按钮：approval_id + nonce</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>Web 渠道</div>
+        <ul><li>Hono + SSE / WS</li><li>AG-UI 仅作呈现层（条件触发）</li><li>管理面走这里</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>邮件</div>
+        <ul><li>P1 生活域入口</li><li>正文 = 不可信输入</li><li>发送必走审批</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>告警 / 系统入站</div>
+        <ul><li>无客户端也能进</li><li>仅 P0 兜底通知</li><li>降级通道</li></ul></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--chn)"></i>Agent ↔ Agent</div>
+        <ul><li>A2A 只作专家接入协议（P2）</li><li>需鉴权 + 准入</li><li>不实现自由协商</li></ul></div>
+    </div>
+  </section>
+
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">归一化为 InboundMessage</span></div>
+
+  <!-- 4 网关 -->
+  <section class="layer">
+    <div class="hd"><span class="num" style="background:var(--gw)">①</span><span class="t">渠道网关</span><span class="s">唯一把"外部不可信"变成"内部可信"的地方 · fail-closed</span></div>
+    <div class="steps">
+      <span class="step">1 落库去重 <span class="mono" style="font-size:10px;color:#1e40af">inbox(channel_id,msg_id)</span></span><span class="sep">→</span>
+      <span class="step">2 身份解析与准入</span><span class="sep">→</span>
+      <span class="step">3 能力协商（缓存）</span><span class="sep">→</span>
+      <span class="step">4 分诊（调 ②）</span><span class="sep">→</span>
+      <span class="step">5 路由（会话粘性）</span><span class="sep">→</span>
+      <span class="step">6 出站与回执（重试 / 降级 / undelivered）</span>
+    </div>
+    <div class="chips" style="margin-top:9px">
+      <span class="chip">不做：判级</span><span class="chip">不做：审批结论</span><span class="chip">不做：任务状态</span><span class="chip">不做：工具执行</span><span class="chip">不做：业务正本</span>
+    </div>
+  </section>
+
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">Intent：approval_answer / control / chat|command / event</span></div>
+
+  <div class="split">
+    <main style="display:flex;flex-direction:column;gap:0">
+
+      <!-- 5 内核 -->
+      <section class="layer" style="border-color:#ddd6fe">
+        <div class="hd"><span class="bar" style="background:var(--krn)"></span><span class="t">内核（自有 · 不可替换）</span><span class="s">7 模块 · 每张表只有一个写者（AR23）</span></div>
+        <div class="grid7">
+          <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
+            <div class="bt"><i class="dot" style="background:var(--krn)"></i>② 策略与判级</div>
+            <ul><li><b>S1 规则 30 条</b>（有序首命中，只上调不下调）</li><li>S2 模型推理（仅 4 种情形升级）</li><li>Jev 外部判级（可选，只建议）</li><li>域/路径白名单 · 选路梯子 CLI→MCP→浏览器→GUI</li></ul>
+          </div>
+          <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
+            <div class="bt"><i class="dot" style="background:var(--krn)"></i>③ 审批与授权</div>
+            <ul><li><b>approvals</b>（正本；卡片只是视图）</li><li><b>grants</b>：唯一长效授权形态</li><li>计划级授权 + 到期/撤销</li><li>kill switch（仅 Web）</li></ul>
+          </div>
+          <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
+            <div class="bt"><i class="dot" style="background:var(--krn)"></i>⑤ 任务运行时</div>
+            <ul><li>状态机含 <b>waiting_approval / waiting_input</b></li><li>租约 + 心跳（失租即停）</li><li><b>Verifier</b>：7 种断言 DSL · 无判据只许 R0–R1</li><li>前置快照 · 重试分级 · Outbox · 幂等</li></ul>
+          </div>
+          <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
+            <div class="bt"><i class="dot" style="background:var(--krn)"></i>⑥ 记忆与项目</div>
+            <ul><li><b>memory_facts</b>：版本化 + 来源分级 + 只取代不删除</li><li>记忆正本 <b>memory/*.md</b> + FTS5 索引</li><li>projects 注册与边界</li><li>事实体检：冲突/过期/无来源/孤儿</li></ul>
+          </div>
+          <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
+            <div class="bt"><i class="dot" style="background:var(--krn)"></i>⑦ 运维域</div>
+            <ul><li>巡检：最小安全集（磁盘/内存/负载/unit/端口/日志）</li><li>告警分级 静默 / 摘要 / 即时</li><li>changes + snapshots + 回滚</li><li><b>只发现 + 报告，不擅自修复</b></li></ul>
+          </div>
+          <div class="box" style="background:#faf5ff;border-color:#e9d5ff">
+            <div class="bt"><i class="dot" style="background:var(--krn)"></i>Agent 侧（17）</div>
+            <ul><li>5 preset：chat / task / dispatcher / subagent-ro / expert</li><li>提示六块（固定 ≤26% · 任务 ≥40% · 检索 ≤20%）</li><li>工具三件套：schema / 风险基线 / 端口</li><li>skill 按需加载 · 子代理深度 ≤2</li></ul>
+          </div>
+          <div class="box wide" style="background:#fef2f2;border-color:#fecaca">
+            <div class="bt"><i class="dot" style="background:var(--cross)"></i>④ 审计与证据 <span class="chip r">append-only · 不被任何模块依赖</span></div>
+            <div class="chips">
+              <span class="chip r">audit_log 只增不改（触发器阻断 UPDATE/DELETE）</span>
+              <span class="chip r">哈希链 + 完整性校验</span>
+              <span class="chip r">correlation_id 贯穿全链</span>
+              <span class="chip r">不裁剪、只归档</span>
+              <span class="chip r">链断 → 告警 + 停写业务，不自动修复</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">只经端口调用（AR33 禁直读表）</span></div>
+
+      <!-- 6 端口 -->
+      <section class="layer" style="border-color:#99f6e4">
+        <div class="hd"><span class="bar" style="background:var(--prt)"></span><span class="t">端口层（13 个 · 唯一允许替换的边界）</span><span class="s">契约 + Result / PortError 9 类 + 每端口 ≥5 类契约用例</span></div>
+        <div class="row c3">
+          <div class="box" style="background:#f0fdfa;border-color:#99f6e4">
+            <div class="bt"><i class="dot" style="background:var(--prt)"></i>外部能力（8）</div>
+            <div class="chips">
+              <span class="chip k">Channel</span><span class="chip k">Notify</span><span class="chip k">Mail</span><span class="chip k">Calendar</span>
+              <span class="chip k">Search</span><span class="chip k">Model</span><span class="chip k">Browser</span><span class="chip k">SvcOps</span>
+            </div>
+          </div>
+          <div class="box" style="background:#f0fdfa;border-color:#99f6e4">
+            <div class="bt"><i class="dot" style="background:var(--prt)"></i>本地资源（2）</div>
+            <div class="chips"><span class="chip k">Exec</span><span class="chip k">Storage</span></div>
+            <div style="font-size:11px;color:var(--ink3);margin-top:6px;line-height:1.6">Exec 收 <b>argv 数组</b>，不收 shell 字符串</div>
+          </div>
+          <div class="box" style="background:#f0fdfa;border-color:#99f6e4">
+            <div class="bt"><i class="dot" style="background:var(--prt)"></i>内核内部接缝（3）</div>
+            <div class="chips"><span class="chip k">Decision</span><span class="chip k">Memory</span><span class="chip k">Sched</span></div>
+            <div style="font-size:11px;color:var(--ink3);margin-top:6px;line-height:1.6">只换判定实现，不改结构</div>
+          </div>
+        </div>
+        <div class="chips" style="margin-top:9px">
+          <span class="chip">AR32：ports/ 内零协议名、命令名、产品名</span>
+          <span class="chip">适配器只做映射，错误必须翻译成 PortError</span>
+          <span class="chip">多适配器可并存，按能力择优</span>
+        </div>
+      </section>
+
+      <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">适配器实现端口</span></div>
+
+      <!-- 7 适配器 -->
+      <section class="layer" style="border-color:#fde68a">
+        <div class="hd"><span class="bar" style="background:var(--adp)"></span><span class="t">适配器与执行域（全部可替换 · 四域即信任边界）</span><span class="s">都写三件：能力映射 / 错误翻译 / 探活</span></div>
+        <div class="row c4">
+          <div class="box" style="background:#fffbeb;border-color:#fde68a">
+            <div class="bt"><i class="dot" style="background:var(--adp)"></i>A · 工作区</div>
+            <ul><li>fs / edit / git / lsp / shell</li><li>沙箱 bwrap（不可用即拒绝执行）</li><li>同项目文件锁 withFileLock</li></ul></div>
+          <div class="box" style="background:#fffbeb;border-color:#fde68a">
+            <div class="bt"><i class="dot" style="background:var(--adp)"></i>B · 主机受控</div>
+            <ul><li>systemd（polkit 只放 <span class="mono">dsh-wfxm-managed-*</span>）</li><li>docker：运行时探测，无则摘除</li><li>不给自由 shell；白名单命令</li></ul></div>
+          <div class="box" style="background:#fffbeb;border-color:#fde68a">
+            <div class="bt"><i class="dot" style="background:var(--adp)"></i>C · 出网</div>
+            <ul><li>web_search / web_fetch（allowlist）</li><li>Playwright 持久登录态</li><li>IMAP·SMTP / CalDAV</li></ul></div>
+          <div class="box" style="background:#fffbeb;border-color:#fde68a">
+            <div class="bt"><i class="dot" style="background:var(--adp)"></i>D · 宿主自身</div>
+            <ul><li>credentials seam（引用名，逐操作解析）</li><li>模型 provider 主 / 备切换</li><li>配置：YAML 默认层 + settings 覆盖层</li></ul></div>
+        </div>
+        <div class="box" style="margin-top:10px;background:#fff7ed;border-color:#fed7aa">
+          <div class="bt"><i class="dot" style="background:#ea580c"></i>ExpertExecutor（专家执行器 · AR34）</div>
+          <div class="chips">
+            <span class="chip a">编码类：opencode / Codex / Claude Code</span>
+            <span class="chip a">进程外：dsh-sdk</span>
+            <span class="chip">无自有审批</span><span class="chip">无自有凭据</span><span class="chip">不得出 A 域</span><span class="chip">事件必须回传审计</span><span class="chip">无状态、可替换</span>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- 数据面侧栏 -->
+    <aside class="aside">
+      <div class="panel">
+        <h3><span class="sw" style="background:var(--dat)"></span>业务账 · 单库 ops.sqlite</h3>
+        <ul>
+          <li><b>入口</b>：inbox、channel_bindings、inbound_seen</li>
+          <li><b>判级</b>：decisions（rule_id / ruleset_version）</li>
+          <li><b>授权</b>：approvals、grants</li>
+          <li><b>任务</b>：tasks、task_events、task_assertions、receipts</li>
+          <li><b>记忆</b>：memory_facts、memory_edges</li>
+          <li><b>项目</b>：projects</li>
+          <li><b>运维</b>：inspections、changes、snapshots</li>
+          <li><b>审计</b>：audit_log（append-only）</li>
+          <li><b>迁移</b>：schema_migrations(module, version)</li>
+        </ul>
+        <div class="who mono">Kysely · SQLite WAL · FTS5 · UUIDv7 · UTC</div>
+      </div>
+
+      <div class="panel" style="border-color:#bbf7d0">
+        <h3><span class="sw" style="background:var(--dat)"></span>会话账 · dsh session log</h3>
+        <ul>
+          <li>对话正本，<b>只经公开事件</b>读</li>
+          <li>不解析 session 文件（格式升级即碎）</li>
+          <li>compaction 有损可控</li>
+        </ul>
+        <div class="who mono">session/event · append-only</div>
+      </div>
+
+      <div class="panel" style="border-color:#bbf7d0">
+        <h3><span class="sw" style="background:var(--dat)"></span>记忆正本 · memory/</h3>
+        <ul>
+          <li><b>memory/*.md</b> 人可读、可 diff、可备份</li>
+          <li>SQLite 只做索引，不持有正本（AR5）</li>
+          <li>拔掉记忆插件可重建</li>
+        </ul>
+      </div>
+
+      <div class="panel" style="border-color:#bbf7d0">
+        <h3><span class="sw" style="background:var(--dat)"></span>横切：可观测 / 配置 / 凭据</h3>
+        <ul>
+          <li>指标四类 + correlation_id</li>
+          <li>readiness 本地文件，<b>不开端口</b></li>
+          <li>配置：默认层 YAML + 覆盖层 settings</li>
+          <li>凭据只存引用名，<b>绝不落明文</b></li>
+        </ul>
+      </div>
+    </aside>
+  </div>
+
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">内核使用底座，但底座不在判断链上</span></div>
+
+  <!-- 8 底座 -->
+  <section class="layer base">
+    <div class="hd"><span class="bar" style="background:var(--base)"></span><span class="t">底座 dsh（执行框架与插件宿主）</span><span class="s">锁 0.2.1-rc.2 · 不 fork · 只挂插件 · 单一 bundle</span></div>
+    <div class="row c4">
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--base)"></i>执行与调度</div>
+        <div class="chips"><span class="chip">agent-loop</span><span class="chip">jobs</span><span class="chip">todo</span><span class="chip">schedule</span></div></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--base)"></i>工具管线与闸</div>
+        <div class="chips"><span class="chip">tool.register</span><span class="chip">tools/pre-execute</span><span class="chip">approval seam</span><span class="chip">sandbox</span></div></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--base)"></i>Agent 扩展点</div>
+        <div class="chips"><span class="chip">agent-preset</span><span class="chip">skill</span><span class="chip">subagent</span><span class="chip">compaction</span></div></div>
+      <div class="box"><div class="bt"><i class="dot" style="background:var(--base)"></i>宿主接缝</div>
+        <div class="chips"><span class="chip">llm</span><span class="chip">credentials</span><span class="chip">session log</span><span class="chip">GUI</span></div></div>
+    </div>
+    <div class="chips" style="margin-top:9px">
+      <span class="chip">启动自检：插件剖面比对（允许集只有一个）+ 工具三件套齐全，超出即拒绝启动</span>
+      <span class="chip">peer 不匹配会静默跳过整个 bundle → 版本必须锁</span>
+    </div>
+  </section>
+</div>
+
+<div class="foot">
+  <div class="legend">
+    <span><i class="sw" style="background:var(--ext)"></i>外部</span>
+    <span><i class="sw" style="background:var(--cli)"></i>客户端</span>
+    <span><i class="sw" style="background:var(--chn)"></i>渠道</span>
+    <span><i class="sw" style="background:var(--gw)"></i>入口</span>
+    <span><i class="sw" style="background:var(--krn)"></i>内核（自有）</span>
+    <span><i class="sw" style="background:var(--prt)"></i>端口（可替换）</span>
+    <span><i class="sw" style="background:var(--adp)"></i>适配器（可替换）</span>
+    <span><i class="sw" style="background:var(--dat)"></i>数据面</span>
+    <span><i class="sw" style="background:var(--base)"></i>底座</span>
+  </div>
+  <h2>这张图必须守住的约束（选错选型也不能违反）</h2>
+  <div class="inv">
+    <div><b>AR2 / AR5</b> 正本唯一：适配器不得持有唯一副本；对话在会话账、业务在 ops.sqlite、记忆在 memory/。</div>
+    <div><b>AR10 / AR11</b> 双闸取严：域/目录为主，动作风险只上调；审批正本在库里，卡片只是视图。</div>
+    <div><b>AR12</b> 入口归一：任何客户端消息都必须经网关，不能从适配器直通执行。</div>
+    <div><b>AR15</b> 无审计即未完成：动作与证据同事务落库，链断则停写。</div>
+    <div><b>AR23 / AR25</b> 单一写者 + 唯一 dispatcher：跨模块只经 API 或事件，禁直读表。</div>
+    <div><b>AR27 / AR30</b> 渠道不做业务；子代理权限 = 父 ∩ 任务范围，父撤销即失效。</div>
+    <div><b>AR31 / AR32</b> 工具可换、闸不可绕；ports/ 内零协议名 / 命令名 / 产品名。</div>
+    <div><b>AR34</b> 专家无治理权：无自有审批、无自有凭据、不得出 A 域、事件必须回传。</div>
+  </div>
+  <div class="note">
+    读图顺序：外部 → 客户端 → 渠道 → ① 网关 → 内核 7 模块（含 Agent 侧）→ 端口 → 适配器 → 底座；右侧是数据面。
+    <b>只有一条主线</b>：消息进 → 判断 → 排期 → 执行 → 结果出；任何绕开内核的旁路都是架构违规。
+  </div>
+</div>
+
+</div>
+</body>
+</html>
