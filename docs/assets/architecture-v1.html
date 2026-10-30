@@ -119,24 +119,24 @@
 
   <!-- 1 外部世界 -->
   <section class="layer">
-    <div class="hd"><span class="bar" style="background:var(--ext)"></span><span class="t">外部世界</span><span class="s">不可信 / 不可控 · 全部出站或双向受控</span></div>
+    <div class="hd"><span class="bar" style="background:var(--ext)"></span><span class="t">外部世界</span><span class="s">只有「人」经客户端；其余三方由 ③ 端口 / ④ 适配器直连</span></div>
     <div class="row c4">
-      <div class="box"><div class="bt"><i class="dot" style="background:var(--ext)"></i>owner（人）</div>
-        <ul><li>飞书手机 / 桌面 / Web</li><li>文字、语音、图片、文件</li><li>审批应答、紧急中止</li></ul></div>
-      <div class="box"><div class="bt"><i class="dot" style="background:var(--ext)"></i>被运维对象</div>
+      <div class="box" style="background:#f8fafc"><div class="bt"><i class="dot" style="background:var(--cli)"></i>owner（人）<span class="chip b">经客户端</span></div>
+        <ul><li>飞书手机 / 桌面 / 浏览器</li><li>文字、语音、图片、文件</li><li>审批应答、紧急中止</li></ul></div>
+      <div class="box" style="border-style:dashed;border-color:#cbd5e1"><div class="bt"><i class="dot" style="background:#94a3b8"></i>被运维对象<span class="chip" style="border-style:dashed">直连 ④ · 域 B</span></div>
         <ul><li>systemd unit / docker（探测）</li><li>文件系统、进程、端口</li><li>目标服务器（域 A / 域 B）</li></ul></div>
-      <div class="box"><div class="bt"><i class="dot" style="background:var(--ext)"></i>第三方服务</div>
+      <div class="box" style="border-style:dashed;border-color:#cbd5e1"><div class="bt"><i class="dot" style="background:#94a3b8"></i>第三方服务<span class="chip" style="border-style:dashed">直连 ④ · 域 C</span></div>
         <ul><li>模型 provider（主 / 备）</li><li>邮件 IMAP·SMTP、日历 CalDAV</li><li>搜索、网页、浏览器登录态</li></ul></div>
-      <div class="box"><div class="bt"><i class="dot" style="background:var(--ext)"></i>备份与兜底</div>
-        <ul><li>restic → 本机磁盘 + B2 异地</li><li>P0 告警兜底通道</li><li>专家 agent（进程外）</li></ul></div>
+      <div class="box" style="border-style:dashed;border-color:#cbd5e1"><div class="bt"><i class="dot" style="background:#94a3b8"></i>备份与兜底<span class="chip" style="border-style:dashed">直连 ⑦ / D</span></div>
+        <ul><li>restic → 本机磁盘 + B2 异地</li><li>P0 告警兜底通道（ntfy 类）</li><li>专家 agent（进程外）</li></ul></div>
     </div>
   </section>
 
-  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">消息 / 动作结果</span></div>
+  <div class="arrow"><span class="stem"></span><span class="head">▼</span><span class="lbl">只有「人」这一路向下走客户端；其余三方在 ④ 与 ⑦ 直连（见页面下半部）</span></div>
 
   <!-- 2 客户端 -->
   <section class="layer">
-    <div class="hd"><span class="bar" style="background:var(--cli)"></span><span class="t">客户端（交互面）</span><span class="s">不含业务逻辑 · 不持有状态 · 权限不按端区分</span></div>
+    <div class="hd"><span class="bar" style="background:var(--cli)"></span><span class="t">客户端（交互面）</span><span class="s">只与「人」对接 · 不含业务逻辑 · 不持有状态 · 权限不按端区分</span></div>
     <div class="row c3">
       <div class="box"><div class="bt"><i class="dot" style="background:var(--cli)"></i>移动端 · 指挥台</div>
         <ul><li>随时下达、<b>审批主战场</b>、紧急中止</li><li>看进度、收通知</li><li>不做：大 diff / 配置 / Grant / 审计</li></ul></div>
@@ -274,7 +274,7 @@
 
       <!-- 7 适配器 -->
       <section class="layer" style="border-color:#fde68a">
-        <div class="hd"><span class="bar" style="background:var(--adp)"></span><span class="t">适配器与执行域（全部可替换 · 四域即信任边界）</span><span class="s">都写三件：能力映射 / 错误翻译 / 探活</span></div>
+        <div class="hd"><span class="bar" style="background:var(--adp)"></span><span class="t">适配器与执行域（全部可替换 · 四域即信任边界）</span><span class="s">被运维对象 / 第三方服务 / 备份介质<b>在这一层直连</b>，不经客户端</span></div>
         <div class="row c4">
           <div class="box" style="background:#fffbeb;border-color:#fde68a">
             <div class="bt"><i class="dot" style="background:var(--adp)"></i>A · 工作区</div>
