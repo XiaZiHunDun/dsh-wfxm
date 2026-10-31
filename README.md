@@ -12,7 +12,7 @@ WFXM（Butler v5）的微信渠道与治理资产，迁移到 [DeepSeek Harness]
 
 ## 决策摘要
 
-**做**：dsh 当执行引擎，微信渠道直接用社区插件 `xmanrui/dsh-im`，Butler 的治理与中文产品语义写成 dsh 插件。
+**做**：dsh 当执行引擎，主通道用社区插件 `xmanrui/dsh-im` 的**飞书长连接**（微信 P1 兜底），Butler 的治理与中文产品语义写成 dsh 插件。
 **不做**：fork dsh 或 dsh-im；不做 sidecar 过渡；不重写 iLink 协议层（除非将来决定改微信体验）。
 
 ## 关键数字
@@ -21,7 +21,7 @@ WFXM（Butler v5）的微信渠道与治理资产，迁移到 [DeepSeek Harness]
 |---|---|---|
 | 规模 | 含测试 625 文件 / 87,273 行；不含测试 304 文件 / 42,276 行（口径见 [09 §三](docs/09-能力对照与实现路径.md)） | ~977,000 行 TS / 4,662 文件 / 57 包组 |
 | 测试 | 321 test files | 1,644 `.spec.ts` |
-| 成熟度 | 172 ship / 30 个 sub-cycle | v0.2.1-alpha.3，**明文承诺会破坏兼容** |
+| 成熟度 | 172 ship / 30 个 sub-cycle | v0.2.1-alpha.3（源码快照；**运行锁 `0.2.1-rc.2`**），**明文承诺会破坏兼容** |
 | 安全审计 | 30 cycle 加固，5 条门禁全绿 | **`SAFETY.md`：未审计，不得视为 production-ready** |
 
 ## 文档索引
@@ -58,7 +58,7 @@ WFXM（Butler v5）的微信渠道与治理资产，迁移到 [DeepSeek Harness]
 
 ## 产品定位一句话
 
-**通过微信驱动的、面向自己服务器的、能多项目并行开发的自主开发 + 运维管家。**
+**通过飞书（微信兜底）驱动的、面向自己服务器的、能多项目并行开发的自主开发 + 运维管家。**
 
 对标 Claude Code / Cursor 的完整体验，但从手机发起；多项目并发不互相干扰。
 详见 [08](docs/08-产品能力构想.md)。
@@ -68,7 +68,7 @@ WFXM（Butler v5）的微信渠道与治理资产，迁移到 [DeepSeek Harness]
 | 路径 | 内容 |
 |---|---|
 | `/home/ailearn/projects/WFXM` | Butler 源码仓库（迁移源，main 已全绿） |
-| `/home/ailearn/githubpro/deepseek-harness` | dsh 源码 `v0.2.1-alpha.3`（只读参考） |
+| `/home/ailearn/githubpro/deepseek-harness` | dsh 源码 `v0.2.1-alpha.3`（只读参考；**运行锁 `0.2.1-rc.2`**） |
 | `/home/ailearn/githubpro/cordis` | Cordis 内核源码（dsh 的插件框架底座） |
 
 ## 当前待办
@@ -85,7 +85,7 @@ WFXM（Butler v5）的微信渠道与治理资产，迁移到 [DeepSeek Harness]
 **实施侧**
 
 - [ ] **Step 0**：搭 Node 24 LTS / pnpm 11.28.5 隔离环境（本机 22.13 / 9.15 不满足 dsh）
-- [ ] **Step 2 第一步（冒烟）**：装 `dsh-im@5.7.0` 或 `dsh-im-gateway`（二选一），跑通微信链路
+- [ ] **Step 2 第一步（冒烟）**：装 `dsh-im@5.7.0`，跑通**飞书长连接**链路（`dsh-im-gateway` 仅当飞书长连接/卡片不达标时再评估）
 - [ ] **首批验收条件**：**V1 多项目并行不打架**、**V3 对话不再劣化**
       （**V2 顺带观察即可，不构成分叉点** → [09 §四](docs/09-能力对照与实现路径.md)）
 - [ ] **冒烟与后续验收项**：V4 resume / V5 长任务进度 / V6 审批闭环 / V7 入站准入 / V8 全域执行 / V9 定时 / V10 服务起停
