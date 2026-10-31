@@ -12,7 +12,7 @@
 </style>
 </head>
 <body>
-<svg viewBox="0 0 1600 1930" width="1600" height="1930" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 -40 1600 1970" width="1600" height="1970" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#9aa0a6"/>
@@ -31,6 +31,11 @@
     .al{font-size:9.6px;fill:#8b9096}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9px;fill:#4b5563}
   </style>
+
+  <!-- ================= 标题 ================= -->
+  <text x="40" y="-8" font-size="17" font-weight="700" fill="#111827">dsh-wfxm 架构图 · v1</text>
+  <text x="1560" y="-8" font-size="10" fill="#8b9096" text-anchor="end">结构来自 11（AR1–AR34）　选型来自 12（定稿 v1）　底座 dsh 0.2.1-rc.2　7 模块 · 13 端口 · 22 张表</text>
+  <text x="40" y="14" font-size="10" fill="#8b9096">自上而下是请求链路；右侧两个灰框是旁路（数据面 / 外部直连）。实线 = 调用或入站，虚线 = 出站或被预留的关系。</text>
 
   <!-- ================= A 客户端层 ================= -->
   <rect class="grp" x="40" y="28" width="1120" height="140" rx="4"/>
@@ -52,8 +57,8 @@
   <text class="cb" x="803" y="132">diff 与日志 · 审批中心 · kill switch</text>
 
   <!-- ================= B 接入层 ================= -->
-  <rect class="grp" x="40" y="216" width="1120" height="220" rx="4"/>
-  <text class="gl" x="600" y="236" text-anchor="middle">接入层　渠道只负责连通性（4 项必需 + 3 项可选契约）· 网关是唯一把「外部不可信」变成「内部可信」的地方</text>
+  <rect class="grp" x="40" y="216" width="1120" height="236" rx="4"/>
+  <text class="gl" x="1152" y="236" text-anchor="end">接入层　渠道只负责连通性（4 项必需 + 3 项可选契约）· 网关是唯一准入点</text>
 
   <rect class="card" x="80" y="262" width="340" height="140"/>
   <text class="ct" x="98" y="286">渠道 · 飞书长连接（v1 唯一主通道）</text>
@@ -62,10 +67,10 @@
   <text class="cb" x="98" y="338">open_id 配对 · event_id 幂等</text>
   <text class="cb" x="98" y="354">不做：判级 / 建任务 / 存正本</text>
 
-  <rect class="card" x="440" y="262" width="300" height="140"/>
+  <rect class="card" x="440" y="262" width="300" height="100"/>
   <text class="ct" x="458" y="286">渠道 · Web</text>
-  <text class="cb" x="458" y="306">浏览器呈现（SSE / WS 事件流）</text>
-  <text class="cb" x="458" y="322">审批中心 · 任务看板</text>
+  <text class="cb" x="458" y="306">宿主 web-app 提供，v1 不自建</text>
+  <text class="cb" x="458" y="322">审批中心 · 任务看板 · 直连本机</text>
   <text class="cb" x="458" y="338">管理动作仅此处可做（AR26）</text>
 
   <rect class="card" x="780" y="262" width="340" height="140"/>
@@ -165,7 +170,7 @@
   <text class="cb" x="91" y="1365">fs / edit / git / lsp / shell</text>
   <text class="cb" x="91" y="1381">沙箱 bwrap（不可用即拒绝执行）</text>
   <text class="cb" x="91" y="1397">同项目文件锁 withFileLock</text>
-  <text class="cb" x="91" y="1413">← 被运维对象（项目目录）</text>
+  <text class="cb" x="91" y="1413">← 项目工作目录（域 A）</text>
 
   <rect class="card" x="345" y="1320" width="250" height="130"/>
   <text class="ct" x="361" y="1343">B · 主机受控</text>
@@ -186,7 +191,7 @@
   <text class="cb" x="901" y="1365">credentials 只存引用名，逐操作解析</text>
   <text class="cb" x="901" y="1381">模型 provider 主 / 备切换</text>
   <text class="cb" x="901" y="1397">配置 YAML 默认层 + settings 覆盖</text>
-  <text class="cb" x="901" y="1413">↔ 备份 / 兜底通道</text>
+  <text class="cb" x="901" y="1413">↔ 宿主 OS（keychain / 文件句柄）</text>
 
   <rect class="card" x="75" y="1465" width="1060" height="85"/>
   <text class="ct" x="91" y="1488">专家执行器 ExpertExecutor（AR34）</text>
@@ -210,8 +215,8 @@
 
   <rect class="card" x="1232" y="640" width="306" height="250"/>
   <text class="ct" x="1248" y="663">业务账 · 单库 ops.sqlite</text>
-  <text class="cb" x="1248" y="684">① inbox · channel_bindings</text>
-  <text class="cb" x="1248" y="700">② decisions（rule_id / version）</text>
+  <text class="cb" x="1248" y="684">① inbox · actors · channel_bindings</text>
+  <text class="cb" x="1248" y="700">　　session_routes · ② policy_rules · decisions</text>
   <text class="cb" x="1248" y="716">③ approvals · grants</text>
   <text class="cb" x="1248" y="732">⑤ tasks · task_events · task_assertions</text>
   <text class="cb" x="1248" y="748">　　receipts · outbox</text>
@@ -229,16 +234,17 @@
   <text class="cb" x="1248" y="982">compaction 有损可控 · 任务块不被裁</text>
 
   <rect class="card" x="1232" y="1034" width="306" height="112"/>
-  <text class="ct" x="1248" y="1057">记忆正本 · memory/</text>
-  <text class="cb" x="1248" y="1078">*.md 人可读、可 diff、可备份</text>
-  <text class="cb" x="1248" y="1094">SQLite 只做索引，不持正本（AR5）</text>
-  <text class="cb" x="1248" y="1110">拔掉记忆插件可重建</text>
+  <text class="ct" x="1248" y="1057">记忆正本 · memory/ + memory_facts</text>
+  <text class="cb" x="1248" y="1078">*.md 人可读、可 diff、可备份（叙事）</text>
+  <text class="cb" x="1248" y="1094">memory_facts 结构化事实，版本化（真相）</text>
+  <text class="cb" x="1248" y="1110">FTS5 只是索引；记忆插件只检索不持正本</text>
 
   <rect class="card" x="1232" y="1162" width="306" height="112"/>
   <text class="ct" x="1248" y="1185">横切 · 可观测 / 配置 / 凭据</text>
   <text class="cb" x="1248" y="1206">指标四类 + correlation_id</text>
   <text class="cb" x="1248" y="1222">readiness 本地文件，不开端口</text>
   <text class="cb" x="1248" y="1238">凭据只存引用名，绝不落明文</text>
+  <text class="cb" x="1248" y="1254">settings 为配置覆盖层（唯一写者 = 管理面）</text>
 
   <!-- ================= H 外部直连 ================= -->
   <rect class="grp" x="1210" y="1310" width="350" height="300" rx="4"/>
@@ -260,17 +266,16 @@
   <path class="ln" d="M240,150 C240,190 250,220 250,262" marker-end="url(#ar)"/>
   <path class="ln" d="M595,150 C595,200 470,215 410,262" marker-end="url(#ar)"/>
   <path class="ln" d="M950,150 C950,205 620,215 590,262" marker-end="url(#ar)"/>
+  <text class="al" x="430" y="424" text-anchor="middle">回程：结果 / 审批卡片 → 客户端（与入站同一路径）</text>
 
-  <!-- 渠道 ↔ 网关（入站 / 出站 双向） -->
-  <path class="ln" d="M420,345 C560,345 660,340 772,340" marker-end="url(#ar)"/>
-  <path class="dln" d="M772,300 C660,296 560,300 424,300" marker-end="url(#ar)"/>
-  <text class="al" x="600" y="288" text-anchor="middle">出站：结果 / 审批卡片（按渠道能力渲染）</text>
-  <text class="al" x="600" y="362" text-anchor="middle">入站：归一化为 InboundMessage</text>
-  <path class="ln" d="M740,352 L772,352" marker-end="url(#ar)"/>
+  <!-- 渠道 → 网关（入站；出站同路径回传，见标注） -->
+  <path class="ln" d="M420,378 C560,378 660,378 772,378" marker-end="url(#ar)"/>
+  <path class="ln" d="M740,378 L772,378" marker-end="url(#ar)"/>
+  <text class="al" x="600" y="398" text-anchor="middle">入站：归一化为 InboundMessage　｜　出站：结果 / 审批卡片按同一路径回传，按渠道能力渲染</text>
 
   <!-- 网关 → 内核 -->
   <path class="ln" d="M950,402 C950,450 470,455 470,600" marker-end="url(#ar)"/>
-  <text class="al" x="700" y="470" text-anchor="middle">Intent 分发：审批应答 → ③（旁路）；控制 / 对话 → ⑤ 或会话；事件 → dispatcher</text>
+  <text class="al" x="60" y="448">Intent 分发：审批应答 → ③（旁路）；控制 / 对话 → ⑤ 或会话；事件 → dispatcher</text>
 
   <!-- 内核 → 端口 → 适配器 → 底座 -->
   <path class="ln" d="M600,1030 L600,1070" marker-end="url(#ar)"/>
@@ -282,11 +287,11 @@
 
   <!-- 内核 ↔ 数据面 -->
   <path class="ln" d="M1160,760 C1190,760 1195,800 1232,800" marker-end="url(#ar)"/>
-  <text class="al" x="1196" y="748">业务账读写</text>
+  <text class="al" x="1152" y="742" text-anchor="end">业务账读写</text>
 
   <!-- 外部直连 → 适配器 -->
   <path class="dln" d="M1210,1455 L1162,1455" marker-end="url(#ar)"/>
-  <text class="al" x="1192" y="1448" text-anchor="end">直连</text>
+  <text class="al" x="1192" y="1440" text-anchor="end">直连</text>
 
   <!-- ================= 页脚 ================= -->
   <line x1="40" y1="1822" x2="1560" y2="1822" stroke="#dfe2e6" stroke-width="1"/>
