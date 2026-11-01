@@ -140,6 +140,25 @@
 | 全局中止 | 人类开关，模型不该有 |
 | 浏览器 profile 管理（登录态） | 凭据相邻，单独入口 |
 
+### 4.4 `svcops` 命令白名单（域 B 的具体化）
+
+**两层闸**：先判 **unit / 容器名**是否在白名单内（systemd 走 `dsh-wfxm-managed-*` 前缀，见 [16 §三](16-部署与运行.md)），
+再判**动词**是否在下表；任一层不过 → `PermissionDenied`，**不落到 `exec_run`**。
+
+| 动作 | 允许的命令形态 | 风险 | 明确禁止 |
+|---|---|---|---|
+| 列 / 查 | `systemctl list-units --type=service --state=running`、`is-active <unit>`、`is-failed <unit>`、`status <unit> --no-pager` | R0 | `list-unit-files`、任意路径读取拼接 |
+| 日志 | `journalctl -u <unit> --since <ts> -n <≤500> --no-pager` | R0 | `-f` 跟随、全机日志、`--vacuum-*` |
+| 起停 | `systemctl start\|stop\|restart <unit>`（unit 须在白名单内） | R3 | `enable` / `disable` / `mask` / `isolate` / `reboot` / `poweroff`、`kill`；`reload` v1 不开放 |
+| 容器读 | `docker ps --format`、`docker inspect <c>`、`docker logs --tail <≤500> <c>`、`docker stats --no-stream` | R0 | `docker exec`、`docker cp` |
+| 容器写 | `docker start\|stop\|restart <c>` | R3 | `docker rm` / `prune` / `build` / `pull`（发布走 C9，不在此） |
+
+**三条硬约束**
+
+- **不接受 shell 字符串**：命令一律以参数数组进入 `ExecPort`，中间不透传 `sh -c`（[15 §五](15-数据与契约.md)）。
+- **不接受 `sudo`**：域 B 的授权由 polkit 逐 unit 授予 `dshwfxm`，`sudo` 与 root 一律 `block`（16 §三）。
+- **输出有界**：`--no-pager` + 行数上限；超限截断并给 locator（§3.1 块 3）。
+
 ---
 
 ## 五、skill 划分
