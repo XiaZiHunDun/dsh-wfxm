@@ -119,7 +119,7 @@
 
 1. **专用端口优先**：起停服务只走 `svc_*`，**不允许**用 `exec_run("systemctl ...")`。理由：`SvcOps` 的判定粒度是 unit，命令行判定会漏（11 §三）。
 2. **`exec_run` 收参数数组，不收 shell 字符串**（15 的 `ExecPort` 签名）；需要管道时由模型显式组合，内核不做字符串解析。
-3. **域 B 不给自由 shell**：域 B 只有 `svc_*` + 注册过的 `unit/容器`名单，命令白名单在闸里判。
+3. **域 B 不给自由 shell**：只走 `svc_*` 或注册过的白名单命令（B7）；命令白名单在闸里判，名单外的 `exec_run` 一律 `block`。
 4. **任务类只暴露三个**：`task_submit` / `task_status` / `task_control`；内部状态迁移（`waiting_approval` 等）不可由模型直接写。
 5. **记忆写入必带来源**：`memory_write` 的 schema 强制 `source` 字段，缺来源在参数校验阶段即拒绝（13 §2.3 纪律 3）。
 6. **工具可换，闸不可绕**：任何替换实现必须声明 `replaces` 并接入同一 `tools/pre-execute` 链（AR31）。
