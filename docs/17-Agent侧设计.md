@@ -96,7 +96,7 @@
 | **执行** | `exec_run`（前台，有界输出） | C3 | Exec | R1（域 A）/ R3（域 B） | `chat` `task` `expert` |
 | | `exec_start` / `exec_poll` / `exec_stop`（后台） | C3/C4 | Exec | 同上 | `chat` `task` `expert` |
 | **检索** | `web_search` / `web_fetch` | J6 | Search | R0 | `chat` `task` `subagent-ro` |
-| | `code_symbols`（定义/引用） | B3 | Exec（LSP） | R0 | `chat` `task` `expert` |
+| | `code_symbols`（定义/引用） | B3a | Exec（LSP） | R0 | `chat` `task` `expert` |
 | **任务** | `task_submit` | D9 | — | 继承声明等级 | `chat` `dispatcher` |
 | | `task_status` | D9/I1 | — | R0 | 全部 |
 | | `task_control`（暂停/恢复/取消/重试） | D11 | — | R1（取消 R2） | `chat` |
