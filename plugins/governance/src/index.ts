@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createAuditStore, type AuditStore } from './audit/store.js'
 import { toAuditFields, type SessionEventLike, type SessionLike } from './audit/events.js'
+import { installConcurrency } from './concurrency/guard.js'
 import { loadPolicy, policyPath } from './policy/config.js'
 import { evaluate } from './policy/rules.js'
 import { createDecisionStore } from './policy/store.js'
@@ -81,4 +82,13 @@ export function apply(ctx: ContextLike): void {
   })
 
   ctx.on('dispose', () => decisions.close())
+
+  installConcurrency(
+    ctx,
+    {
+      enabled: policy.concurrency.writeSerialization,
+      conflictLimit: policy.concurrency.conflictLimit,
+    },
+    decisions,
+  )
 }

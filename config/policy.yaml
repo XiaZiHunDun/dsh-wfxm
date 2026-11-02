@@ -13,6 +13,11 @@ readRoots:
   - /home/ailearn/githubpro
   - /tmp
 
+# V2 并发写（Step 2d）：同一 workspace 的文件写串行，写前校验读取快照。
+concurrency:
+  writeSerialization: true
+  conflictLimit: 3
+
 bash:
   denyPatterns:
     - '\b(sudo|su|doas)\b'

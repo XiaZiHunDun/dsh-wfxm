@@ -14,6 +14,12 @@ const PolicySchema = z.object({
       denyPatterns: z.array(z.string()).default([]),
     })
     .default({ denyPatterns: [] }),
+  concurrency: z
+    .object({
+      writeSerialization: z.boolean().default(true),
+      conflictLimit: z.number().int().positive().default(3),
+    })
+    .default({ writeSerialization: true, conflictLimit: 3 }),
 })
 
 export type Policy = z.infer<typeof PolicySchema> & {
