@@ -1,0 +1,20 @@
+# dsh-wfxm 最小授权策略（Step 2c）
+# 路径边界 + shell 危险命令拦截；kill switch 通过创建 config/KILL 生效。
+version: 1
+killSwitchFile: KILL
+
+# 只允许在这些根下写入（绝对路径）；相对路径由宿主沙箱按会话 workspace 约束。
+writeRoots:
+  - /home/ailearn/projects
+
+# 允许读取的绝对路径范围（含只读参考仓）。
+readRoots:
+  - /home/ailearn/projects
+  - /home/ailearn/githubpro
+  - /tmp
+
+bash:
+  denyPatterns:
+    - '\b(sudo|su|doas)\b'
+    - '\b(mkfs|dd|shutdown|reboot|poweroff)\b'
+    - '\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/(?:\s|$)'
