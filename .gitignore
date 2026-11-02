@@ -6,6 +6,7 @@ node_modules/
 dist/
 build/
 out/
+lib/
 *.tsbuildinfo
 
 # 日志与缓存

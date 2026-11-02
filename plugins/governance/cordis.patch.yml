@@ -1,0 +1,5 @@
+# dsh-wfxm governance bundle layer.
+# Inserted into a profile by `dsh plugin --profile <name> add ./plugins/governance`.
+- insert:
+    - id: dsh-wfxm-governance
+      name: '@dsh-wfxm/governance'
