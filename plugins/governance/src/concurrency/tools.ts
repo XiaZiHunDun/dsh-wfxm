@@ -51,7 +51,15 @@ interface WorkingDirectoryLike {
 export function sessionWorkspace(ctx: unknown, agent: unknown): string | undefined {
   const session = (agent as AgentLike | undefined)?.session
   if (session === undefined) return undefined
-  const service = (ctx as { workingDirectory?: WorkingDirectoryLike } | undefined)?.workingDirectory
+  // Cordis throws on reading a non-injected service, so the property access
+  // itself must be guarded; profiles without working-directory fall back to
+  // the immutable creation cwd.
+  let service: WorkingDirectoryLike | undefined
+  try {
+    service = (ctx as { workingDirectory?: WorkingDirectoryLike } | undefined)?.workingDirectory
+  } catch {
+    service = undefined
+  }
   if (service !== undefined && typeof service.get === 'function') {
     try {
       return service.get(session)
