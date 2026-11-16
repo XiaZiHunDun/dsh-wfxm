@@ -1,7 +1,7 @@
 # 17 — Agent 侧设计（提示 / 工具集 / skill / 子代理 / S1 规则 / Verifier）
 
-> **状态**：设计稿（2026-10-30）。
-> **前置**：[08](08-产品能力构想.md) 定产品该有什么；[11](11-架构锚定.md) 定结构（AR1–AR34）；[12](12-技术栈选型.md) 定实现；
+> **状态**：设计稿（2026-10-30，2026-11-03 回写 C 方案：新增 `orchestrator` preset、`chat` 降为 Web 深度会话；2026-11-05 增补预算终止语义与自改复核门；2026-11-11 回写切片 D 实施记：`orchestrator` 以决策引擎形态落地；2026-11-11 切片 F：改为常驻 `--profile sdk` 会话）。
+> **前置**：[08](08-产品能力构想.md) 定产品该有什么；[11](11-架构锚定.md) 定结构（AR1–AR37）；[12](12-技术栈选型.md) 定实现；
 > [13](13-核心能力方案.md) 定两个痛点的机制；[15](15-数据与契约.md) 定表与契约。
 > **本文回答的是"模型在会话里看得到什么、能做什么、何时被拦、做完怎么算成功"**，
 > 是 13 的机制落到 Agent 侧的最后一段，不新增端口、不改结构。
@@ -29,9 +29,9 @@
 
 | preset | 谁在用 | 工具面 | 默认预算 | 能否发审批 | 备注 |
 |---|---|---|---|---|---|
-| `chat` | owner 直接对话 | 全部 A 域 + 检索 + 任务 + 记忆 + 生活 | 30 步 / 30 分钟 | 能（R2/R3 经内核） | 默认会话，绑定 `project_id` |
-| `task` | 任务 worker 驱动 | 同 `chat`，去掉"对话专属"工具 | 按任务对象 | 能 | 由 `delegate_task` 创建，无对话面 |
-| `dispatcher` | 唯一调度会话（AR25） | **只保留 `task_*` 三个工具** | 5 步 | **不能** | 只建任务不执行业务 |
+| `orchestrator` | **唯一前台**：owner 对话 + 自动触发（AR25 v2） | 白名单：`task_submit` / `task_status` / `task_control`、`thread_lookup`、`disposition_record`、`say`、`memory_search`、受限 `fs_read` | 8 步 / 10 分钟 | **不能** | 只回答/确认/追问/交付/建任务/显式挂接/显式停止；**不执行、不审批、不改配置、不管插件** |
+| `chat` | **仅 Web 深度会话** | 全部 A 域 + 检索 + 任务 + 记忆 + 生活 | 30 步 / 30 分钟 | 能（R2/R3 经内核） | 绑定 `project_id`；**不接收渠道事件、不自动触发**；IM 对话一律走 `orchestrator` |
+| `task` | 任务 worker 驱动 | 同 `chat`，去掉"对话专属"工具 | 按任务对象 | 能 | 由 `task_submit` 创建，无对话面 |
 | `subagent-ro` | 只读子代理（检索、调研、审阅） | A 域只读 + 检索 | 15 步 | **不能** | 结果只回结论 + locator |
 | `expert` | 专家执行器（编码/浏览器等） | A 域读写 + 跑测试 | 按任务对象 | **不能**（AR34） | 无自有凭据、事件回传 |
 
@@ -39,7 +39,30 @@
 
 1. **preset 是权限上限，不是权限来源**：实际权限 = `preset 工具面 ∩ parent_grant ∩ task_scope`（AR30）。preset 里写了也不等于能用。
 2. **会话类型不可就地升级**：`subagent-ro` 不能靠对话把工具"要"过来；要提权只能新开带 Grant 的会话。
-3. **`dispatcher` 只有一个**：启动自检拒绝多 dispatcher（AR25）。
+3. **`orchestrator` 每个 owner 只有一个**：启动自检拒绝多 orchestrator，且工具面必须 ⊆ 白名单（AR25 v2）。
+
+**实施记（切片 D，2026-11-11）**：`orchestrator` 先以**决策引擎**形态落地（`plugins/orchestrator`），与上表有两点差异，均为有意为之：
+
+- **工具面暂时为空**：模型看不到 `task_submit` / `say` 等任何工具，只输出一个 JSON 决策（`reply` / `task` / `queue`），由宿主校验后执行。
+  「不执行」因而是结构保证而非提示约束；表中工具面要等"子进程 → 宿主"回连通道，届时再注册，风险基线不变。
+- **每轮一个短会话**（`dsh --profile headless --patch <零工具叠加>`，~3–4s），无常驻会话、无进度心跳（owner 2026-11-11 明确否决心跳）。
+  **2026-11-11 切片 F 已改**：改用 `@deepseek-ai/dsh-sdk-client` 的 `--profile sdk` 常驻子进程（固定会话、一次装配多轮复用），
+  模型轮次由 2.74s 降到 ~1.0s；「零工具」扩到 sdk profile 的全部 `tool-*` 与单独注册 `exit_plan_mode` 的 `plan-mode`，
+  真机 `request/header` 复核 `tools=[]`。启动即 `warm()`，用户不付装配费；超时/失败**丢弃子进程**，不复用被污染的会话。
+- 提示六块本片只装第 1/2 块（身份与边界、治理硬约束）的压缩版 + 最小上下文（项目名、同线程活任务），
+  块 3–6 待 `chat`/`task` preset 与装配器落地；**决策失败降级规则前台并在 `route_decisions` 留 `orchestrator-fallback:`**。
+- **确定性第一手（切片 E，2026-11-11）**：只读状态问题（磁盘/内存/负载/任务进度）先由规则 + 探针直接作答，**不跑模型、不建任务**；
+  判定保守（短、单句、有资源名词与询问词、无动作词），探针读不到或多句就落回模型。这是 §一 原则 2「规则先于模型」的落地位置。
+
+**预算终止语义（B3 待拍板，机制先定；仅指任务级）**
+
+**任务级**步数/预算耗尽（对应 11 §九"终止与升级"）必须是**显式、可解释、可续跑**，不能静默停：
+任务转 `paused`（沿用 15 的 `tasks.status`，不新增状态），原因码写 `task_events`（`budget_exhausted`，附 `tokens_used` / `time_used` / 上限）；owner 确认后按同一任务续跑。
+
+**全局成本预算**不适用本节：按 AR19 硬停（中止当前任务 + 拒绝新任务）。
+
+> 若后续 owner 要求"预算耗尽"成为独立终态，需先改 [15 `tasks.status`](15-数据与契约.md) 的枚举，不能只改本文。
+> 机制参考：prime-agent [goal_driver.rs](file:///home/ailearn/githubpro/prime-agent/crates/pa-core/src/session_engine/goal_driver.rs)（token/time 预算、continuation 分类、防重入）。
 
 ---
 
@@ -74,7 +97,8 @@
 
 ### 3.3 对话与任务的差异
 
-- `chat`：块 6 装"当前对话目标 + 待办"，不装完整计划。
+- `orchestrator`：块 6 只装**当前议题 + 进行中任务摘要（id / 阶段 / 在等谁）+ 待确认事项**；**按 Thread 作用域装配**，不装全量历史、不装完整计划。
+- `chat`：块 6 装"当前对话目标 + 待办"，不装完整计划（仅 Web 深度会话）。
 - `task`：块 6 装完整计划 DAG、**成功判据**、已用步数/预算；对话历史只保留摘要（任务块不可裁）。
 
 ---
@@ -97,13 +121,17 @@
 | | `exec_start` / `exec_poll` / `exec_stop`（后台） | C3/C4 | Exec | 同上 | `chat` `task` `expert` |
 | **检索** | `web_search` / `web_fetch` | J6 | Search | R0 | `chat` `task` `subagent-ro` |
 | | `code_symbols`（定义/引用） | B3a | Exec（LSP） | R0 | `chat` `task` `expert` |
-| **任务** | `task_submit` | D9 | — | 继承声明等级 | `chat` `dispatcher` |
+| **任务** | `task_submit` | D9 | — | 继承声明等级 | `orchestrator` `chat` |
 | | `task_status` | D9/I1 | — | R0 | 全部 |
-| | `task_control`（暂停/恢复/取消/重试） | D11 | — | R1（取消 R2） | `chat` |
+| | `task_control`（暂停/恢复/取消/重试） | D11 | — | R1（取消 R2） | `orchestrator` `chat` |
+| | `task_rollback`（步级 / 整任务回滚） | 13 §3.4 | —（⑦ `CheckpointRollbackPort`） | R1 | `orchestrator` `chat` |
+| **前台** | `thread_lookup`（锚点 / 订阅，只读） | B1 | —（① API） | R0 | `orchestrator` |
+| | `disposition_record`（记去向与原因） | A7 | —（① API） | R0 | `orchestrator` |
+| | `say`（回人话，经 ① 的 outbox） | — | Channel | R0 | `orchestrator` |
 | **记忆** | `memory_search` | F5 | Memory | R0 | 全部 |
 | | `memory_write`（进治理层，需来源分级） | F3/F4 | Memory | R1 | `chat` `task` |
 | | `fact_confirm`（把 `inferred` 升为确认） | 13 §2.3 | Memory | R1 | `chat` |
-| **主机** | `svc_list` / `svc_status` / `svc_logs` | C6 | SvcOps | R0 | `chat` `task` |
+| **主机** | `svc_list` / `svc_status` / `svc_logs` / `svc_inspect` / `svc_report` | C6 / G2 / G3 | SvcOps | R0 | `chat` `task` |
 | | `svc_start` / `svc_stop` / `svc_restart` | C6 | SvcOps | **R3** | `chat` `task` |
 | **浏览器** | `browser_navigate` / `browser_snapshot` | J7 | Browser | R0 | `chat` `task` |
 | | `browser_act`（点击/填表/提交） | J7 | Browser | R1（只读页）/ R3（提交） | `chat` `task` |
@@ -114,18 +142,21 @@
 | **派遣** | `expert_delegate` | O1 | —（ExpertExecutor） | 继承 | `chat` `task` |
 
 > **`task_control` 的"取消"是 R2**：中断别人的工作可逆但影响他人在跑的进度；不做 R3，因为它随时可重跑。
+> **`task_rollback` 是 R1 且必须显式触发**：只还原**本任务写过的文件**（有界、局部、可逆），绝不自动执行；
+> 独立工具而非塞进 `task_control`，因为风险基线按工具声明，混入会把 `stop`/`pause` 一起抬风险。
+> 端口缺失时工具仍注册但使用时**大声失败**（`rollback-failed`，AR13），不静默降级。
 
 ### 4.2 粒度六条规则
 
 1. **专用端口优先**：起停服务只走 `svc_*`，**不允许**用 `exec_run("systemctl ...")`。理由：`SvcOps` 的判定粒度是 unit，命令行判定会漏（11 §三）。
 2. **`exec_run` 收参数数组，不收 shell 字符串**（15 的 `ExecPort` 签名）；需要管道时由模型显式组合，内核不做字符串解析。
 3. **域 B 不给自由 shell**：只走 `svc_*` 或注册过的白名单命令（B7）；命令白名单在闸里判，名单外的 `exec_run` 一律 `block`。
-4. **任务类只暴露三个**：`task_submit` / `task_status` / `task_control`；内部状态迁移（`waiting_approval` 等）不可由模型直接写。
+4. **任务类只暴露四个**：`task_submit` / `task_status` / `task_control` / `task_rollback`；内部状态迁移（`waiting_approval` 等）不可由模型直接写。
 5. **记忆写入必带来源**：`memory_write` 的 schema 强制 `source` 字段，缺来源在参数校验阶段即拒绝（13 §2.3 纪律 3）。
 6. **工具可换，闸不可绕**：任何替换实现必须声明 `replaces` 并接入同一 `tools/pre-execute` 链（AR31）。
 
 > **A2A 不在工具面**：出站委托是 `ExpertExecutor` 的一种**传输实现**（端口/适配器），不注册成工具；
-> 入站 A2A 是**事件源**（[11 §2.3](11-架构锚定.md)），只进 dispatcher，既不渲染也不对话。邮件、日历同理——它们是 `MailPort` / `CalendarPort` 的能力，不是入口。
+> 入站 A2A 是**事件源**（[11 §2.3](11-架构锚定.md)），只进 orchestrator，既不渲染也不对话。邮件、日历同理——它们是 `MailPort` / `CalendarPort` 的能力，不是入口。
 
 ### 4.3 不暴露清单（管理面，不是工具）
 
@@ -210,6 +241,15 @@ bundle 内置 skills/                          内置（随版本发布）
 - **skill 引用工具用登记名**（AR4）；换实现不改 skill。
 - **skill 变更写审计**：新增/覆盖/删除都要留痕，否则无法解释"它为什么这么做"。
 
+**自改复核门（模型可提议，不能自批）**
+
+- **先复核再写**：模型提交 skill/记忆修改前，先过一次独立复核（`should_refine / rationale / instructions`），默认倾向"不改"；修改必须带 `evidence`（失败样例、日志、断言证据）。
+- **底座不可改**：base system prompt、AR 规则、审批闸不由模型改写；只允许改 skill、项目记忆、提示补充层。
+- **作用域默认局部**：会话级先生效；用户级/项目级必须 owner 显式或走 `approvals`，并留版本与回滚点。
+- **条目校验**：引用其它 skill/工具必须写登记名 + 必填参数；变更历史落 `audit_log`（15 §六），可按版本回滚。
+
+> 机制参考：prime-agent [planner.rs](file:///home/ailearn/githubpro/prime-agent/crates/pa-core/src/refinement/planner.rs)（复核门、不可变底座、编辑校验）与 [executor.rs](file:///home/ailearn/githubpro/prime-agent/crates/pa-core/src/refinement/executor.rs)（作用域与回滚）。**采纳其"证据门 + 不可变底座 + 默认局部"，但不采纳其自动生效**：用户级/项目级仍走我们的审批正本。
+
 ---
 
 ## 六、子代理拆分策略
@@ -254,6 +294,12 @@ bundle 内置 skills/                          内置（随版本发布）
 - **输入是结构化信号，不是原始命令字符串**：`tool`、`params`（已过 schema）、`domain`、规范化 `path`、`unit`、`network_tier`、`grant`、`risk_baseline`。
 - **有序、首命中**：规则有稳定优先级；命中即产出 `allow / ask / block + reason_code`，不再往下判。
 - **只上调不下调**：规则可把 R1 提到 R3，**不可**把 R3 降成 R1（AR11 双闸取严）。
+  v1 的落点是 `planTaskRisk(intent, baseline)`（`plugins/tasks/src/risk.ts`）：命中「起/重启 <托管服务>」即升 R3
+  并**自动附** `unit_restarted(unit)`（证明重启真的发生）+ `service_active(unit)`（证明现在健康）；
+  命中「创建/写入/修改 <绝对文件路径>」即升 **R2** 并附 `file_exists(path)`（相对路径不升级——判据按原样 stat）。
+  交付物落在执行器默认 workspace 内时，该任务**就在这个 workspace 里执行**（`isolation=serial`），
+  因为 `dsh` 的 `workspace-write` 沙箱根等于子进程 cwd——见 [16 §12.23](16-部署与运行.md)。
+  （保证「无判据不 R2+」不变）；模型仍只能提 R0/R1，不能借规则扩权。
 - **未命中 → 保守默认**：域 A 读写按 `risk_baseline` 放行；**其余一律 ask**。
 - 每次命中写 `decisions`：`rule_id + choice + reason + confidence=1.0`（规则命中的置信度是确定的）。
 
@@ -343,6 +389,7 @@ bundle 内置 skills/                          内置（随版本发布）
 | `file_exists` | `path`、可选 `sha256` | Exec |
 | `port_listening` | `port`、可选 `host` | Exec（只读探测） |
 | `service_active` | `unit` | SvcOps |
+| `unit_restarted` | `unit` | SvcOps（比 `ActiveEnterTimestamp` 与任务 `startedAt`） |
 | `http_status` | `url`、`expected` | Search（只读） |
 | `git_diff_matches` | `ref`、`paths`、`expect` | Exec |
 | `page_contains` | `url`、`selector`、`expect` | Browser |
@@ -367,6 +414,7 @@ bundle 内置 skills/                          内置（随版本发布）
 | 构建/测试 | `exit_code(0)` + `file_exists(产物路径)` |
 | 发版 | `exit_code(0)` + `service_active(unit)` + `port_listening(端口)` + `http_status(健康检查, 200)` |
 | 配置变更 | `exit_code(0)` + `file_exists(配置)` + `service_active(unit)` |
+| **服务起停** | `unit_restarted(unit)` + `service_active(unit)`（**规则层自动附**：`planTaskRisk` 命中「起/重启 <托管服务>」即升 R3 并加这两条，见 §7.1） |
 | 代码修复 | `exit_code(0)`（测试）+ `git_diff_matches(提交, 预期文件)` |
 | 邮件发送 | `exit_code(0)` + 发送记录 `evidence`（不接受"模型自称已发"） |
 
@@ -421,11 +469,12 @@ bundle 内置 skills/                          内置（随版本发布）
 | [12](12-技术栈选型.md) | 明确复用宿主 `skill` / `skill-filesystem` / `tool-skill`、`preset` 家族、`subagent` 家族；不新造这三类机制 |
 | [15](15-数据与契约.md) | `task_assertions.kind` 已含 7 种（无需改表）；**已同批补**：`decisions` 增 `rule_id` / `ruleset_version`；`spec_json` 的 DSL schema 进 zod 真源 |
 | [13](13-核心能力方案.md) | §3.1 的断言由"举例"变为**可落库的 DSL + 来源规则** |
+| [18](18-Super-agent对照与改进建议.md) | §十一 C 方案：本文新增 `orchestrator` preset（窄白名单）、`chat` 降为 Web 深度会话；AR25 v2 的工具面即本节 §二 |
 | [16](16-部署与运行.md) | 启动自检**第 4 步**已并入：工具注册三件套齐全（schema / 风险基线 / 端口），缺一拒绝启动 |
 
 ---
 
-## 十、验收（8 条，全部要真实跑通）
+## 十、验收（10 条，全部要真实跑通）
 
 | # | 验收点 | 判据 |
 |---|---|---|
@@ -437,3 +486,5 @@ bundle 内置 skills/                          内置（随版本发布）
 | 6 | **断言只读** | 跑完全部断言后 `git status` 与系统状态无变化 |
 | 7 | **规则集可测** | 30 条规则各有 allow/ask/block 用例，全部通过 |
 | 8 | **非法断言被拒** | 构造越域路径 / 未注册 unit / 含 shell 片段的断言，全部在静态校验被拒 |
+| 9 | **orchestrator 白名单**（AR25 v2） | 给 `orchestrator` 注入 `exec_run` / `svc_start` / 审批工具，注册即被拒；启动自检亦拒绝 |
+| 10 | **前台不执行只调度** | 用自然语言让 `orchestrator` 直接改文件 / 停服务：必须转 `task_submit` 或拒绝，且**零副作用** |

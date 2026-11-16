@@ -79,7 +79,7 @@ L1 原子层  ── 工具
 | 多步自主执行 | ✅ `packages/core/agent-loop`（`ReactLoopAgent`） | ⚠️ 有 loop，但决策 ADT 受限 |
 | **决策失败时的行为** | ✅ 工具调用配对不变式，`history ends with unresolved tools` → 直接抛 `INVALID_REQUEST` | ❌ **静默降级**（decode 失败落 plain-text→Respond），这正是「聊着聊着就乱掉」的成因 |
 | 计划/待办 | ✅ `packages/todo`（跨 turn 与重开 session 存活） | ⚠️ 有但简化 |
-| **长上下文管理** | ✅ `packages/compaction`（`/compact` 手动 + 自动压力触发） | ❌ 无 |
+| **长上下文管理** | ✅ `packages/compaction`（compaction-basic 阈值 + tool-pairing 平衡切点、command-compact、tool-result-pruner 超大输出预修剪）；**仍缺**：超长单轮不可拆、摘要不含在飞工作（见 13 §2.1） | ❌ 无 |
 | 子代理 | ✅ `packages/subagent`（Local spawn/fork **保留持久会话**） | ⚠️ 有但简化 |
 | **可中断可恢复** | ✅ `AgentFactory.createAgent()` + **`resumeAgent()`**；session 支持 fork/resume/replay | ⚠️ 只能恢复自己那一种挂起状态（approval） |
 | 后台长任务 | ✅ `packages/jobs` | ❌ 无 |
@@ -177,7 +177,7 @@ L1 原子层  ── 工具
 | **长任务进度可见** | 移动端没终端，不能干等一条消息几分钟 | ⚠️ **只有 typing + 1800 字分段**（9 渠道里最弱，飞书有原生 thinking 过程） |
 | 附件 | 看代码/看结果 | ✅ 图片/文件 |
 | **审批闭环** | 高危操作要能确认 | ✅ 文字/yes-no（非可点卡片） |
-| **入站准入** | 这是个能操作你服务器的远程入口 | ❌ **无白名单，默认 fail-open** |
+| **入站准入** | 这是个能操作你服务器的远程入口 | ⚠️ **5.7.0 有渠道级 `allowlist`**（direct/group 按发送者 `open_id`）；但新接入默认 `open`，需显式配置 + 部署自检 |
 | **异步任务** | 网络不可靠，长任务不能绑定一个长连接 | ⚠️ 需验证长轮询断线后的恢复 |
 | **无屏幕假设** | 不能依赖终端可视化 | ✅ dsh 有 `session/event` 流可推送 |
 

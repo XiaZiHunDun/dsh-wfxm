@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>dsh-wfxm 架构图 v1</title>
+<title>dsh-wfxm 架构图 v2.1（C 方案 + B1/B4 已生效）</title>
 <style>
   html,body{margin:0;background:#f2f3f5}
   body{padding:24px 16px 40px;display:flex;justify-content:center}
@@ -33,9 +33,9 @@
   </style>
 
   <!-- ================= 标题 ================= -->
-  <text x="40" y="-8" font-size="17" font-weight="700" fill="#111827">dsh-wfxm 架构图 · v1</text>
-  <text x="1560" y="-8" font-size="10" fill="#8b9096" text-anchor="end">结构来自 11（AR1–AR34）　选型来自 12（定稿 v1）　底座 dsh 0.2.1-rc.2　7 模块 · 13 端口 · 22 张表</text>
-  <text x="40" y="14" font-size="10" fill="#8b9096">自上而下是请求链路；右侧两个灰框是旁路（数据面 / 外部直连）。实线 = 调用或入站，虚线 = 被预留的关系。</text>
+  <text x="40" y="-8" font-size="17" font-weight="700" fill="#111827">dsh-wfxm 架构图 · v2.1（C 方案 + B1/B4 已生效）</text>
+  <text x="1560" y="-8" font-size="10" fill="#8b9096" text-anchor="end">结构来自 11 v2.1（AR1–AR37）＋ 11 §5.3.1 项目解析 · §10.1 术语（决策面 / 执行面 / 账本）· 15 §九/十 · 18 §十一　选型来自 12　底座 dsh 0.2.1-rc.2　7 模块 · 13 端口</text>
+  <text x="40" y="14" font-size="10" fill="#8b9096">自上而下是请求链路；右侧两个灰框是旁路（账本 / 外部直连）。实线 = 调用或入站，虚线 = 被预留的关系。orchestrator 是前台角色，不是第 8 个模块。不叫「控制面 + 数据面」——见 11 §10.1。</text>
 
   <!-- ================= A 客户端层 ================= -->
   <rect class="grp" x="40" y="28" width="1120" height="140" rx="4"/>
@@ -43,8 +43,9 @@
 
   <rect class="card" x="75" y="72" width="330" height="78"/>
   <text class="ct" x="93" y="96">移动端 · 指挥台</text>
-  <text class="cb" x="93" y="116">随时下达 · 审批主战场 · 紧急中止</text>
-  <text class="cb" x="93" y="132">收通知 · 看进度（不做大 diff / 配置 / 审计）</text>
+  <text class="cb" x="93" y="114">随时下达 · 审批主战场 · 紧急中止</text>
+  <text class="cb" x="93" y="129">单窗口跨项目（/use 切换，感知同一个管家）</text>
+  <text class="cb" x="93" y="144">收通知 · 看进度（不做大 diff / 配置 / 审计）</text>
 
   <rect class="card" x="430" y="72" width="330" height="78"/>
   <text class="ct" x="448" y="96">桌面端 · 值守台</text>
@@ -75,63 +76,75 @@
 
   <!-- ================= C 内核（7 模块都在这里） ================= -->
   <rect class="grp" x="40" y="470" width="1120" height="520" rx="4"/>
-  <text class="gl" x="890" y="490" text-anchor="middle">内核（自有 · 不可替换）　7 个模块 ①–⑦　每张表只有一个写者（AR23）</text>
+  <text class="gl" x="890" y="490" text-anchor="middle">内核（自有 · 不可替换）　7 个模块 ①–⑦ ＋ orchestrator 前台（角色，非模块）　每张表只有一个写者（AR23）</text>
 
-  <!-- ① 渠道网关（宽卡，两列步骤） -->
-  <rect class="card" x="75" y="520" width="530" height="140"/>
-  <text class="ct" x="91" y="546">① 渠道网关　唯一把「外部不可信」变成「内部可信」的地方</text>
-  <text class="cb" x="91" y="570">1 落库去重（channel_id + msg_id）</text>
-  <text class="cb" x="91" y="588">2 身份解析与准入（fail-closed）</text>
-  <text class="cb" x="91" y="606">3 能力协商（长度 / 富媒体 / 控件）</text>
-  <text class="cb" x="91" y="628">不做：判级 / 建任务 / 执行工具 / 存正本</text>
-  <text class="cb" x="345" y="570">4 分诊（交 Policy，不自己判级）</text>
-  <text class="cb" x="345" y="588">5 路由（审批旁路 / 会话 / 任务）</text>
-  <text class="cb" x="345" y="606">6 出站：打扰分级 → 渲染 → 重试</text>
-  <text class="cb" x="345" y="628">去重命中返回原回执，不重复执行</text>
+  <!-- ① 渠道网关 -->
+  <rect class="card" x="75" y="520" width="250" height="140"/>
+  <text class="ct" x="91" y="546">① 渠道网关（唯一入口）</text>
+  <text class="cb" x="91" y="566">1 落库去重（channel_id + msg_id）</text>
+  <text class="cb" x="91" y="584">2 身份 / 准入（fail-closed）</text>
+  <text class="cb" x="91" y="602">3 分诊 → 旁路（审批 / 控制 / 项目命令）</text>
+  <text class="cb" x="91" y="620">4 项目解析：显式 · 锚点 · 粘性 · 唯一 · 反问</text>
+  <text class="cb" x="91" y="637">路由 → orchestrator / ③ / ⑤；6 出站 outbox</text>
+  <text class="cb" x="91" y="654">出站落库前脱敏；不做：判级 / 建任务 / 执行</text>
 
-  <rect class="card" x="625" y="520" width="265" height="140"/>
-  <text class="ct" x="641" y="546">② 策略与判级</text>
-  <text class="cb" x="641" y="568">S1 规则 30 条（有序首命中）</text>
-  <text class="cb" x="641" y="586">只上调不下调；未命中 A 域按基线，其余 ask</text>
-  <text class="cb" x="641" y="604">S2 仅 4 种情形升级</text>
-  <text class="cb" x="641" y="622">域 / 路径白名单 · 选路梯子</text>
-  <text class="cb" x="641" y="640">Jev 可选，只给建议</text>
+  <!-- orchestrator 前台（C 方案） -->
+  <rect x="345" y="520" width="250" height="140" rx="2" fill="#eef4ff" stroke="#3b6fd8" stroke-width="1.5"/>
+  <text class="ct" x="361" y="546" fill="#1d4ed8">orchestrator 前台（AR25 v2）</text>
+  <text class="cb" x="361" y="566">回答 / 确认 / 追问 / 交付</text>
+  <text class="cb" x="361" y="584">task_submit → ⑤（唯一建任务）</text>
+  <text class="cb" x="361" y="602">attach 仅显式锚点 · ignore 记原因</text>
+  <text class="cb" x="361" y="620">stop 结构化优先，自然语言先确认</text>
+  <text class="cb" x="361" y="638">禁：执行 / 审批 / 配置 / 插件</text>
+  <text class="cb" x="361" y="656">工具面白名单 + 启动自检</text>
 
-  <rect class="card" x="910" y="520" width="250" height="140"/>
-  <text class="ct" x="926" y="546">③ 审批与授权</text>
-  <text class="cb" x="926" y="568">approvals 正本（卡片只是视图）</text>
-  <text class="cb" x="926" y="586">grants 是唯一长效授权形态</text>
-  <text class="cb" x="926" y="604">计划级授权 · 到期 / 可撤销</text>
-  <text class="cb" x="926" y="622">决定经 API 回 ①⑤，不直写表</text>
-  <text class="cb" x="926" y="640">kill switch 仅 Web 渠道</text>
+  <rect class="card" x="615" y="520" width="250" height="140"/>
+  <text class="ct" x="631" y="546">② 策略与判级</text>
+  <text class="cb" x="631" y="568">S1 规则 30 条（有序首命中）</text>
+  <text class="cb" x="631" y="586">只上调不下调；A 域按基线，其余 ask</text>
+  <text class="cb" x="631" y="604">S2 仅 4 种情形升级</text>
+  <text class="cb" x="631" y="622">域 / 路径白名单 · 选路梯子</text>
+  <text class="cb" x="631" y="640">Jev 可选，只给建议</text>
+
+  <rect class="card" x="885" y="520" width="275" height="140"/>
+  <text class="ct" x="901" y="546">③ 审批与授权</text>
+  <text class="cb" x="901" y="568">approvals 正本（卡片只是视图）</text>
+  <text class="cb" x="901" y="586">grants 是唯一长效授权形态</text>
+  <text class="cb" x="901" y="604">计划级授权 · 到期 / 可撤销</text>
+  <text class="cb" x="901" y="622">决定经 API 回 ①⑤，不直写表</text>
+  <text class="cb" x="901" y="640">kill switch 仅 Web 渠道</text>
 
   <!-- 第二排：⑤ ⑥ ⑦ + Agent 治理 -->
   <rect class="card" x="75" y="680" width="250" height="150"/>
   <text class="ct" x="91" y="704">⑤ 任务运行时</text>
   <text class="cb" x="91" y="726">状态机含 waiting_approval / input</text>
-  <text class="cb" x="91" y="744">租约 + 心跳，失租即停</text>
+  <text class="cb" x="91" y="744">租约 + 心跳；过期回收，仅 transient 重试</text>
   <text class="cb" x="91" y="762">Verifier：7 种断言 DSL</text>
   <text class="cb" x="91" y="780">无判据只许 R0–R1（R2+ 拒绝提交）</text>
-  <text class="cb" x="91" y="798">前置快照（⑦ 产）· 重试分级 · Outbox</text>
+  <text class="cb" x="91" y="798">前置快照闸：缺端口 / 失败 / 超时即拒</text>
+  <text class="cb" x="91" y="816">并发写隔离：worktree / workspace（AR8）</text>
 
   <rect class="card" x="345" y="680" width="250" height="150"/>
   <text class="ct" x="361" y="704">⑥ 记忆与项目</text>
-  <text class="cb" x="361" y="726">memory_facts 版本化 · 来源分级</text>
+  <text class="cb" x="361" y="726">memory_facts 版本化 · 来源分级 · 写入前核验</text>
   <text class="cb" x="361" y="744">正本 memory/*.md + FTS5 索引</text>
   <text class="cb" x="361" y="762">只取代不删除 · 冲突不静默</text>
-  <text class="cb" x="361" y="780">project_id 硬隔离</text>
-  <text class="cb" x="361" y="798">事实体检：冲突 / 过期 / 无来源 / 孤儿</text>
+  <text class="cb" x="361" y="780">项目事实隔离 · 偏好全局共享 · 别名可解析</text>
+  <text class="cb" x="361" y="798">事实体检：冲突 / 过期 / 无来源 / 孤儿 / 失效</text>
+  <text class="cb" x="361" y="816">装配点：全局 ∪ 本项目，未知/归档拒装</text>
 
   <rect class="card" x="615" y="680" width="250" height="150"/>
   <text class="ct" x="631" y="704">⑦ 运维域</text>
   <text class="cb" x="631" y="726">巡检最小安全集 + 告警三档</text>
   <text class="cb" x="631" y="744">changes / snapshots / 回滚</text>
-  <text class="cb" x="631" y="762">restic 备份 · 每月还原演练</text>
-  <text class="cb" x="631" y="780">只发现 + 报告，不擅自修复</text>
+  <text class="cb" x="631" y="762">工作区快照：locator + 基线 + 保留 100</text>
+  <text class="cb" x="631" y="780">文件级前镜像：写前原文 · 步级回滚</text>
+  <text class="cb" x="631" y="798">restic 备份 · 每月还原演练</text>
+  <text class="cb" x="631" y="816">只发现 + 报告，不擅自修复</text>
 
   <rect class="card" x="885" y="680" width="275" height="150"/>
   <text class="ct" x="901" y="704">Agent 治理（不是第 8 个模块）</text>
-  <text class="cb" x="901" y="726">5 preset：chat / task / dispatcher</text>
+  <text class="cb" x="901" y="726">5 preset：orchestrator / chat / task</text>
   <text class="cb" x="901" y="744">　　subagent-ro / expert</text>
   <text class="cb" x="901" y="762">提示六块：固定 ≤26% · 任务 ≥40%</text>
   <text class="cb" x="901" y="780">工具三件套 · 30 条 S1 · 子代理 ≤2 层</text>
@@ -139,7 +152,7 @@
 
   <!-- ④ 审计（横切，置底） -->
   <rect class="card" x="75" y="850" width="1085" height="90"/>
-  <text class="ct" x="91" y="874">④ 审计与证据　横切 sink：只订阅，不被任何模块依赖</text>
+  <text class="ct" x="91" y="874">④ 审计与证据　横切 sink：订阅 ①–⑦ 全部事件，不被任何模块依赖</text>
   <text class="cb" x="91" y="896">append-only：触发器阻断 UPDATE / DELETE · 哈希链 + 完整性校验 · correlation_id 贯穿全链 · 只归档不裁剪</text>
   <text class="cb" x="91" y="914">审计链断 → 立即告警并停写业务，不自动修复</text>
   <text class="al" x="91" y="968">编号只有一套：①–⑦ 是模块 ID，不是执行顺序——④ 是横切 sink，编号在中间、位置在底部；Agent 治理是规则约束，不是模块</text>
@@ -174,8 +187,9 @@
   <text class="ct" x="91" y="1303">A · 工作区</text>
   <text class="cb" x="91" y="1325">fs / edit / git / lsp / shell</text>
   <text class="cb" x="91" y="1341">沙箱 bwrap（不可用即拒绝执行）</text>
-  <text class="cb" x="91" y="1357">同项目文件锁 withFileLock</text>
-  <text class="cb" x="91" y="1373">← 项目工作目录（域 A）</text>
+  <text class="cb" x="91" y="1357">一隔离单位一个写任务（AR8）</text>
+  <text class="cb" x="91" y="1373">worktree 一任务一分支 · 合并串行（B4）</text>
+  <text class="cb" x="91" y="1389">← 项目工作目录（域 A）</text>
 
   <rect class="card" x="345" y="1280" width="250" height="130"/>
   <text class="ct" x="361" y="1303">B · 主机受控</text>
@@ -214,29 +228,31 @@
   <text class="al" x="75" y="1715">启动自检：插件剖面比对 + 工具三件套齐全，超出即拒绝启动　｜　peer 不匹配会静默跳过整个 bundle → 版本必须锁</text>
   <text class="al" x="75" y="1735">底座让内核与适配器跑起来，但「该不该做」不由底座决定</text>
 
-  <!-- ================= G 数据面 ================= -->
+  <!-- ================= G 账本（原「数据面」） ================= -->
   <rect class="grp" x="1210" y="470" width="350" height="700" rx="4"/>
-  <text class="gl" x="1385" y="490" text-anchor="middle">数据面　旁路 · 不在判断链上</text>
+  <text class="gl" x="1385" y="490" text-anchor="middle">账本（Ledger）　旁路 · 不在判断链上　决策面 / 执行面 / 账本 三分（11 §10.1）</text>
 
   <rect class="card" x="1232" y="515" width="306" height="250"/>
   <text class="ct" x="1248" y="538">业务账 · 单库 ops.sqlite</text>
   <text class="cb" x="1248" y="559">① inbox · actors · channel_bindings</text>
-  <text class="cb" x="1248" y="575">　　session_routes · ② policy_rules · decisions</text>
-  <text class="cb" x="1248" y="591">③ approvals · grants</text>
-  <text class="cb" x="1248" y="607">⑤ tasks · task_events · task_assertions</text>
-  <text class="cb" x="1248" y="623">　　receipts · outbox</text>
-  <text class="cb" x="1248" y="639">⑥ memory_facts · memory_edges · projects</text>
-  <text class="cb" x="1248" y="655">⑦ inspections · changes · snapshots</text>
+  <text class="cb" x="1248" y="575">　　session_routes · outbox · route_decisions</text>
+  <text class="cb" x="1248" y="591">② policy_rules · decisions</text>
+  <text class="cb" x="1248" y="607">③ approvals · grants</text>
+  <text class="cb" x="1248" y="623">⑤ tasks · task_events · task_assertions · receipts</text>
+  <text class="cb" x="1248" y="639">⑥ projects · project_aliases · memory_facts · memory_edges</text>
+  <text class="cb" x="1248" y="655">⑦ inspections · changes · snapshots · file_preimages</text>
   <text class="cb" x="1248" y="671">④ audit_log（append-only）</text>
   <text class="cb" x="1248" y="687">settings · schema_migrations(module, version)</text>
-  <text class="mono" x="1248" y="709">Kysely · SQLite WAL · FTS5 · UUIDv7</text>
-  <text class="cb" x="1248" y="731">每表一个写者；跨模块只经 API 或事件</text>
+  <text class="cb" x="1248" y="703">B1/B4：threads · task_threads · task_inputs</text>
+  <text class="cb" x="1248" y="719">　　　resource_locks</text>
+  <text class="mono" x="1248" y="739">Kysely · SQLite WAL · FTS5 · UUIDv7</text>
+  <text class="cb" x="1248" y="757">每表一个写者；跨模块只经 API 或事件</text>
 
   <rect class="card" x="1232" y="781" width="306" height="112"/>
   <text class="ct" x="1248" y="804">会话账 · dsh session log</text>
   <text class="cb" x="1248" y="825">对话正本，只经公开事件读</text>
   <text class="cb" x="1248" y="841">不解析 session 文件（格式升级即碎）</text>
-  <text class="cb" x="1248" y="857">compaction 有损可控 · 任务块不被裁</text>
+  <text class="cb" x="1248" y="857">compaction：不切工具块 · 摘要在飞任务</text>
 
   <rect class="card" x="1232" y="909" width="306" height="112"/>
   <text class="ct" x="1248" y="932">记忆正本 · memory/ + memory_facts</text>
@@ -248,7 +264,7 @@
   <text class="ct" x="1248" y="1060">横切 · 可观测 / 配置 / 凭据</text>
   <text class="cb" x="1248" y="1081">指标四类 + correlation_id</text>
   <text class="cb" x="1248" y="1097">readiness 本地文件，不开端口</text>
-  <text class="cb" x="1248" y="1113">凭据只存引用名，绝不落明文</text>
+  <text class="cb" x="1248" y="1113">凭据只存引用名；出口脱敏（日志·④审计·①出站·⑥记忆）</text>
   <text class="cb" x="1248" y="1129">settings 为配置覆盖层（唯一写者 = 管理面）</text>
 
   <!-- ================= H 外部直连 ================= -->
@@ -263,7 +279,7 @@
   <line x1="1248" y1="1346" x2="1522" y2="1346" stroke="#e5e7eb" stroke-width="1"/>
   <text class="cb" x="1248" y="1366">事件源（webhook · CI 回调 · A2A 入站）</text>
   <text class="cb" x="1248" y="1382">＝ 预留，v1 不启用（与零入站基线冲突）</text>
-  <text class="cb" x="1248" y="1404">启用时只走 去重 → 鉴权 → 分诊=event → dispatcher，</text>
+  <text class="cb" x="1248" y="1404">启用时只走 去重 → 鉴权 → 分诊=event → orchestrator，</text>
   <text class="cb" x="1248" y="1420">不渲染、不对话、不建会话粘性</text>
 
   <!-- ================= 连线 ================= -->
@@ -274,12 +290,25 @@
 
   <!-- 渠道 → 内核 ① -->
   <path class="ln" d="M250,372 L250,516" marker-end="url(#ar)"/>
-  <path class="ln" d="M590,362 L590,516" marker-end="url(#ar)"/>
-  <text class="al" x="630" y="400">入站：归一化为 InboundMessage　｜　出站：按渠道能力渲染后沿同一路径回传</text>
+  <path class="ln" d="M590,362 C590,430 300,450 300,516" marker-end="url(#ar)"/>
+  <text class="al" x="630" y="400">入站：归一化为 InboundMessage　｜　出站：① outbox 按渠道能力渲染后沿同一路径回传</text>
 
-  <!-- 内核内部：①→②→③ -->
-  <path class="ln" d="M605,590 L625,590" marker-end="url(#ar)"/>
-  <path class="ln" d="M890,590 L910,590" marker-end="url(#ar)"/>
+  <!-- 内核内部：①→orchestrator→②→③ -->
+  <path class="ln" d="M325,590 L345,590" marker-end="url(#ar)"/>
+  <path class="ln" d="M595,590 L615,590" marker-end="url(#ar)"/>
+  <path class="ln" d="M865,590 L885,590" marker-end="url(#ar)"/>
+  <path class="ln" d="M470,660 L200,676" marker-end="url(#ar)"/>
+  <text class="al" x="500" y="676">task_submit → ⑤</text>
+
+  <!-- ⑤ ↔ ③：审批请求 / 决定回传 -->
+  <path class="ln" d="M250,680 L250,663 L920,663 L920,660" marker-start="url(#ar)" marker-end="url(#ar)"/>
+
+  <!-- ⑤ → ⑥ / ⑦：任务运行时读写记忆、派运维任务 -->
+  <path class="ln" d="M325,760 L345,760" marker-end="url(#ar)"/>
+  <path class="ln" d="M200,830 L200,842 L740,842 L740,830" marker-end="url(#ar)"/>
+
+  <!-- ③ → ①：审批决定回网关出站 -->
+  <path class="ln" d="M1000,520 L1000,505 L220,505 L220,520" marker-end="url(#ar)"/>
 
   <!-- 内核 → 端口 → 适配器 → 底座 -->
   <path class="ln" d="M600,990 L600,1025" marker-end="url(#ar)"/>
@@ -289,7 +318,7 @@
   <path class="ln" d="M600,1535 L600,1565" marker-end="url(#ar)"/>
   <text class="al" x="614" y="1556">内核与适配器都运行于底座，但判断不由底座做</text>
 
-  <!-- 内核 → 数据面 -->
+  <!-- 内核 → 账本 -->
   <path class="ln" d="M1160,600 C1190,600 1195,640 1228,640" marker-end="url(#ar)"/>
 
   <!-- 外部直连 → 适配器 -->
@@ -298,9 +327,9 @@
 
   <!-- ================= 页脚 ================= -->
   <line x1="40" y1="1795" x2="1560" y2="1795" stroke="#dfe2e6" stroke-width="1"/>
-  <text class="gl" x="40" y="1819">图例：实线 = 调用 / 入站　·　虚线 = 预留 / 直连旁路　·　灰框 = 分层分组　·　内容对应 11（结构）与 12（选型），换实现不改结构</text>
-  <text class="gl" x="40" y="1843">关键不变量：AR5 适配器不持唯一副本　AR10 审批一等且与渠道解耦　AR12 所有入口归一网关　AR16 不可信内容不出域　AR23 单表单写者　AR26 管理面仅 Web</text>
-  <text class="gl" x="40" y="1867">AR28 落库即去重　AR30 子代理权限不得放大　AR32 端口契约实现无关　AR33 跨模块只经 API 或事件　AR34 专家不得持治理权</text>
+  <text class="gl" x="40" y="1819">图例：实线 = 调用 / 入站　·　虚线 = 预留 / 直连旁路　·　灰框 = 分层分组　·　内容对应 11（结构，项目解析见 §5.3.1）与 12（选型），换实现不改结构　·　本图是请求链路，完整依赖关系以 11 §五 mermaid 为准</text>
+  <text class="gl" x="40" y="1843">关键不变量：AR5 适配器不持唯一副本　AR10 审批一等且与渠道解耦　AR12 所有入口归一网关　AR16 不可信内容不出域　AR23 单表单写者　AR25 唯一前台/唯一调度入口（C 方案）　AR26 管理面仅 Web</text>
+  <text class="gl" x="40" y="1867">AR28 落库即去重　AR30 子代理权限不得放大　AR32 端口契约实现无关　AR33 跨模块只经 API 或事件　AR34 专家不得持治理权　AR35–37 订阅不授权 / 线程单主 / 唤醒复验</text>
 </svg>
 </body>
 </html>
