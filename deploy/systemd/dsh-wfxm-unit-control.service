@@ -1,0 +1,21 @@
+[Unit]
+Description=dsh-wfxm managed-unit control helper (root, whitelisted)
+After=multi-user.target
+
+[Service]
+Type=simple
+User=root
+Group=dshwfxm
+# /run/dsh-wfxm is created root:dshwfxm 0750; the socket inside is 0660.
+RuntimeDirectory=dsh-wfxm
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/node /usr/local/lib/dsh-wfxm/unit-control-server.mjs
+Restart=on-failure
+RestartSec=2
+# The helper already runs as root and only execs systemctl; no setuid needed.
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

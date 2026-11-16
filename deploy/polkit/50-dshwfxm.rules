@@ -1,0 +1,15 @@
+// /etc/polkit-1/rules.d/50-dshwfxm.rules  (root:root 0644)
+//
+// Lets the non-root service user manage ONLY units whose name starts with
+// `dsh-wfxm-managed-` (docs/16 §三). Everything else — other services, unit
+// files, docker — stays PermissionDenied. docker group membership is never
+// granted: it is equivalent to root.
+
+polkit.addRule(function (action, subject) {
+  if (action.id !== "org.freedesktop.systemd1.manage-units") return;
+  if (subject.user !== "dshwfxm") return;
+  const unit = action.lookup("unit");
+  if (typeof unit !== "string") return;
+  if (!unit.startsWith("dsh-wfxm-managed-")) return;
+  return polkit.Result.YES;
+});

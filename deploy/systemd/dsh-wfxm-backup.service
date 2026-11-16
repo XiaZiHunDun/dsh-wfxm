@@ -1,0 +1,33 @@
+[Unit]
+Description=dsh-wfxm backup (ops.sqlite snapshot, files, config, retention)
+Documentation=file:/opt/dsh-wfxm/current/docs/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dshwfxm
+Group=dshwfxm
+WorkingDirectory=/opt/dsh-wfxm/current
+EnvironmentFile=/etc/dsh-wfxm/env
+Environment=NODE_ENV=production
+Environment=HOME=/var/lib/dsh-wfxm/home
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=DSH_WFXM_DATA_DIR=/var/lib/dsh-wfxm
+Environment=DSH_WFXM_BACKUP_DIR=/var/backups/dsh-wfxm
+# Same distribution Node as the agent unit; never nvm.
+ExecStart=/usr/bin/node /opt/dsh-wfxm/current/scripts/backup.mjs
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/dsh-wfxm /var/backups/dsh-wfxm

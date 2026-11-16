@@ -1,0 +1,3 @@
+# Managed-unit control for the dsh-wfxm service user (installed by deploy/install.sh).
+# The wrapper validates verb + managed prefix; sudoers only needs to allow it.
+dshwfxm ALL=(root) NOPASSWD: /usr/local/sbin/dsh-wfxm-unit-control *

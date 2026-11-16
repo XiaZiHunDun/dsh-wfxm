@@ -1,0 +1,43 @@
+#!/bin/sh
+# Managed-unit control wrapper for the dsh-wfxm service user.
+#
+# Installed by deploy/install.sh as root:root 0755 at /usr/local/sbin/ and the
+# only command `dshwfxm` may run via sudo (see deploy/sudoers/dsh-wfxm-unit-control).
+# It re-checks the verb and the managed prefix so the privilege grant stays
+# narrower than "systemctl anything".
+#
+# Polkit note (2026-11-11): this host runs polkit 0.105, which ignores JS rules
+# in /etc/polkit-1/rules.d (that backend arrived in 0.106), so a direct
+# `systemctl restart` by dshwfxm ends in "Interactive authentication required".
+# The wrapper is the mechanism that actually works on 0.105.
+
+set -eu
+
+verb=${1:-}
+unit=${2:-}
+systemctl_bin=${DSH_WFXM_SYSTEMCTL:-/bin/systemctl}
+
+case "$verb" in
+  start | stop | restart) ;;
+  *)
+    echo "dsh-wfxm-unit-control: verb denied: ${verb}" >&2
+    exit 64
+    ;;
+esac
+
+case "$unit" in
+  dsh-wfxm-managed-*.service) ;;
+  *)
+    echo "dsh-wfxm-unit-control: unit denied: ${unit}" >&2
+    exit 64
+    ;;
+esac
+
+case "$unit" in
+  *[!a-z0-9.-]* | *..*)
+    echo "dsh-wfxm-unit-control: unit chars denied: ${unit}" >&2
+    exit 64
+    ;;
+esac
+
+exec "$systemctl_bin" "$verb" "$unit"
