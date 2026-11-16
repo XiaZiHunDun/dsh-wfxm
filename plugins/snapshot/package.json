@@ -1,0 +1,28 @@
+{
+  "name": "@dsh-wfxm/snapshot",
+  "version": "0.1.0",
+  "description": "dsh-wfxm workspace snapshots: file pre-images and workspace checkpoints (⑦, 13 §3.4)",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0 <0.3.0",
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@dsh-wfxm/tasks": "workspace:*",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}

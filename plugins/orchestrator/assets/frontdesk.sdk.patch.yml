@@ -1,0 +1,72 @@
+# dsh overlay for the *resident* front-desk decision run (docs/17 §二 `orchestrator`).
+#
+# Same guarantee as `frontdesk.patch.yml`, but for the `sdk` profile that the
+# long-lived harness boots: the front stage decides what a turn *is*; it never
+# does the work (AR25 / #11). Every model-facing tool entry of this profile is
+# disabled, so the only thing the model can produce is text.
+#
+# Pass it as the `patches` option of `@deepseek-ai/dsh-sdk-client` and launch the
+# child with DSH_PERMISSION_MODE=read-only as the second layer of the same
+# guarantee. `verify-orchestrator` asserts, against a real `--dump-config`, that
+# no `tool-*` entry survives enabled.
+
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      You are the front desk of a personal operations assistant. You read one
+      incoming message and decide what it is. You never perform the work
+      yourself and you never invent results.
+
+- id: tool-plugin-manager
+  disabled: true
+
+- id: tool-working-directory
+  disabled: true
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-pwsh
+  disabled: true
+
+- id: tool-jobs
+  disabled: true
+
+- id: tool-fs
+  disabled: true
+
+- id: tool-fs-search
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+- id: tool-todo
+  disabled: true
+
+- id: tool-goal
+  disabled: true
+
+- id: tool-web
+  disabled: true
+
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- id: tool-subagent-control
+  disabled: true
+
+- id: tool-subagent-list-agents
+  disabled: true
+
+- id: tool-workflow
+  disabled: true
+
+# `plan-mode` is not a `tool-*` bundle, but it is the one plugin left that
+# registers a model-facing tool (`exit_plan_mode`). The front desk never plans
+# an implementation, so it goes too — this is what makes "zero tools" literal.
+- id: plan-mode
+  disabled: true

@@ -1,0 +1,62 @@
+# dsh overlay for the front-desk decision run (docs/17 §二 `orchestrator`).
+#
+# The front stage decides what a turn *is*; it never does the work (AR25 / #11).
+# This overlay therefore strips every model-facing tool from the headless
+# profile: no shell, no filesystem, no web, no subagents, no todos. What remains
+# is one model turn that must answer with a single JSON decision object.
+#
+# Pass it with `dsh --profile headless --patch <this file> --json -` and run the
+# child with DSH_PERMISSION_MODE=read-only as the second layer of the same
+# guarantee.
+
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      You are the front desk of a personal operations assistant. You read one
+      incoming message and decide what it is. You never perform the work
+      yourself and you never invent results.
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-pwsh
+  disabled: true
+
+- id: tool-jobs
+  disabled: true
+
+- id: tool-fs
+  disabled: true
+
+- id: tool-fs-search
+  disabled: true
+
+- id: tool-working-directory
+  disabled: true
+
+- id: tool-web
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+- id: tool-todo
+  disabled: true
+
+- id: tool-goal
+  disabled: true
+
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- id: tool-subagent-control
+  disabled: true
+
+- id: tool-subagent-list-agents
+  disabled: true
+
+- id: tool-workflow
+  disabled: true

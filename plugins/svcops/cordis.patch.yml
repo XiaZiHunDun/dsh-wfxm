@@ -1,0 +1,5 @@
+# dsh-wfxm svcops bundle layer.
+# Inserted into a profile by `dsh plugin --profile <name> add ./plugins/svcops`.
+- insert:
+    - id: dsh-wfxm-svcops
+      name: '@dsh-wfxm/svcops'
