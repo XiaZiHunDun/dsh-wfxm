@@ -307,6 +307,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
                 startedAt: task.startedAt,
                 lastEventAt: last?.createdAt ?? null,
                 lastEventSeq: last?.seq ?? null,
+                lastEventType: last?.type ?? null,
                 threadIds,
               }
             })

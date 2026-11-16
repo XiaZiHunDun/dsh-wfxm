@@ -1404,3 +1404,4 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] R2 入口：规则层「写绝对路径文件 → R2 + `file_exists`」；生产 R2 卡单击直接放行（`confirm_stage=0`），`verify-orchestrator 50`（`2026.11.13-9`）
 - [x] R2 写文件的路径可写边界（`2026.11.16-2`）：交付物在默认 workspace 内的任务留在该 workspace 跑（`isolation=serial`），`policy.yaml` 放行该根；生产任务 `7ygzjh249h` `file_exists: pass`（见 `docs/06`）
 - [x] 回写 `spec.md`、`docs/06`、`AGENTS.md §4`、`docs/16 §12.23`
+- [x] B3 v1 静默任务结构化提醒（`2026.11.16-3`）：`task.progress` 带 `stuckAt/stuckPhase/options`，正文给「停止 `<ref>`」；不自动暂停（无协作式取消）；`verify-gateway 115/115`、`verify-host 35/35`（Slice AI）

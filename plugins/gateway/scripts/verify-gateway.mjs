@@ -2391,6 +2391,7 @@ const progressSnapshot = (overrides = {}) => ({
   startedAt: '2026-11-12T00:00:00.000Z',
   lastEventAt: '2026-11-12T00:00:00.000Z',
   lastEventSeq: 1,
+  lastEventType: 'task.started',
   threadIds: [progressThread.id],
   ...overrides,
 })
@@ -2448,6 +2449,7 @@ await check('a silent task gets one stall notice per event sequence', () => {
         threadIds: [thread.id],
         lastEventSeq: state.seq,
         lastEventAt: state.lastEventAt,
+        lastEventType: 'task.checkpoint',
       })],
     },
     now: progressNow,
@@ -2462,12 +2464,21 @@ await check('a silent task gets one stall notice per event sequence', () => {
   progressClock = new Date('2026-11-12T00:36:00.000Z')
   const afterEvent = relay.pump()
   const rows = stallStore.listOutbox().filter((row) => row.topic === 'task.progress' && row.payload.stall === true)
+  const stalled = rows[0]
   const result = first.enqueued === 2
     && again.skippedDuplicate >= 1
     && afterEvent.enqueued === 1
     && rows.length === 2
     && stallStore.findOutboxByDedupe('task-progress:task_progress:stall:5') !== null
     && stallStore.findOutboxByDedupe('task-progress:task_progress:stall:6') !== null
+    // B3 v1: the notice says where it stopped and the one action that works.
+    && stalled.payload.stuckAt === 'task.checkpoint'
+    && stalled.payload.stuckPhase === '执行中（checkpoint 已打开）'
+    && Array.isArray(stalled.payload.options)
+    && stalled.payload.options.join(',') === 'wait,stop'
+    && /卡在「执行中/.test(stalled.payload.text)
+    && /回复「停止 ref-progress」/.test(stalled.payload.text)
+    && !/已暂停|paused/.test(stalled.payload.text)
   stallStore.close()
   return result
 })

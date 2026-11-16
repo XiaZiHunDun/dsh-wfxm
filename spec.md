@@ -2019,3 +2019,32 @@ gateway 的 `single-live` 锚定、前台 `DEFAULT_LIVE_STATUSES`、⑤ 的 `def
 `observed: present`，文件内容 `hello r2`，任务 `succeeded`。
 
 
+
+---
+
+## Slice AI Spec — B3 v1 静默任务结构化提醒（2026-11-16，release `2026.11.16-3`）
+
+## 1. 目标
+
+任务「活着但没进展」时，owner 现在只能看到一句「可能卡住」；要能看出**卡在哪一步**、
+**还能做什么**，且不引入第二个治理者。
+
+## 2. 行为
+
+- 触发：`running` 任务距最后一条 `task_events` 超过 `DSH_WFXM_TASK_STALL_MINUTES`（默认 15，`0` 关闭）。
+- 输出：一条 `task.progress`（`stall: true`），payload 带
+  `stuckAt`（最后事件类型）、`stuckPhase`（人话阶段）、`silentMs`、`elapsedMs`、`options: ['wait','stop']`；
+  正文示例：`任务 <ref> 已 16 分钟没有新事件，卡在「执行中（checkpoint 已打开）」，已运行 16 分钟。不会自动停止：回复「停止 <ref>」可取消，或继续等待。`
+- 去重：`task-progress:<taskId>:stall:<lastEventSeq>`，同一事件序列只发一次；有新事件后再次静默才再提醒。
+- 任务状态不变：**不自动 `paused`**（原因见 §4）。
+
+## 3. 验证
+
+- `verify-gateway` **115/115**：原有去重断言保留，新增对 `stuckAt/stuckPhase/options` 与正文「卡在「…」」「停止 ref」的断言，并断言正文不含 `paused`。
+- `verify-host` **35/35**：host 传入 `lastEventType` 后行为不变。
+- 生产：release `2026.11.16-3` 已切换，启动自检 8/8，`modules` 行显示 `stallMin: 15`；首次自然触发待记（`docs/06`）。
+
+## 4. 明确不做
+
+- **不自动暂停**：`paused` 只改行状态，杀不掉宿主内的 dsh 子进程；子进程完成后 `paused → succeeded` 是非法迁移，会把任务卡死并丢回执。前置是协作式取消（executor 支持外部 abort），另开切片。
+- **不做「N 步无证据 / 同工具同参重复」**：`task_events` 只有生命周期事件，没有逐步工具调用，无法确定性计算。

@@ -207,6 +207,20 @@
 
 **待定**：阈值、是否允许自动重试一次、与 AR19 预算硬停的边界。
 
+#### B3 v1 实施记（2026-11-16，release `2026.11.16-3`）
+
+只落了"可观测"那一半：任务静默超过 `DSH_WFXM_TASK_STALL_MINUTES`（默认 15）→ 一条结构化
+`task.progress`（`stall: true`），带 `stuckAt / stuckPhase / silentMs / elapsedMs / options`，
+正文写明卡在哪个阶段，以及唯一有效的动作「停止 `<ref>`」。
+
+**不做自动 `paused`**：当前 `paused` 只改行状态，杀不掉宿主里的 dsh 子进程；子进程随后完成时
+`paused → succeeded` 是非法迁移，任务会被卡死并丢掉回执。自动暂停的前置是协作式取消
+（executor 支持外部 abort），所以 v1 只提示、不代替 owner 决策（也符合 AR23 不做第二治理者）。
+
+**信号取舍**：`task_events` 只有生命周期事件（created / started / checkpoint / …），没有逐步工具调用，
+"连续 N 步无新证据 / 同一工具同参数重复"目前无法确定性计算；v1 只采用"距最后事件的时间"这一可信信号，
+"超预估时长"留待任务对象带 `estimate` 后再做。
+
 **外部实现参考（prime-agent，2026-11-05）**：其 goal 运行时把"预算耗尽"做成显式终态——
 `token_budget / tokens_used / time_used`，续跑上下文分 `continuation / budget-limit / objective-updated`，
 耗尽置 `budget_limited` 并写原因，且 pending continuation 不重复生成

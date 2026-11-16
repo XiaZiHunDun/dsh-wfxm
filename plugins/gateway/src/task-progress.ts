@@ -1,10 +1,17 @@
 /**
- * Long-task visibility (Slice R): a `running` task that says nothing for
- * minutes is indistinguishable from a stuck bot. ⑤ has no streaming progress
- * (the dsh call is all-or-nothing), so the only honest signal is time:
+ * Long-task visibility (Slice R + B3 v1): a `running` task that says nothing
+ * for minutes is indistinguishable from a stuck bot. ⑤ has no streaming
+ * progress (the dsh call is all-or-nothing), so the only honest signal is time:
  *
  * - one notice per milestone (`2m`, `10m` by default) since `started_at`;
- * - one "maybe stuck" notice when no task event arrived for `stallMs`.
+ * - one structured stall notice per event sequence when no task event arrived
+ *   for `stallMs`, naming the lifecycle phase it stopped at and the one action
+ *   that actually stops it (`停止 <ref>`).
+ *
+ * The stall notice deliberately does **not** pause the task: the row would say
+ * `paused` while the dsh child keeps running, and its completion would then hit
+ * an illegal `paused → succeeded` transition. Cooperative cancellation is the
+ * prerequisite, so v1 only tells the owner where it is stuck.
  *
  * ① owns `outbox`, so it enqueues the messages and deduplicates them by
  * `dedupe_key`. It never reads ⑤'s tables: the host implements the port below
@@ -26,6 +33,8 @@ export interface RunningTaskSnapshot {
   startedAt: string | null
   lastEventAt: string | null
   lastEventSeq: number | null
+  /** Latest lifecycle event type, so a stall can say where it stopped. */
+  lastEventType?: string | null
   threadIds: string[]
 }
 
@@ -68,6 +77,20 @@ function oneLine(text: string, max: number): string {
 
 function refOf(snapshot: RunningTaskSnapshot): string {
   return snapshot.taskRef ?? snapshot.taskId.slice(0, 8)
+}
+
+/** Human phase for the last event, so "stuck at" is readable without raw enums. */
+function phaseOf(eventType: string | null | undefined): string {
+  switch (eventType) {
+    case 'task.started': return '开始执行'
+    case 'task.checkpoint': return '执行中（checkpoint 已打开）'
+    case 'task.waiting_approval': return '等审批'
+    case 'task.waiting_input': return '等补充输入'
+    case 'task.resumed': return '刚恢复'
+    case null:
+    case undefined: return '未知阶段'
+    default: return eventType
+  }
 }
 
 /** Highest milestone already reached, so a restart never fires several at once. */
@@ -153,8 +176,11 @@ export function createTaskProgressRelay(options: TaskProgressOptions): TaskProgr
           const silentMs = Number.isNaN(lastEvent) ? 0 : at.getTime() - lastEvent
           if (silentMs >= stallMs) {
             const seq = snapshot.lastEventSeq ?? 0
-            const text = `任务 ${refOf(snapshot)} 仍在运行，但已 ${minutes(silentMs)} 分钟没有新事件，`
-              + '可能卡住；不会自动停止，可继续等待或人工处理。'
+            const ref = refOf(snapshot)
+            const phase = phaseOf(snapshot.lastEventType)
+            const text = `任务 ${ref} 已 ${minutes(silentMs)} 分钟没有新事件，`
+              + `卡在「${phase}」，已运行 ${minutes(elapsedMs)} 分钟。`
+              + `不会自动停止：回复「停止 ${ref}」可取消，或继续等待。`
             const outcome = enqueue(
               snapshot,
               threadId,
@@ -166,6 +192,9 @@ export function createTaskProgressRelay(options: TaskProgressOptions): TaskProgr
                 elapsedMs,
                 stall: true,
                 silentMs,
+                stuckAt: snapshot.lastEventType ?? null,
+                stuckPhase: phase,
+                options: ['wait', 'stop'],
                 text,
               },
             )
