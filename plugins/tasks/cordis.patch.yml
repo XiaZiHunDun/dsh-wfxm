@@ -1,0 +1,5 @@
+# dsh-wfxm tasks bundle layer (module ⑤: task runtime and Verifier).
+# Inserted into a profile by `dsh plugin --profile <name> add ./plugins/tasks`.
+- insert:
+    - id: dsh-wfxm-tasks
+      name: '@dsh-wfxm/tasks'
