@@ -1,0 +1,5 @@
+# dsh-wfxm knowledge bundle layer (module ⑥: memory and projects).
+# Inserted into a profile by `dsh plugin --profile <name> add ./plugins/knowledge`.
+- insert:
+    - id: dsh-wfxm-knowledge
+      name: '@dsh-wfxm/knowledge'

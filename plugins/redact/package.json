@@ -1,0 +1,22 @@
+{
+  "name": "@dsh-wfxm/redact",
+  "version": "0.1.0",
+  "description": "dsh-wfxm outbound redaction (A5 / D19-2): pure functions shared by log, audit, channel outbound and memory write",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}
