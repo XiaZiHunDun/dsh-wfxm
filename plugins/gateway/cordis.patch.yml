@@ -1,0 +1,5 @@
+# dsh-wfxm gateway bundle layer (module ①: channel gateway and outbox).
+# Inserted into a profile by `dsh plugin --profile <name> add ./plugins/gateway`.
+- insert:
+    - id: dsh-wfxm-gateway
+      name: '@dsh-wfxm/gateway'

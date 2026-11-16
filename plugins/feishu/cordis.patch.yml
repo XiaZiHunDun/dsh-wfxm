@@ -1,0 +1,5 @@
+# dsh-wfxm Feishu channel adapter bundle layer.
+# Inserted into a profile by `dsh plugin --profile <name> add ./plugins/feishu`.
+- insert:
+    - id: dsh-wfxm-feishu
+      name: '@dsh-wfxm/feishu'

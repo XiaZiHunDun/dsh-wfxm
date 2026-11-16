@@ -1,0 +1,33 @@
+{
+  "name": "@dsh-wfxm/feishu",
+  "version": "0.1.0",
+  "description": "dsh-wfxm Feishu channel adapter (slice A): long-connection inbound normalization, outbox transport, credential resolution. Transport only — no tools, no sessions (docs/14 §八 profile).",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.0 <0.3.0",
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.73.0"
+  },
+  "devDependencies": {
+    "@dsh-wfxm/gateway": "workspace:*",
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}

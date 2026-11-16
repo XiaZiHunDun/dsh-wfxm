@@ -1,0 +1,40 @@
+{
+  "name": "@dsh-wfxm/gateway",
+  "version": "0.1.0",
+  "description": "dsh-wfxm channel gateway (module ①): inbound dedup, identity pairing, session routes, route decisions and the single outbox dispatcher",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.0 <0.3.0",
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
+  },
+  "dependencies": {
+    "@dsh-wfxm/redact": "workspace:*",
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@dsh-wfxm/knowledge": "workspace:*",
+    "@dsh-wfxm/tasks": "workspace:*",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}
