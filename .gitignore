@@ -28,6 +28,14 @@ logs/
 *.sqlite3
 *.db
 
+# 评测运行记录（A6 归档物，含执行环境信息，不入库）
+bench/results/
+
+# 本地运行态与工具缓存（开发机专属，不入库）
+.wfxm/
+.trae/
+.trae-html-share-packages/
+
 # 编辑器与系统
 .DS_Store
 .idea/
