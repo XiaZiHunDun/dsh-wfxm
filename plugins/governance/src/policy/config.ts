@@ -20,6 +20,17 @@ const PolicySchema = z.object({
       conflictLimit: z.number().int().positive().default(3),
     })
     .default({ writeSerialization: true, conflictLimit: 3 }),
+  preimages: z
+    .object({
+      /** Capture the previous bytes of every file a write tool is about to touch. */
+      enabled: z.boolean().default(true),
+      /** Roots a pre-image may read; empty means "same as writeRoots". */
+      roots: z.array(z.string()).default([]),
+      /** Above this many bytes the pre-image is spilled to `contentDir`. */
+      inlineLimit: z.number().int().positive().default(1_048_576),
+      contentDir: z.string().optional(),
+    })
+    .default({ enabled: true, roots: [], inlineLimit: 1_048_576 }),
 })
 
 export type Policy = z.infer<typeof PolicySchema> & {
@@ -43,10 +54,19 @@ export function loadPolicy(): Policy | null {
   const path = policyPath()
   if (!existsSync(path)) return null
   const parsed = PolicySchema.parse(parse(readFileSync(path, 'utf8')))
+  const writeRoots = parsed.writeRoots.map((item) => resolve(item))
   return {
     ...parsed,
-    writeRoots: parsed.writeRoots.map((item) => resolve(item)),
+    writeRoots,
     readRoots: parsed.readRoots.map((item) => resolve(item)),
+    preimages: {
+      ...parsed.preimages,
+      roots: (parsed.preimages.roots.length > 0 ? parsed.preimages.roots : writeRoots)
+        .map((item) => resolve(item)),
+      contentDir: parsed.preimages.contentDir === undefined
+        ? undefined
+        : resolve(parsed.preimages.contentDir),
+    },
     killSwitchPath: isAbsolute(parsed.killSwitchFile)
       ? parsed.killSwitchFile
       : resolve(dirname(path), parsed.killSwitchFile),

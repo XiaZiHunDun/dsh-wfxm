@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { redactDeep } from '@dsh-wfxm/redact'
 import { sha256Hex, stableStringify } from './canonical.js'
 
 export interface SessionLike {
@@ -96,6 +97,8 @@ export function toAuditFields(session: SessionLike | undefined, event: SessionEv
     action: type,
     target,
     correlationId,
-    payloadDigest: sha256Hex(stableStringify(event.data ?? null)),
+    // Redact event.data before hashing: tool arguments / results may carry
+    // SSH keys, JWTs, connection strings (D19-2 = B, four redact mounts).
+    payloadDigest: sha256Hex(stableStringify(redactDeep(event.data ?? null).value)),
   }
 }

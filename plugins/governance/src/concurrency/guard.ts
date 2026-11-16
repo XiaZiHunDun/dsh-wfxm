@@ -17,6 +17,7 @@ interface Logger {
 
 interface ContextLike {
   on(event: string, listener: (...args: any[]) => void, options?: { global?: boolean }): () => void
+  effect?(run: () => () => void): unknown
   logger?: Logger
 }
 
@@ -127,7 +128,8 @@ export function installConcurrency(
     return next()
   })
 
-  ctx.on('dispose', () => {
+  // cordis has no `dispose` event; fiber-bound effects run on plugin unload.
+  ctx.effect?.(() => () => {
     snapshots.clear()
     conflicts.clear()
   })

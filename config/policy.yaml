@@ -4,19 +4,31 @@ version: 1
 killSwitchFile: KILL
 
 # 只允许在这些根下写入（绝对路径）；相对路径由宿主沙箱按会话 workspace 约束。
+# `/var/lib/dsh-wfxm/workspace` 是执行器的默认工作区：R2 文件写入任务需要它能落盘，
+# 否则任务会被 `file_exists` 判 fail（2026-11-16 实测）。
 writeRoots:
   - /home/ailearn/projects
+  - /var/lib/dsh-wfxm/workspace
 
 # 允许读取的绝对路径范围（含只读参考仓）。
 readRoots:
   - /home/ailearn/projects
   - /home/ailearn/githubpro
   - /tmp
+  - /var/lib/dsh-wfxm/workspace
 
 # V2 并发写（Step 2d）：同一 workspace 的文件写串行，写前校验读取快照。
 concurrency:
   writeSerialization: true
   conflictLimit: 3
+
+# 文件级前镜像（13 §3.4 粒度一）：write/edit 落盘前记录原文，供步级回滚。
+# roots 留空 = 复用 writeRoots；超过 inlineLimit 的内容外置到 contentDir。
+preimages:
+  enabled: true
+  roots: []
+  inlineLimit: 1048576
+  contentDir: /tmp/dsh-wfxm-preimages
 
 bash:
   denyPatterns:
