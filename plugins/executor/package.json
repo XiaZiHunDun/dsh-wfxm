@@ -1,0 +1,21 @@
+{
+  "name": "@dsh-wfxm/executor",
+  "version": "0.1.0",
+  "description": "dsh-wfxm executor (slice B): spawns `dsh --profile headless --json` as ⑤'s worker execute seam",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "verify": "node scripts/verify-executor.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}

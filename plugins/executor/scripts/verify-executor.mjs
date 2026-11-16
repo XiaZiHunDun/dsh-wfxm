@@ -1,0 +1,406 @@
+/**
+ * Hermetic acceptance for @dsh-wfxm/executor (切片 B).
+ *
+ * A stub `dsh` binary (scripts/stub-dsh.mjs) emits the real NDJSON shapes, so
+ * the whole chain runs without a model: ⑤ store + worker → executor → child
+ * process → events → outcome → settlement.
+ *
+ * This package declares no build script while the lockfile is frozen (a
+ * sibling agent owns it), so the lib is self-built here when stale, using the
+ * TypeScript compiler already installed in plugins/governance.
+ */
+
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  createTaskStore,
+  createTaskWorker,
+  evaluateAssertion,
+  prepareAssertions,
+} from '@dsh-wfxm/tasks'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const pkgRoot = join(here, '..')
+
+// Self-build when the lib is missing or older than the sources (static import
+// of `../lib` would be hoisted above this, so the import stays dynamic).
+const libFile = join(pkgRoot, 'lib', 'executor.js')
+const srcFile = join(pkgRoot, 'src', 'executor.ts')
+const stale = !existsSync(libFile) || statSync(libFile).mtimeMs < statSync(srcFile).mtimeMs
+if (stale) {
+  const tsc = join(pkgRoot, '..', 'governance', 'node_modules', '.bin', 'tsc')
+  execFileSync(tsc, ['-p', join(pkgRoot, 'tsconfig.json')], { stdio: 'inherit' })
+}
+const { createDshExecutor } = await import('../lib/index.js')
+
+let pass = 0
+let fail = 0
+async function check(name, fn) {
+  try {
+    const ok = await fn()
+    if (ok) {
+      pass++
+      console.log(`PASS  ${name}`)
+    } else {
+      fail++
+      console.log(`FAIL  ${name}`)
+    }
+  } catch (error) {
+    fail++
+    console.log(`FAIL  ${name} — ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const dir = mkdtempSync(join(tmpdir(), 'executor-'))
+const dbPath = join(dir, 'ops.sqlite')
+const store = createTaskStore(dbPath)
+
+// Executable stub dsh (copy + chmod: the repo file mode is not guaranteed).
+const stubBin = join(dir, 'stub-dsh.mjs')
+copyFileSync(join(here, 'stub-dsh.mjs'), stubBin)
+chmodSync(stubBin, 0o755)
+
+function makeWorker(env, executorOptions = {}, workerOptions = {}) {
+  const execute = createDshExecutor({
+    dshBin: stubBin,
+    env,
+    timeoutMs: 2_000,
+    heartbeatMs: 50,
+    checkpoints: store,
+    ...executorOptions,
+  })
+  return createTaskWorker({
+    store,
+    execute,
+    owner: 'exec-test',
+    leaseMs: 30_000,
+    heartbeatMs: 10_000,
+    backoffMs: [10],
+    ...workerOptions,
+  })
+}
+
+function makeTask(overrides = {}) {
+  return store.createTask({ intent: 'write the greeting file', riskLevel: 'R1', ...overrides })
+}
+
+// ---- happy path (R1 + file_exists assertion) --------------------------------
+
+const outFile = join(dir, 'hello.txt')
+const happy = makeTask()
+const [happyAssertion] = prepareAssertions(
+  [{ kind: 'file_exists', path: outFile }],
+  { allowedPaths: [dir] },
+)
+store.addAssertion(happy.id, happyAssertion)
+const happyWorker = makeWorker({ STUB_MODE: 'ok', STUB_OUTFILE: outFile })
+const happyReport = await happyWorker.runOnce()
+
+await check('R1 task runs to succeeded through the stub child, with a receipt', () => {
+  const task = store.getTask(happy.id)
+  const receipts = store.listReceipts(happy.id)
+  return happyReport.outcome === 'succeeded'
+    && task.status === 'succeeded'
+    && task.attempt === 1
+    && receipts.length === 1
+    && receipts[0].summary === 'stub completed the task'
+    && receipts[0].evidenceLocator === 'dsh-session:stub-session-1'
+})
+
+await check('the child actually ran: the file exists and its assertion passes', async () => {
+  const outcome = await evaluateAssertion({ kind: 'file_exists', spec: { path: outFile } })
+  return existsSync(outFile)
+    && readFileSync(outFile, 'utf8').includes('write the greeting file')
+    && outcome.status === 'pass'
+})
+
+await check('one attempt = one committed checkpoint labelled with the attempt', () => {
+  const checkpoints = store.listCheckpoints(happy.id)
+  const events = store.listEvents(happy.id).filter((event) => event.type === 'task.checkpoint')
+  return checkpoints.length === 1
+    && checkpoints[0].status === 'committed'
+    && checkpoints[0].label === 'attempt 1'
+    && events.some((event) => event.payload.phase === 'opened')
+    && events.some((event) => event.payload.phase === 'committed')
+})
+
+// ---- env attribution bridge --------------------------------------------------
+
+const echo = makeTask({ intent: 'echo your env attribution' })
+const echoWorker = makeWorker({ STUB_MODE: 'env-echo' })
+const echoReport = await echoWorker.runOnce()
+
+await check('DSH_WFXM_TASK_ID / CHECKPOINT_ID / ATTEMPT reach the child env', () => {
+  const checkpoint = store.listCheckpoints(echo.id)[0]
+  const summary = store.listReceipts(echo.id)[0]?.summary ?? ''
+  return echoReport.outcome === 'succeeded'
+    && summary.includes(`task=${echo.id}`)
+    && summary.includes(`cp=${checkpoint.id}`)
+    && summary.includes('attempt=1')
+})
+
+// ---- ③ 任务级审批 → 工具级闸门（2026-11-11） --------------------------------
+
+await check('only approved R2/R3 tasks hand DSH_WFXM_APPROVED_LEVEL to the child', async () => {
+  // Separate store: these tasks are driven through the executor directly, so
+  // they must not sit queued in the shared store and be claimed by later cases.
+  const envStore = createTaskStore(join(dir, 'env-bridge.sqlite'))
+  const execute = createDshExecutor({
+    dshBin: stubBin,
+    env: { STUB_MODE: 'env-echo' },
+    timeoutMs: 2_000,
+    heartbeatMs: 50,
+    checkpoints: envStore,
+  })
+  const hooks = { attempt: 1, heartbeat: () => true }
+  const approved = envStore.createTask({ intent: '重启 demo 服务', riskLevel: 'R3' })
+  const plain = envStore.createTask({ intent: 'just echo', riskLevel: 'R1' })
+  const approvedOutcome = await execute(approved, hooks)
+  const plainOutcome = await execute(plain, hooks)
+  envStore.close()
+  return approvedOutcome.status === 'succeeded'
+    && approvedOutcome.summary.includes('approved=R3')
+    && plainOutcome.status === 'succeeded'
+    && plainOutcome.summary.includes('approved=none')
+})
+
+// ---- failure classification ---------------------------------------------------
+
+const boom = makeTask({ intent: 'fail with a plain error' })
+const boomWorker = makeWorker({ STUB_MODE: 'fail-exit' })
+const boomReport = await boomWorker.runOnce()
+
+await check('non-zero exit without transient markers is terminal unknown', () => {
+  const task = store.getTask(boom.id)
+  const retried = store.listEvents(boom.id).some((event) => event.type === 'task.retried')
+  return boomReport.outcome === 'failed'
+    && boomReport.failure === 'unknown'
+    && task.status === 'failed'
+    && task.attempt === 1
+    && !retried
+    && store.listReceipts(boom.id)[0].summary.includes('boom')
+})
+
+await check('a failed attempt aborts its checkpoint', () => {
+  const checkpoints = store.listCheckpoints(boom.id)
+  return checkpoints.length === 1 && checkpoints[0].status === 'aborted'
+})
+
+const limited = makeTask({ intent: 'hit the rate limit', maxAttempts: 2 })
+const limitedWorker = makeWorker({ STUB_MODE: 'rate-limit' })
+const firstTry = await limitedWorker.runOnce()
+
+await check('rate-limit stderr is transient and requeues with backoff', async () => {
+  const task = store.getTask(limited.id)
+  const events = store.listEvents(limited.id).map((event) => event.type)
+  await sleep(40)
+  const secondTry = await limitedWorker.runOnce()
+  const settled = store.getTask(limited.id)
+  return firstTry.outcome === 'retried'
+    && firstTry.failure === 'transient'
+    && task.status === 'queued'
+    && events.includes('task.retried')
+    && secondTry.outcome === 'failed'
+    && settled.status === 'failed'
+    && settled.attempt === 2
+})
+
+const credless = makeTask({ intent: 'run without credentials' })
+const credlessWorker = makeWorker({ STUB_MODE: 'run-error' })
+const credlessReport = await credlessWorker.runOnce()
+
+await check('turn_end error with exit 0 classifies by code (credential → terminal)', () => {
+  const task = store.getTask(credless.id)
+  const retried = store.listEvents(credless.id).some((event) => event.type === 'task.retried')
+  return credlessReport.outcome === 'failed'
+    && credlessReport.failure === 'permission_denied'
+    && task.status === 'failed'
+    && !retried
+    && store.listReceipts(credless.id)[0].summary.includes('MISSING_CREDENTIAL')
+})
+
+// ---- timeout / process failures ------------------------------------------------
+
+const slow = makeTask({ intent: 'hang forever', maxAttempts: 1 })
+const slowWorker = makeWorker({ STUB_MODE: 'sleep' }, { timeoutMs: 300 })
+const startedAt = Date.now()
+const slowReport = await slowWorker.runOnce()
+const slowElapsed = Date.now() - startedAt
+
+await check('a timed-out child is killed and classified transient', () => {
+  const task = store.getTask(slow.id)
+  return slowReport.outcome === 'failed'
+    && slowReport.failure === 'transient'
+    && task.status === 'failed'
+    && slowElapsed < 5_000
+})
+
+const missingWorker = makeWorker(
+  { STUB_MODE: 'ok' },
+  { dshBin: join(dir, 'no-such-dsh') },
+)
+const missing = makeTask({ intent: 'run with a missing binary' })
+const missingReport = await missingWorker.runOnce()
+
+await check('a missing dsh binary is not_found and aborts its checkpoint', () => {
+  const task = store.getTask(missing.id)
+  const checkpoints = store.listCheckpoints(missing.id)
+  return missingReport.outcome === 'failed'
+    && missingReport.failure === 'not_found'
+    && task.status === 'failed'
+    && checkpoints.length === 1
+    && checkpoints[0].status === 'aborted'
+})
+
+// ---- event stream robustness ----------------------------------------------------
+
+const garbage = makeTask({ intent: 'tolerate broken lines' })
+const garbageWorker = makeWorker({ STUB_MODE: 'garbage' })
+const garbageReport = await garbageWorker.runOnce()
+
+await check('non-JSON noise on stdout is tolerated when a final event arrives', () => {
+  return garbageReport.outcome === 'succeeded'
+    && store.listReceipts(garbage.id)[0].summary === 'recovered fine'
+})
+
+const noFinal = makeTask({ intent: 'end without a final event' })
+const noFinalWorker = makeWorker({ STUB_MODE: 'no-final' })
+const noFinalReport = await noFinalWorker.runOnce()
+
+await check('exit 0 without a final event succeeds with an explicit empty summary', () => {
+  return noFinalReport.outcome === 'succeeded'
+    && store.listReceipts(noFinal.id)[0].summary === '(no output)'
+})
+
+// ---- snapshot gate interaction ----------------------------------------------------
+
+const r3Marker = join(dir, 'r3-marker.txt')
+const refused = makeTask({ intent: 'r3 without snapshot', riskLevel: 'R3' })
+const refusedWorker = makeWorker({ STUB_MODE: 'ok', STUB_OUTFILE: r3Marker })
+const refusedReport = await refusedWorker.runOnce()
+
+await check('R3 without a snapshot port is refused and the child never spawns', () => {
+  const task = store.getTask(refused.id)
+  return refusedReport.outcome === 'failed'
+    && refusedReport.skipped === 'snapshot-refused'
+    && task.status === 'failed'
+    && !existsSync(r3Marker)
+})
+
+const r3File = join(dir, 'r3-ok.txt')
+const allowed = makeTask({ intent: 'r3 with snapshot', riskLevel: 'R3' })
+// R3 needs executable criteria (17 §8.4): the worker now gates success on the
+// Verifier, so a passing assertion must be present or completion is refused.
+for (const prepared of prepareAssertions([{ kind: 'file_exists', path: r3File }])) {
+  store.addAssertion(allowed.id, prepared)
+}
+const allowedWorker = makeWorker(
+  { STUB_MODE: 'ok', STUB_OUTFILE: r3File },
+  {},
+  { snapshot: { capture: async () => ({ snapshotId: 'snap-1', baselineRef: 'HEAD' }) } },
+)
+const allowedReport = await allowedWorker.runOnce()
+
+await check('R3 with a snapshot port runs and records the snapshot event', () => {
+  const event = store.listEvents(allowed.id).find((item) => item.type === 'task.snapshot')
+  const verified = store.listEvents(allowed.id).find((item) => item.type === 'task.verified')
+  return allowedReport.outcome === 'succeeded'
+    && existsSync(r3File)
+    && event !== undefined
+    && event.payload.snapshotId === 'snap-1'
+    && verified?.payload.overall === 'pass'
+})
+
+// ---- pre-spawn refusals -------------------------------------------------------------
+
+const rootless = makeTask({ intent: 'no workspace for me' })
+const rootlessWorker = makeWorker({ STUB_MODE: 'ok' }, { workdirResolver: () => null })
+const rootlessReport = await rootlessWorker.runOnce()
+
+await check('an unresolvable workdir refuses before spawn and opens no checkpoint', () => {
+  return rootlessReport.outcome === 'failed'
+    && rootlessReport.failure === 'not_found'
+    && store.listCheckpoints(rootless.id).length === 0
+})
+
+// B4-b: worktree creation + prepare happens inside the resolver, so it must be
+// allowed to be async without changing the spawn path or checkpoint ordering.
+const asyncTask = makeTask({ intent: 'async workdir' })
+const asyncOut = join(dir, 'async-workdir.txt')
+const asyncWorker = makeWorker(
+  { STUB_MODE: 'ok', STUB_OUTFILE: asyncOut },
+  {
+    workdirResolver: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      return dir
+    },
+  },
+)
+const asyncReport = await asyncWorker.runOnce()
+
+await check('an async workdir resolver is awaited before spawn', () => {
+  return asyncReport.outcome === 'succeeded' && existsSync(asyncOut)
+})
+
+const brokenCheckpoints = {
+  beginCheckpoint: () => {
+    throw new Error('db down')
+  },
+  closeCheckpoint: () => {},
+}
+const brokenMarker = join(dir, 'broken-marker.txt')
+const broken = makeTask({ intent: 'checkpoint store is down' })
+const brokenWorker = makeWorker(
+  { STUB_MODE: 'ok', STUB_OUTFILE: brokenMarker },
+  { checkpoints: brokenCheckpoints },
+)
+const brokenReport = await brokenWorker.runOnce()
+
+await check('a checkpoint begin failure is loud and spawns nothing', () => {
+  return brokenReport.outcome === 'failed'
+    && brokenReport.failure === 'unknown'
+    && store.listReceipts(broken.id)[0].summary.includes('checkpoint begin failed')
+    && !existsSync(brokenMarker)
+})
+
+// ---- lease loss -----------------------------------------------------------------------
+
+await check('losing the lease kills the child and reports conflict', async () => {
+  const execute = createDshExecutor({
+    dshBin: stubBin,
+    env: { STUB_MODE: 'sleep' },
+    timeoutMs: 30_000,
+    heartbeatMs: 30,
+  })
+  const started = Date.now()
+  const outcome = await execute(
+    { id: 'lease-loss-task', intent: 'hang', projectId: null },
+    { attempt: 1, heartbeat: () => false },
+  )
+  const elapsed = Date.now() - started
+  return outcome.status === 'failed'
+    && outcome.failure === 'conflict'
+    && elapsed < 5_000
+})
+
+// ---- teardown ---------------------------------------------------------------------------
+
+store.close()
+rmSync(dir, { recursive: true, force: true })
+
+console.log(`\nexecutor: ${pass} passed, ${fail} failed`)
+if (fail > 0) process.exit(1)
