@@ -41,6 +41,8 @@ export interface ExecHooks {
   heartbeat(): boolean
   /** 1-based attempt number of this run. */
   readonly attempt: number
+  /** Aborted when the owner stops the task; the executor must kill its child. */
+  signal?: AbortSignal
 }
 
 export type TaskExecutor = (task: Task, hooks: ExecHooks) => Promise<ExecOutcome> | ExecOutcome
@@ -50,7 +52,7 @@ export interface SnapshotPort {
   capture(task: Task): Promise<{ snapshotId: string; baselineRef?: string | null }>
 }
 
-export type WorkerSkipReason = 'idle' | 'snapshot-refused' | 'stale-lease' | 'resource-conflict'
+export type WorkerSkipReason = 'idle' | 'snapshot-refused' | 'stale-lease' | 'resource-conflict' | 'cancelled'
 
 export interface TaskRunReport {
   taskId: string | null
@@ -132,6 +134,8 @@ export interface TaskWorker {
   runOnce(): Promise<TaskRunReport>
   /** Reclaim expired leases without claiming anything. */
   recover(): { requeued: string[]; failed: string[] }
+  /** Abort the active attempt for `taskId`; true when one was running. */
+  cancel(taskId: string): boolean
   start(options?: { intervalMs?: number }): void
   stop(): void
   readonly owner: string
@@ -147,6 +151,8 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
 
   let timer: ReturnType<typeof setInterval> | null = null
   let running = false
+  /** taskId → the attempt currently inside `execute` (owner "停止"). */
+  const activeAttempts = new Map<string, AbortController>()
 
   const backoffFor = (attempt: number): number =>
     backoff[Math.min(Math.max(attempt - 1, 0), backoff.length - 1)]
@@ -390,6 +396,8 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     beat.unref?.()
 
     let outcome: ExecOutcome
+    const controller = new AbortController()
+    activeAttempts.set(task.id, controller)
     try {
       // Everything the executor does (including the tool calls it dispatches)
       // inherits this task id, so ④ can stamp pre-images (13 §3.4).
@@ -398,16 +406,39 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         () => execute(task, {
           attempt: task.attempt,
           heartbeat: keepAlive,
+          signal: controller.signal,
         }),
       )
     } catch (error) {
       outcome = { status: 'failed', summary: messageOf(error), failure: classify(error) }
     } finally {
       clearInterval(beat)
+      activeAttempts.delete(task.id)
     }
 
     // Another worker may have taken over while we ran; never overwrite it.
-    if (store.getTask(task.id)?.leaseOwner !== owner) return stale()
+    // A cancelled row has already had its lease cleared by the transition, so
+    // that case is reported as `cancelled` below instead of `stale-lease`.
+    const latest = store.getTask(task.id)
+    if (latest?.leaseOwner !== owner && latest?.status !== 'cancelled') return stale()
+
+    // Owner "停止": `control()` already moved the row to `cancelled`; settling
+    // now would attempt cancelled → succeeded/failed. Release and skip instead.
+    if (latest?.status === 'cancelled') {
+      try {
+        store.releaseTaskResourceLocks(task.id)
+      } catch (error) {
+        options.onError?.(error)
+      }
+      return {
+        taskId: task.id,
+        outcome: 'skipped',
+        failure: null,
+        skipped: 'cancelled',
+        attempt: task.attempt,
+        wakeAt: null,
+      }
+    }
 
     // A lost resource lease means another task may own the port / DB / unit
     // now; the attempt must not be reported as success.
@@ -430,6 +461,12 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     owner,
     runOnce,
     recover: () => store.recoverExpiredLeases({ now: now() }),
+    cancel(taskId) {
+      const controller = activeAttempts.get(taskId)
+      if (controller === undefined) return false
+      controller.abort()
+      return true
+    },
     start(startOptions) {
       if (timer !== null) return
       const intervalMs = startOptions?.intervalMs ?? 1_000

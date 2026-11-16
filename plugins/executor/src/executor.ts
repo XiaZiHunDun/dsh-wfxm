@@ -66,6 +66,8 @@ export interface ExecutorTaskRef {
 export interface ExecutorHooks {
   heartbeat(): boolean
   readonly attempt: number
+  /** Aborted by the owner (`停止 <ref>`); the child is killed and the outcome is `conflict`. */
+  signal?: AbortSignal
 }
 
 export type TaskExecutorFn = (
@@ -246,6 +248,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
       let lineBuffer = ''
       let timedOut = false
       let leaseLost = false
+      let cancelled = false
       let spawnError: NodeJS.ErrnoException | null = null
       let settled = false
 
@@ -267,6 +270,17 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         }
       }, heartbeatMs)
       heartbeat.unref?.()
+
+      // Owner "停止": abort means kill the child now; `close` reports `conflict`
+      // so the worker can discard the outcome instead of settling it.
+      const onAbort = (): void => {
+        cancelled = true
+        killChild()
+      }
+      if (hooks.signal !== undefined) {
+        if (hooks.signal.aborted) onAbort()
+        else hooks.signal.addEventListener('abort', onAbort, { once: true })
+      }
 
       killTimer.term = setTimeout(() => {
         timedOut = true
@@ -331,6 +345,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         clearInterval(heartbeat)
         if (killTimer.term !== null) clearTimeout(killTimer.term)
         if (killTimer.kill !== null) clearTimeout(killTimer.kill)
+        hooks.signal?.removeEventListener('abort', onAbort)
         if (lineBuffer.trim().length > 0) handleLine(lineBuffer)
 
         const evidenceLocator = sessionId === null ? null : `dsh-session:${sessionId}`
@@ -342,6 +357,11 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
           } else {
             fail('unknown', `spawn ${dshBin} failed: ${spawnError.message}`)
           }
+          return
+        }
+        if (cancelled) {
+          closeCheckpoint('aborted')
+          fail('conflict', 'cancelled by owner')
           return
         }
         if (leaseLost) {

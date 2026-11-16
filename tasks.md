@@ -1405,3 +1405,4 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] R2 写文件的路径可写边界（`2026.11.16-2`）：交付物在默认 workspace 内的任务留在该 workspace 跑（`isolation=serial`），`policy.yaml` 放行该根；生产任务 `7ygzjh249h` `file_exists: pass`（见 `docs/06`）
 - [x] 回写 `spec.md`、`docs/06`、`AGENTS.md §4`、`docs/16 §12.23`
 - [x] B3 v1 静默任务结构化提醒（`2026.11.16-3`）：`task.progress` 带 `stuckAt/stuckPhase/options`，正文给「停止 `<ref>`」；不自动暂停（无协作式取消）；`verify-gateway 115/115`、`verify-host 35/35`（Slice AI）
+- [x] 协作式取消（`2026.11.16-4`）：`停止` 先 abort executor 子进程再落 `cancelled`；worker 遇 `cancelled` 只释放锁并返回 `skipped:'cancelled'`，不再 settle/迁移/补回执；`verify-executor 20`、`verify-tasks 97`、`verify-host 36`（Slice AJ）

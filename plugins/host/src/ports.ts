@@ -35,6 +35,8 @@ export interface HostPortDeps {
   rollback?: CheckpointRollbackPort | null
   /** ③'s approval store; absent = approval clicks are reported as unavailable. */
   approvals?: ApprovalStore | null
+  /** Abort a live attempt before the task row is moved to `cancelled`. */
+  cancelRunning?: (taskId: string) => boolean
   /** Shared host clock; defaults to wall time. Tests pin it. */
   now?: () => Date
 }
@@ -57,6 +59,7 @@ export const ROLLBACK_REASON = 'rollback-unavailable'
 
 export function createHostPorts(deps: HostPortDeps): HostPorts {
   const { tasks, grants = null, project = null, rollback = null, approvals = null } = deps
+  const { cancelRunning } = deps
   const clock = deps.now ?? (() => new Date())
 
   const relay: TaskRelayPort = {
@@ -89,6 +92,9 @@ export function createHostPorts(deps: HostPortDeps): HostPorts {
       }
       const to = input.action === 'cancel' ? 'cancelled' : input.action === 'pause' ? 'paused' : 'running'
       const cancelled = input.action === 'cancel'
+      // Real stop: kill the live child before flipping the row. The transition
+      // stays for idempotency (a non-running task still gets its receipt).
+      if (cancelled) cancelRunning?.(input.taskId)
       const task = tasks.transition(input.taskId, {
         to,
         ...cancelled ? { summary: 'stopped by owner' } : {},

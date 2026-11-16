@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createApprovalStore, createGrantStore } from '@dsh-wfxm/governance'
-import { prepareAssertions } from '@dsh-wfxm/tasks'
+import { createTaskStore, prepareAssertions } from '@dsh-wfxm/tasks'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pkgRoot = join(here, '..')
@@ -39,7 +39,7 @@ if (stale) {
   execFileSync(process.execPath, [tsc, '-p', join(pkgRoot, 'tsconfig.json')], { stdio: 'inherit' })
 }
 
-const { createRuleForeground, createWfxmHost } = await import('../lib/index.js')
+const { createHostPorts, createRuleForeground, createWfxmHost } = await import('../lib/index.js')
 
 let pass = 0
 let fail = 0
@@ -434,6 +434,30 @@ await check('stop cancels the live task and writes a receipt', async () => {
     && stop.result.control.action === 'cancel'
     && task.status === 'cancelled'
     && receipts.length === 1
+})
+
+await check('control cancel aborts the running attempt before transitioning', () => {
+  const dbPath = join(dir, 'control-cancel.sqlite')
+  const tasks = createTaskStore(dbPath)
+  const task = tasks.createTask({ intent: '会被停掉', riskLevel: 'R1' })
+  tasks.claimTask({ owner: 'worker-A', leaseMs: 60_000, now: new Date() })
+  const seen = []
+  const ports = createHostPorts({
+    tasks,
+    now: () => new Date(),
+    cancelRunning: (taskId) => {
+      seen.push('cancelRunning')
+      seen.push(`status:${tasks.getTask(taskId)?.status}`)
+      return true
+    },
+  })
+  const result = ports.control.control({ taskId: task.id, action: 'cancel' })
+  const row = tasks.getTask(task.id)
+  tasks.close()
+  return seen[0] === 'cancelRunning'
+    && seen[1] === 'status:running'
+    && result.status === 'cancelled'
+    && row.status === 'cancelled'
 })
 
 await check('rollback without a checkpoint port fails loudly instead of pretending', async () => {

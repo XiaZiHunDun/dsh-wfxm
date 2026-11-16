@@ -221,6 +221,10 @@
 "连续 N 步无新证据 / 同一工具同参数重复"目前无法确定性计算；v1 只采用"距最后事件的时间"这一可信信号，
 "超预估时长"留待任务对象带 `estimate` 后再做。
 
+**前置已补（2026-11-16，Slice AJ）**：`停止` 现在真的杀子进程——control 先 `cancelRunning` 打断
+executor 的 `AbortSignal`，再落 `cancelled`；worker 见到 `cancelled` 行只释放锁、返回 `skipped:'cancelled'`。
+自动 `paused` 的阻塞点因此解除，但阈值与是否启用仍待 owner 拍板。
+
 **外部实现参考（prime-agent，2026-11-05）**：其 goal 运行时把"预算耗尽"做成显式终态——
 `token_budget / tokens_used / time_used`，续跑上下文分 `continuation / budget-limit / objective-updated`，
 耗尽置 `budget_limited` 并写原因，且 pending continuation 不重复生成

@@ -2048,3 +2048,30 @@ gateway 的 `single-live` 锚定、前台 `DEFAULT_LIVE_STATUSES`、⑤ 的 `def
 
 - **不自动暂停**：`paused` 只改行状态，杀不掉宿主内的 dsh 子进程；子进程完成后 `paused → succeeded` 是非法迁移，会把任务卡死并丢回执。前置是协作式取消（executor 支持外部 abort），另开切片。
 - **不做「N 步无证据 / 同工具同参重复」**：`task_events` 只有生命周期事件，没有逐步工具调用，无法确定性计算。
+
+---
+
+## Slice AJ Spec — 协作式取消（`停止` 真终止子进程，2026-11-16，release `2026.11.16-4`）
+
+## 1. 目标
+
+`停止 <ref>` 必须真的终止宿主里的 dsh 子进程，而不是只改任务行、等子进程跑到超时后撞上非法迁移。
+
+## 2. 链路
+
+`gateway 控制帧 → ① TaskControlPort.cancel → host control()`：先 `cancelRunning(taskId)`（晚绑定 `worker.cancel`），
+再 `transition(cancelled)`；`worker.cancel` 从 `activeAttempts` 取 `AbortController` 并 abort；
+executor 监听 `hooks.signal`，abort → `killChild()`（SIGTERM → `killGraceMs` → SIGKILL），
+checkpoint `aborted`，返回 `{status:'failed', failure:'conflict', summary:'cancelled by owner'}`；
+worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled'`，不 settle、不迁移、不补回执。
+
+## 3. 边界
+
+- `leaseOwner` 已清空但状态是 `cancelled` 时不判 `stale-lease`（取消不是租约丢失）。
+- 取消与「任务刚好成功」的竞争仍由 `transition` 的迁移校验拦住（既有行为）。
+- 未做：把 `paused` 接到同一取消链路（自动暂停仍待 owner 定阈值）。
+
+## 4. 验证
+
+`verify-executor` **20/20**、`verify-tasks` **97/97**、`verify-host` **36/36**、`verify-gateway` **115/115**；
+生产点停待真实长任务验收（`docs/06`）。

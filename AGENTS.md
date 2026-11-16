@@ -193,6 +193,9 @@
   `IngestResult.control` 回传 `{executed, action, status, skipped}`。**74 例（①）/ 66 例（⑤）**，含 ①→⑤ 控制端到端
   （`stop` 后任务 `cancelled` 并写回执、`pause`/`resume` 往返、`status` 无副作用）。
   **边界**：控制命令仅文字形式，签名卡片按钮归 v1.1。
+  **`stop` 是真终止（`2026.11.16-4`）**：`control()` 先 `cancelRunning(taskId)` 打断 executor 的 `AbortSignal`
+  （SIGTERM→SIGKILL）再落 `cancelled`；worker 见到 `cancelled` 行就只释放资源锁并返回 `skipped:'cancelled'`，
+  不再 settle/迁移/补回执。`leaseOwner` 已清空但状态为 `cancelled` 时不算 `stale-lease`。
 - **模块 ① 渠道网关已落地第六片（2026-11-09，session_routes 改名 + 出口脱敏）**：`gateway` **v4/v5/v6** 按 15 §9.3
   三步落地（expand `chat_id` / backfill / contract 重建表，**不合并**；v6 前 `guard` 校验 `chat_id` 非空且无重复 PK，
   半迁移库**拒绝启动**不回退）；PK 改为 `(channel_id, chat_id, session_kind)`，`thread_id` 已删；

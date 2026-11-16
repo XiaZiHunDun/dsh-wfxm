@@ -1398,6 +1398,60 @@ await check('expired leases are reclaimed: requeue while attempts remain, fail w
     && first.failed.includes(exhausted.id)
 })
 
+await check('worker.cancel aborts the active attempt and skips settlement', async () => {
+  const cancelStore = createTaskStore(join(dir, 'cancel.sqlite'))
+  let started = null
+  const worker = createTaskWorker({
+    store: cancelStore,
+    owner: 'worker-A',
+    leaseMs: 30_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    execute: (task, hooks) => new Promise((resolve) => {
+      started = task.id
+      hooks.signal?.addEventListener(
+        'abort',
+        () => resolve({ status: 'failed', failure: 'conflict', summary: 'cancelled by owner' }),
+        { once: true },
+      )
+    }),
+  })
+  const task = cancelStore.createTask({ intent: 'cancel me', riskLevel: 'R1' })
+  const running = worker.runOnce()
+  for (let i = 0; i < 200 && started === null; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  const cancelled = worker.cancel(task.id)
+  const missing = worker.cancel('no-such-task')
+  // Same order as host's control(): abort the child, then flip the row.
+  const row = cancelStore.transition(task.id, {
+    to: 'cancelled',
+    summary: 'stopped by owner',
+    reason: 'control:cancel',
+  })
+  const eventsAfterCancel = cancelStore.listEvents(task.id).length
+  const report = await running
+  const events = cancelStore.listEvents(task.id)
+  const receipts = cancelStore.listReceipts(task.id)
+  const settled = cancelStore.getTask(task.id)
+  cancelStore.close()
+  return started === task.id
+    && cancelled === true
+    && missing === false
+    && row.status === 'cancelled'
+    && report.taskId === task.id
+    && report.outcome === 'skipped'
+    && report.skipped === 'cancelled'
+    && report.failure === null
+    && settled.status === 'cancelled'
+    && events.length === eventsAfterCancel
+    && !events.some((event) => event.type === 'task.completed')
+    // The control transition owns the one `task.receipt`; settling would add
+    // a second one.
+    && receipts.length === 1
+    && events.filter((event) => event.type === 'task.receipt').length === 1
+})
+
 // ---- Slice I: approval gate (hold → approve → resume, reject stays parked) -----
 
 await check('holdForApproval parks a queued task and records the event', () => {

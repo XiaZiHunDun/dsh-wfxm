@@ -20,6 +20,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -73,6 +74,15 @@ const store = createTaskStore(dbPath)
 const stubBin = join(dir, 'stub-dsh.mjs')
 copyFileSync(join(here, 'stub-dsh.mjs'), stubBin)
 chmodSync(stubBin, 0o755)
+
+// A child that records its pid and hangs, so aborting can be proven to kill it.
+const sleepBin = join(dir, 'sleep-dsh.mjs')
+writeFileSync(sleepBin, `#!${process.execPath}
+import { writeFileSync } from 'node:fs'
+writeFileSync(process.env.SLEEP_PIDFILE, String(process.pid))
+setTimeout(() => {}, 60_000)
+`)
+chmodSync(sleepBin, 0o755)
 
 function makeWorker(env, executorOptions = {}, workerOptions = {}) {
   const execute = createDshExecutor({
@@ -395,6 +405,42 @@ await check('losing the lease kills the child and reports conflict', async () =>
   return outcome.status === 'failed'
     && outcome.failure === 'conflict'
     && elapsed < 5_000
+})
+
+// ---- owner stop: abort signal kills the child ----------------------------------------
+
+await check('an aborted signal kills the sleeping child and reports conflict', async () => {
+  const pidFile = join(dir, 'sleep.pid')
+  const controller = new AbortController()
+  const execute = createDshExecutor({
+    dshBin: sleepBin,
+    env: { SLEEP_PIDFILE: pidFile },
+    timeoutMs: 30_000,
+    killGraceMs: 100,
+    heartbeatMs: 50,
+  })
+  const pending = execute(
+    { id: 'cancel-task', intent: 'sleep until the owner stops me', projectId: null },
+    { attempt: 1, heartbeat: () => true, signal: controller.signal },
+  )
+  for (let i = 0; i < 200 && !existsSync(pidFile); i += 1) await sleep(10)
+  const pid = Number(readFileSync(pidFile, 'utf8'))
+  const started = Date.now()
+  controller.abort()
+  const outcome = await pending
+  const elapsed = Date.now() - started
+  let alive = true
+  try {
+    process.kill(pid, 0)
+  } catch {
+    alive = false
+  }
+  return outcome.status === 'failed'
+    && outcome.failure === 'conflict'
+    && outcome.summary === 'cancelled by owner'
+    && elapsed < 5_000
+    && pid > 0
+    && !alive
 })
 
 // ---- teardown ---------------------------------------------------------------------------

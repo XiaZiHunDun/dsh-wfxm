@@ -211,6 +211,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     approvals,
     project: options.project ?? null,
     rollback: options.rollback ?? null,
+    // Late-bound: the worker is constructed below, but cancel is only called
+    // later, after this closure exists.
+    cancelRunning: (taskId) => worker.cancel(taskId),
     now,
   })
 
