@@ -1406,3 +1406,4 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 回写 `spec.md`、`docs/06`、`AGENTS.md §4`、`docs/16 §12.23`
 - [x] B3 v1 静默任务结构化提醒（`2026.11.16-3`）：`task.progress` 带 `stuckAt/stuckPhase/options`，正文给「停止 `<ref>`」；不自动暂停（无协作式取消）；`verify-gateway 115/115`、`verify-host 35/35`（Slice AI）
 - [x] 协作式取消（`2026.11.16-4`）：`停止` 先 abort executor 子进程再落 `cancelled`；worker 遇 `cancelled` 只释放锁并返回 `skipped:'cancelled'`，不再 settle/迁移/补回执；`verify-executor 20`、`verify-tasks 97`、`verify-host 36`（Slice AJ）
+- [x] 纯文本控制命令（`2026.11.16-5`）：英文可裸用、中文必须带 ref 且整句锚定；生产 `停止 bkgg4bba8m` 命中 control，未新建任务；`verify-gateway 116/116`（Slice AK）

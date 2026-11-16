@@ -54,6 +54,25 @@ export const TRIAGE_INTENTS: readonly TriageIntent[] = [
 /** Structured control commands that bypass the model (11 §5.3). */
 export const CONTROL_COMMANDS: readonly string[] = ['stop', 'pause', 'resume', 'rollback', 'status']
 
+/**
+ * Owner-facing aliases for a bare chat command. Chinese is the product language,
+ * and the stall notice tells the owner to reply `停止 <ref>` — without these the
+ * message would be routed as a new task instead of a control frame.
+ */
+const CONTROL_ALIASES: Record<string, string> = {
+  stop: 'stop',
+  pause: 'pause',
+  resume: 'resume',
+  rollback: 'rollback',
+  status: 'status',
+  停止: 'stop',
+  暂停: 'pause',
+  继续: 'resume',
+  恢复: 'resume',
+  回滚: 'rollback',
+  状态: 'status',
+}
+
 export type BypassReason =
   | 'duplicate'
   | 'unpaired'
@@ -199,6 +218,21 @@ function controlCommand(content: Json): string | null {
   for (const key of ['control', 'command']) {
     const value = content[key]
     if (typeof value === 'string' && CONTROL_COMMANDS.includes(value)) return value
+  }
+  // A bare chat command (`停止 <ref>` / `stop <ref>`): the whole message must be
+  // the command plus an optional task ref, so a sentence that merely mentions
+  // 停止 still goes to the model instead of stopping something by accident.
+  const text = content.text
+  if (typeof text === 'string') {
+    // English may stand alone (`stop`); Chinese must carry a ref, because words
+    // like 继续 are ordinary chat ("继续") and must not hijack the conversation.
+    const english = /^\s*(stop|pause|resume|rollback|status)(?:\s+[A-Za-z0-9_-]{4,})?\s*$/i.exec(text)
+    const chinese = /^\s*(停止|暂停|继续|恢复|回滚|状态)\s+[A-Za-z0-9_-]{4,}\s*$/.exec(text)
+    const token = english?.[1] ?? chinese?.[1]
+    if (token !== undefined) {
+      const canonical = CONTROL_ALIASES[token] ?? CONTROL_ALIASES[token.toLowerCase()]
+      if (canonical !== undefined) return canonical
+    }
   }
   return null
 }

@@ -192,7 +192,9 @@
   端口抛错 → `inbox=failed` + `control-unavailable`，决策保留 `targetTaskId`；`RouteTarget.control` 带 `taskId`，
   `IngestResult.control` 回传 `{executed, action, status, skipped}`。**74 例（①）/ 66 例（⑤）**，含 ①→⑤ 控制端到端
   （`stop` 后任务 `cancelled` 并写回执、`pause`/`resume` 往返、`status` 无副作用）。
-  **边界**：控制命令仅文字形式，签名卡片按钮归 v1.1。
+  **边界**：控制命令以裸文本发送（`2026.11.16-5` 起）：英文 `stop/pause/resume/rollback/status`
+  可单独使用；中文 `停止/暂停/继续/恢复/回滚/状态` **必须带任务 ref**（防止「继续」这类日常用语被误判）。
+  签名卡片按钮归 v1.1。
   **`stop` 是真终止（`2026.11.16-4`）**：`control()` 先 `cancelRunning(taskId)` 打断 executor 的 `AbortSignal`
   （SIGTERM→SIGKILL）再落 `cancelled`；worker 见到 `cancelled` 行就只释放资源锁并返回 `skipped:'cancelled'`，
   不再 settle/迁移/补回执。`leaseOwner` 已清空但状态为 `cancelled` 时不算 `stale-lease`。

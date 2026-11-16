@@ -602,6 +602,10 @@ await check('default triage is deterministic and protocol-agnostic', () => {
     && defaultTriage({ ...base, kind: 'control' }) === 'control'
     && defaultTriage({ ...base, content: { event: 'alert' } }) === 'event'
     && defaultTriage({ ...base, content: { control: 'stop' } }) === 'control'
+    && defaultTriage({ ...base, content: { text: '停止 29b3ywszfu' } }) === 'control'
+    && defaultTriage({ ...base, content: { text: 'stop abcd1234' } }) === 'control'
+    && defaultTriage({ ...base, content: { text: '请停止这个任务' } }) === 'chat'
+    && defaultTriage({ ...base, content: { text: '继续' } }) === 'chat'
     && defaultTriage({ ...base, content: { text: '/status' } }) === 'command'
     && defaultTriage({ ...base, content: { text: '磁盘怎么样' } }) === 'chat'
 })
@@ -1599,6 +1603,30 @@ await check('stop on an anchored live task cancels it and records why', async ()
     && /executed \(cancel\)/.test(result.disposition.reason)
     && controlCalls.length === 1
     && controlCalls[0].taskId === 'task_one'
+})
+
+await check('a bare chat 停止 <ref> is a control frame, not a new task', async () => {
+  controlCalls.length = 0
+  const result = await ingestInbound({ store: anchorStore, control: fakeControl }, {
+    channelId: 'cli_anc',
+    msgId: 'evt_ctl_stop_text',
+    externalUserId: 'open_anc',
+    kind: 'message',
+    content: { text: '停止 task_one' },
+    chatId: 'chat_one',
+  })
+  const sentence = defaultTriage({
+    channelId: 'cli_anc',
+    msgId: 'evt_ctl_sentence',
+    content: { text: '请停止这个任务' },
+  })
+  return result.bypassReason === 'control'
+    && result.control.executed === true
+    && result.control.action === 'cancel'
+    && result.disposition.action === 'stop'
+    && controlCalls.length === 1
+    && controlCalls[0].taskId === 'task_one'
+    && sentence === 'chat'
 })
 
 await check('pause and resume map onto the task runtime actions', async () => {

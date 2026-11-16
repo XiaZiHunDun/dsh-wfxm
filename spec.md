@@ -2075,3 +2075,24 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 
 `verify-executor` **20/20**、`verify-tasks` **97/97**、`verify-host` **36/36**、`verify-gateway` **115/115**；
 生产点停待真实长任务验收（`docs/06`）。
+
+---
+
+## Slice AK Spec — 纯文本控制命令（2026-11-16，release `2026.11.16-5`）
+
+## 1. 目标
+
+飞书里直接发 `停止 <ref>` 必须是控制帧，而不是被当成新任务。此前网关只解析结构化
+`content.control`，文本命令全部落进对话/建任务。
+
+## 2. 规则
+
+- 英文 `stop/pause/resume/rollback/status` 可单独出现，也可带 ref；
+- 中文五词必须带 ref（`继续` 单独出现仍是日常对话）；
+- 整条消息锚定匹配，句中提及不劫持；
+- 命中后沿用既有控制链路与「当前线程活任务」的锚定语义，ref 仅用于核对。
+
+## 3. 验证
+
+`verify-gateway 116/116`；生产 `停止 bkgg4bba8m` → `cancelled`（74ms 内 checkpoint `aborted`、子进程消失），
+且未新建任务。
