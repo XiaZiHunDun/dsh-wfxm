@@ -198,6 +198,10 @@
   **`stop` 是真终止（`2026.11.16-4`）**：`control()` 先 `cancelRunning(taskId)` 打断 executor 的 `AbortSignal`
   （SIGTERM→SIGKILL）再落 `cancelled`；worker 见到 `cancelled` 行就只释放资源锁并返回 `skipped:'cancelled'`，
   不再 settle/迁移/补回执。`leaseOwner` 已清空但状态为 `cancelled` 时不算 `stale-lease`。
+  **`resume` 是重新入队（`2026.11.16-7`）**：`继续 <ref>` 走 `resumeTask()`，`paused → queued` 并清租约、
+  `attempt = 0`、清 `started_at`，worker 下一 tick 从头执行（不是断点续跑）。
+  **静默自动暂停**：`running` 超过 `DSH_WFXM_TASK_STALL_MINUTES`（默认 15）无事件 → 先杀子进程再 `paused`，
+  受 `DSH_WFXM_WATCHDOG_PAUSE`（默认开，`0` 关）控制。
 - **模块 ① 渠道网关已落地第六片（2026-11-09，session_routes 改名 + 出口脱敏）**：`gateway` **v4/v5/v6** 按 15 §9.3
   三步落地（expand `chat_id` / backfill / contract 重建表，**不合并**；v6 前 `guard` 校验 `chat_id` 非空且无重复 PK，
   半迁移库**拒绝启动**不回退）；PK 改为 `(channel_id, chat_id, session_kind)`，`thread_id` 已删；

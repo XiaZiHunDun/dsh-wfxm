@@ -306,6 +306,7 @@ async function main() {
             ? {
                 milestonesMs: config.taskMilestonesMin.map((minute) => minute * 60_000),
                 stallMs: config.taskStallMinutes === 0 ? null : config.taskStallMinutes * 60_000,
+                pauseOnStall: config.watchdogPause,
               }
             : null,
           logger: {
@@ -319,7 +320,11 @@ async function main() {
           foreground: config.foreground,
           runner: config.foreground === 'rule' ? null : config.decideRunner,
           progress: config.taskProgress
-            ? { milestonesMin: config.taskMilestonesMin, stallMin: config.taskStallMinutes }
+            ? {
+                milestonesMin: config.taskMilestonesMin,
+                stallMin: config.taskStallMinutes,
+                pauseOnStall: config.watchdogPause,
+              }
             : 'off',
         })
       },

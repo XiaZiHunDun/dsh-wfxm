@@ -1134,6 +1134,86 @@ await check('a running task without a live thread is skipped and stays quiet', a
     && transport.sent.filter((item) => item.topic === 'task.progress').length === 0
 })
 
+await check('watchdog pause aborts the live attempt before moving the row to paused', async () => {
+  // Task events are stamped with wall time, so anchor the pinned clock ahead of
+  // it and jump 16 minutes; silence is measured from the real `task.started`.
+  let clock = new Date(Date.now() + 60_000)
+  let started = null
+  let statusAtAbort = null
+  let hostRef = null
+  const { host } = makeHost({
+    options: {
+      now: () => new Date(clock),
+      progress: { stallMs: 15 * 60_000, pauseOnStall: true },
+      executor: (task, hooks) => new Promise((resolve) => {
+        started = task.id
+        hooks.signal?.addEventListener('abort', () => {
+          // The row must still be `running` here: abort is the first of the two
+          // writes, so a paused row would mean the transition ran first.
+          statusAtAbort = hostRef.stores.tasks.getTask(task.id)?.status ?? null
+          resolve({ status: 'failed', failure: 'conflict', summary: 'aborted by watchdog' })
+        }, { once: true })
+      }),
+    },
+  })
+  hostRef = host
+  await pair(host)
+  const { result } = await say(host, '一直不发事件的卡住任务')
+  const taskId = result.foreground.taskId
+  const running = host.runWorkerOnce()
+  for (let i = 0; i < 200 && started === null; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  clock = new Date(clock.getTime() + 16 * 60_000)
+  const pumped = await host.pump()
+  const afterPump = host.stores.tasks.getTask(taskId)
+  const report = await running
+  host.close()
+  return started === taskId
+    && pumped.progress?.stalled.length === 1
+    && statusAtAbort === 'running'
+    && afterPump.status === 'paused'
+    && report.outcome === 'skipped'
+    && report.skipped === 'paused'
+})
+
+await check('a failed watchdog pause transition is logged and swallowed', async () => {
+  let clock = new Date(Date.now() + 60_000)
+  const warnings = []
+  const { host } = makeHost({
+    options: {
+      now: () => new Date(clock),
+      progress: { stallMs: 15 * 60_000, pauseOnStall: true },
+      logger: { warn: (message) => warnings.push(message) },
+    },
+  })
+  await pair(host)
+  const { result } = await say(host, '检测后已经结束的任务')
+  const taskId = result.foreground.taskId
+  host.stores.tasks.claimTask({ owner: host.worker.owner, leaseMs: 600_000, now: clock })
+  clock = new Date(clock.getTime() + 16 * 60_000)
+  const original = host.stores.tasks.transition
+  host.stores.tasks.transition = () => {
+    throw new Error('task already finished')
+  }
+  let threw = false
+  let pumped = null
+  try {
+    pumped = await host.pump()
+  } catch {
+    threw = true
+  } finally {
+    host.stores.tasks.transition = original
+  }
+  const status = host.stores.tasks.getTask(taskId)?.status
+  const ok = !threw
+    && pumped?.progress?.stalled.length === 1
+    && status === 'running'
+    && warnings.some((message) => /watchdog pause skipped/.test(message))
+  host.close()
+  return ok
+})
+
 // ---- AR32 / AR33：组合根里不许出现表名、SQL 或渠道协议名 ------------------------------
 
 await check('plugins/host/src contains no SQL, table names or channel protocol nouns', () => {

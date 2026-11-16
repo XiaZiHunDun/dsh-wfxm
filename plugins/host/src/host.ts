@@ -79,6 +79,11 @@ export interface HostProgressOptions {
   milestonesMs?: readonly number[]
   /** Silence before the "maybe stuck" notice; null or <= 0 disables it. */
   stallMs?: number | null
+  /**
+   * B3 v2: kill the stalled child and pause the row after the notice is queued.
+   * Off by default; `DSH_WFXM_WATCHDOG_PAUSE` turns it on in production.
+   */
+  pauseOnStall?: boolean
   /** Max running tasks scanned per pump; defaults to 50. */
   limit?: number
 }
@@ -289,6 +294,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       now,
       ...progressOptions.milestonesMs === undefined ? {} : { milestonesMs: progressOptions.milestonesMs },
       ...progressOptions.stallMs === undefined ? {} : { stallMs: progressOptions.stallMs },
+      ...progressOptions.pauseOnStall === undefined ? {} : { pauseOnStall: progressOptions.pauseOnStall },
       ...progressOptions.limit === undefined ? {} : { limit: progressOptions.limit },
       tasks: {
         listRunningTasks(limit?: number): RunningTaskSnapshot[] {
@@ -368,6 +374,28 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     return expired
   }
 
+  /**
+   * B3 v2: a stalled task is aborted first, then parked in `paused`. The order
+   * matters — `worker.cancel` only signals the child, so the row must not lie
+   * about being paused while the executor still runs. Either write can lose a
+   * race with completion/cancellation, so a failure is logged and skipped
+   * (the notice is already queued and its dedupe key prevents a retry storm).
+   */
+  function pauseStalled(stalled: TaskProgressReport['stalled']): void {
+    for (const item of stalled) {
+      try {
+        worker.cancel(item.taskId)
+        tasks.transition(item.taskId, {
+          to: 'paused',
+          reason: 'watchdog:stalled',
+          summary: `stalled: no task event for ${Math.round(item.silentMs / 60_000)}min`,
+        })
+      } catch (error) {
+        logger?.warn?.(`watchdog pause skipped for ${item.taskId}: ${messageOf(error)}`)
+      }
+    }
+  }
+
   async function pump(): Promise<HostPumpReport> {
     // Settle expired approvals first: a task released here produces its receipt
     // in this same tick instead of the next one.
@@ -376,6 +404,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     // Slice R: enqueue progress notices before the dispatcher claims, so a due
     // reminder goes out in this same tick instead of waiting for the next one.
     const progress = progressRelay === null ? null : progressRelay.pump()
+    // B3 v2: pause only after the notice is safely queued, so the owner always
+    // learns why the task stopped.
+    if (progress !== null) pauseStalled(progress.stalled)
     const dispatch = dispatcher === null ? null : await dispatcher.runOnce()
     return { expired, receipts, progress, dispatch }
   }

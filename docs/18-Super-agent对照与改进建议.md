@@ -223,7 +223,23 @@
 
 **前置已补（2026-11-16，Slice AJ）**：`停止` 现在真的杀子进程——control 先 `cancelRunning` 打断
 executor 的 `AbortSignal`，再落 `cancelled`；worker 见到 `cancelled` 行只释放锁、返回 `skipped:'cancelled'`。
-自动 `paused` 的阻塞点因此解除，但阈值与是否启用仍待 owner 拍板。
+
+#### B3 v2 实施记（2026-11-16，release `2026.11.16-7`）
+
+自动暂停与一键恢复落地，默认值由 owner 授权我选定：
+
+- **阈值**：沿用 `DSH_WFXM_TASK_STALL_MINUTES`（默认 15 分钟）。单次 dsh 调用有 10 分钟超时，
+  超时一定会落事件，所以「running 且 15 分钟无任何事件」基本等价于真卡死，误杀概率低。
+- **开关**：`DSH_WFXM_WATCHDOG_PAUSE`（默认开，`0`/`false` 关）；关闭后回到 v1 的「只提醒」。
+- **动作**：先 `worker.cancel(taskId)` 杀子进程，再迁 `paused`（顺序不能反：行先变 paused 而进程还在，
+  完成时会撞非法迁移）。通知在入队后才暂停，保证 owner 一定能看到原因。
+- **恢复**：`继续 <ref>` → `resumeTask()` 把 `paused → queued`、清租约、`attempt=0`、清 `started_at`
+  （不清的话 `claimTask` 的 COALESCE 会沿用旧起点，恢复后立刻再次判定静默），worker 从头重跑。
+- **取舍**：恢复是从头执行，不是断点续跑——dsh 单次调用不可中断续跑，这一点在通知里已明说。
+
+生产演练（阈值临时降到 1 分钟，演练后已还原 15）：任务 `tg66pk2dmq` 在启动后 **60s** 自动
+`paused`、checkpoint `aborted`、`sleep 3600` 子进程消失；`resumeTask` 后 150ms 内重新 `running`
+并拉起新子进程，60s 后再次自动暂停——暂停/恢复循环稳定。
 
 **外部实现参考（prime-agent，2026-11-05）**：其 goal 运行时把"预算耗尽"做成显式终态——
 `token_budget / tokens_used / time_used`，续跑上下文分 `continuation / budget-limit / objective-updated`，

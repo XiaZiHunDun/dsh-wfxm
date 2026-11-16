@@ -52,7 +52,13 @@ export interface SnapshotPort {
   capture(task: Task): Promise<{ snapshotId: string; baselineRef?: string | null }>
 }
 
-export type WorkerSkipReason = 'idle' | 'snapshot-refused' | 'stale-lease' | 'resource-conflict' | 'cancelled'
+export type WorkerSkipReason
+  = | 'idle'
+    | 'snapshot-refused'
+    | 'stale-lease'
+    | 'resource-conflict'
+    | 'cancelled'
+    | 'paused'
 
 export interface TaskRunReport {
   taskId: string | null
@@ -417,14 +423,16 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     }
 
     // Another worker may have taken over while we ran; never overwrite it.
-    // A cancelled row has already had its lease cleared by the transition, so
-    // that case is reported as `cancelled` below instead of `stale-lease`.
+    // A cancelled/paused row has already had its lease cleared by the
+    // transition, so that case is reported below instead of `stale-lease`.
     const latest = store.getTask(task.id)
-    if (latest?.leaseOwner !== owner && latest?.status !== 'cancelled') return stale()
+    if (latest?.leaseOwner !== owner && latest?.status !== 'cancelled' && latest?.status !== 'paused') {
+      return stale()
+    }
 
-    // Owner "停止": `control()` already moved the row to `cancelled`; settling
-    // now would attempt cancelled → succeeded/failed. Release and skip instead.
-    if (latest?.status === 'cancelled') {
+    // Owner "停止" / watchdog pause: the row already left `running`, so settling
+    // now would attempt cancelled|paused → succeeded/failed. Release and skip.
+    if (latest?.status === 'cancelled' || latest?.status === 'paused') {
       try {
         store.releaseTaskResourceLocks(task.id)
       } catch (error) {
@@ -434,7 +442,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         taskId: task.id,
         outcome: 'skipped',
         failure: null,
-        skipped: 'cancelled',
+        skipped: latest.status,
         attempt: task.attempt,
         wakeAt: null,
       }

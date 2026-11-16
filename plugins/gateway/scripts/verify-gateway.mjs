@@ -2494,6 +2494,7 @@ await check('a silent task gets one stall notice per event sequence', () => {
   const rows = stallStore.listOutbox().filter((row) => row.topic === 'task.progress' && row.payload.stall === true)
   const stalled = rows[0]
   const result = first.enqueued === 2
+    && first.stalled.length === 0
     && again.skippedDuplicate >= 1
     && afterEvent.enqueued === 1
     && rows.length === 2
@@ -2508,6 +2509,48 @@ await check('a silent task gets one stall notice per event sequence', () => {
     && /回复「停止 ref-progress」/.test(stalled.payload.text)
     && !/已暂停|paused/.test(stalled.payload.text)
   stallStore.close()
+  return result
+})
+
+await check('pauseOnStall reports one stalled task and promises the auto-pause', () => {
+  const path = join(dir, 'progress-pause.sqlite')
+  const pauseStore = createGatewayStore(path)
+  const thread = pauseStore.resolveThread({ channelId: 'feishu', chatId: 'c4', rootMsgId: 'r4' })
+  const relay = createTaskProgressRelay({
+    store: pauseStore,
+    tasks: {
+      listRunningTasks: () => [progressSnapshot({
+        threadIds: [thread.id],
+        lastEventSeq: 7,
+        lastEventType: 'task.checkpoint',
+      })],
+    },
+    now: progressNow,
+    milestonesMs: [120_000, 600_000],
+    stallMs: 900_000,
+    pauseOnStall: true,
+  })
+  progressClock = new Date('2026-11-12T00:16:00.000Z')
+  const first = relay.pump()
+  const again = relay.pump()
+  const rows = pauseStore
+    .listOutbox()
+    .filter((row) => row.topic === 'task.progress' && row.payload.stall === true)
+  const stalled = rows[0]
+  const result = first.enqueued === 2
+    && first.stalled.length === 1
+    && first.stalled[0].taskId === 'task_progress'
+    && first.stalled[0].silentMs === 16 * 60_000
+    // The dedupe key is unchanged, so the next tick must not queue/pause twice.
+    && again.stalled.length === 0
+    && again.skippedDuplicate >= 1
+    && rows.length === 1
+    && /已自动暂停/.test(stalled.payload.text)
+    && /回复「继续 ref-progress」重新执行/.test(stalled.payload.text)
+    && !/不会自动停止/.test(stalled.payload.text)
+    // Paused, so the offered actions are resume/stop, not wait/stop.
+    && stalled.payload.options.join(',') === 'resume,stop'
+  pauseStore.close()
   return result
 })
 

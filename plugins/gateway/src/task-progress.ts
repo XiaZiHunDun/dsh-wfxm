@@ -8,10 +8,11 @@
  *   for `stallMs`, naming the lifecycle phase it stopped at and the one action
  *   that actually stops it (`停止 <ref>`).
  *
- * The stall notice deliberately does **not** pause the task: the row would say
- * `paused` while the dsh child keeps running, and its completion would then hit
- * an illegal `paused → succeeded` transition. Cooperative cancellation is the
- * prerequisite, so v1 only tells the owner where it is stuck.
+ * v1 only tells the owner where it is stuck. B3 v2 adds the opt-in
+ * `pauseOnStall`: once cooperative cancellation exists, the host may abort the
+ * child and pause the row, so the notice promises "已自动暂停" and names
+ * `继续 <ref>` as the way back. The relay still never touches ⑤'s tables; it
+ * only reports which tasks stalled so the host can do both writes.
  *
  * ① owns `outbox`, so it enqueues the messages and deduplicates them by
  * `dedupe_key`. It never reads ⑤'s tables: the host implements the port below
@@ -51,6 +52,12 @@ export interface TaskProgressOptions {
   milestonesMs?: readonly number[]
   /** Silence before the "maybe stuck" notice; `null` or `<= 0` disables it. */
   stallMs?: number | null
+  /**
+   * B3 v2: the host will pause a stalled task (and kill its child) after this
+   * pump, so the text promises the pause instead of "不会自动停止". Defaults to
+   * `false`: library behaviour without the host hook is unchanged.
+   */
+  pauseOnStall?: boolean
   /** Max running tasks scanned per pump; defaults to 50. */
   limit?: number
 }
@@ -60,6 +67,8 @@ export interface TaskProgressReport {
   enqueued: number
   skippedNoThread: number
   skippedDuplicate: number
+  /** Tasks whose stall notice was enqueued in this tick; the host pauses them. */
+  stalled: Array<{ taskId: string; silentMs: number }>
 }
 
 export interface TaskProgressRelay {
@@ -107,6 +116,7 @@ export function createTaskProgressRelay(options: TaskProgressOptions): TaskProgr
   const now = options.now ?? (() => new Date())
   const milestones = [...(options.milestonesMs ?? DEFAULT_MILESTONES_MS)].sort((a, b) => a - b)
   const stallMs = options.stallMs === undefined ? DEFAULT_STALL_MS : options.stallMs
+  const pauseOnStall = options.pauseOnStall ?? false
   const limit = options.limit ?? 50
 
   const enqueue = (
@@ -133,6 +143,7 @@ export function createTaskProgressRelay(options: TaskProgressOptions): TaskProgr
         enqueued: 0,
         skippedNoThread: 0,
         skippedDuplicate: 0,
+        stalled: [],
       }
       const at = now()
 
@@ -178,9 +189,12 @@ export function createTaskProgressRelay(options: TaskProgressOptions): TaskProgr
             const seq = snapshot.lastEventSeq ?? 0
             const ref = refOf(snapshot)
             const phase = phaseOf(snapshot.lastEventType)
-            const text = `任务 ${ref} 已 ${minutes(silentMs)} 分钟没有新事件，`
-              + `卡在「${phase}」，已运行 ${minutes(elapsedMs)} 分钟。`
-              + `不会自动停止：回复「停止 ${ref}」可取消，或继续等待。`
+            const text = pauseOnStall
+              ? `任务 ${ref} 已 ${minutes(silentMs)} 分钟没有新事件，`
+                + `卡在「${phase}」，已自动暂停；回复「继续 ${ref}」重新执行（会从头开始）。`
+              : `任务 ${ref} 已 ${minutes(silentMs)} 分钟没有新事件，`
+                + `卡在「${phase}」，已运行 ${minutes(elapsedMs)} 分钟。`
+                + `不会自动停止：回复「停止 ${ref}」可取消，或继续等待。`
             const outcome = enqueue(
               snapshot,
               threadId,
@@ -194,12 +208,14 @@ export function createTaskProgressRelay(options: TaskProgressOptions): TaskProgr
                 silentMs,
                 stuckAt: snapshot.lastEventType ?? null,
                 stuckPhase: phase,
-                options: ['wait', 'stop'],
+                options: pauseOnStall ? ['resume', 'stop'] : ['wait', 'stop'],
                 text,
               },
             )
-            if (outcome === 'enqueued') report.enqueued += 1
-            else report.skippedDuplicate += 1
+            if (outcome === 'enqueued') {
+              report.enqueued += 1
+              if (pauseOnStall) report.stalled.push({ taskId: snapshot.taskId, silentMs })
+            } else report.skippedDuplicate += 1
           }
         }
       }

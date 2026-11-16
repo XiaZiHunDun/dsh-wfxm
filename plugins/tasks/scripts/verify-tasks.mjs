@@ -1452,6 +1452,90 @@ await check('worker.cancel aborts the active attempt and skips settlement', asyn
     && events.filter((event) => event.type === 'task.receipt').length === 1
 })
 
+await check('worker skips settlement when the watchdog paused the attempt', async () => {
+  const pauseStore = createTaskStore(join(dir, 'pause-skip.sqlite'))
+  let started = null
+  const worker = createTaskWorker({
+    store: pauseStore,
+    owner: 'worker-A',
+    leaseMs: 30_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    execute: (task, hooks) => new Promise((resolve) => {
+      started = task.id
+      hooks.signal?.addEventListener(
+        'abort',
+        () => resolve({ status: 'failed', failure: 'conflict', summary: 'paused by watchdog' }),
+        { once: true },
+      )
+    }),
+  })
+  const task = pauseStore.createTask({ intent: 'pause me', riskLevel: 'R1' })
+  const running = worker.runOnce()
+  for (let i = 0; i < 200 && started === null; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  worker.cancel(task.id)
+  // Same order as the host watchdog: abort the child, then flip the row.
+  const paused = pauseStore.transition(task.id, { to: 'paused', reason: 'watchdog:stalled' })
+  const eventsAfterPause = pauseStore.listEvents(task.id).length
+  const report = await running
+  const events = pauseStore.listEvents(task.id)
+  const receipts = pauseStore.listReceipts(task.id)
+  const settled = pauseStore.getTask(task.id)
+  pauseStore.close()
+  return started === task.id
+    && paused.status === 'paused'
+    && report.outcome === 'skipped'
+    && report.skipped === 'paused'
+    && report.failure === null
+    && settled.status === 'paused'
+    && events.length === eventsAfterPause
+    && !events.some((event) => event.type === 'task.completed' || event.type === 'task.failed')
+    && receipts.length === 0
+})
+
+await check('resumeTask re-queues a paused task with a fresh attempt budget', () => {
+  const resumeStore = createTaskStore(join(dir, 'resume.sqlite'))
+  const task = resumeStore.createTask({ intent: 'resume me', riskLevel: 'R1' })
+  const claimed = resumeStore.claimTask({ owner: 'worker-A', leaseMs: 60_000, now: workerNow() })
+  resumeStore.transition(task.id, { to: 'paused', reason: 'watchdog:stalled' })
+  const paused = resumeStore.getTask(task.id)
+  const resumed = resumeStore.resumeTask(task.id)
+  const event = resumeStore.listEvents(task.id)
+    .filter((item) => item.type === 'task.resumed')
+    .pop()
+  // The lease, wake time and attempt budget are gone: the next claim is immediate.
+  const reclaimed = resumeStore.claimTask({ owner: 'worker-B', leaseMs: 60_000, now: workerNow() })
+  resumeStore.close()
+  return claimed.id === task.id
+    && paused.status === 'paused'
+    && paused.attempt === 1
+    && resumed.status === 'queued'
+    && resumed.attempt === 0
+    && resumed.leaseOwner === null
+    && resumed.leaseExpiresAt === null
+    && resumed.startedAt === null
+    && event !== undefined
+    && event.payload.from === 'paused'
+    && event.payload.to === 'queued'
+    && event.payload.reason === 'control:resume'
+    && reclaimed?.id === task.id
+    && reclaimed.attempt === 1
+})
+
+await check('resumeTask refuses a task that is not paused', () => {
+  const resumeStore = createTaskStore(join(dir, 'resume-running.sqlite'))
+  const task = resumeStore.createTask({ intent: 'still running', riskLevel: 'R1' })
+  resumeStore.claimTask({ owner: 'worker-A', leaseMs: 60_000, now: workerNow() })
+  assert.throws(
+    () => resumeStore.resumeTask(task.id),
+    (error) => error instanceof TaskError && error.code === 'invalid-transition',
+  )
+  resumeStore.close()
+  return true
+})
+
 // ---- Slice I: approval gate (hold → approve → resume, reject stays parked) -----
 
 await check('holdForApproval parks a queued task and records the event', () => {

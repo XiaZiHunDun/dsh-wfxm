@@ -461,6 +461,13 @@ export interface TaskStore {
   resumeFromApproval(input: ResumeFromApprovalInput): ResumeFromApprovalResult
 
   /**
+   * B3 v2 owner "继续" on a watchdog-paused task: `paused → queued`, lease and
+   * wake time cleared, `attempt` reset so the re-run gets a fresh budget.
+   * Throws `invalid-transition` unless the row is currently `paused`.
+   */
+  resumeTask(taskId: string): Task
+
+  /**
    * Worker lease API (13 §3.3). `claimTask` is the only way a task enters
    * `running` on its own: it picks the oldest wakeable `queued` row, takes the
    * lease and increments `attempt` in one transaction.
@@ -1197,6 +1204,16 @@ export function createTaskStore(dbPath: string): TaskStore {
            next_attempt_at = ?, finished_at = NULL
      WHERE id = ? AND status = 'waiting_approval'
   `)
+  // B3 v2 owner resume. `started_at` is cleared too: `claimTask` keeps the old
+  // value via COALESCE, which would make the progress watchdog measure the new
+  // run against the previous start and pause it almost immediately.
+  const resumeTaskRow = db.prepare(`
+    UPDATE tasks
+       SET status = 'queued', attempt = 0, lease_owner = NULL,
+           lease_expires_at = NULL, next_attempt_at = NULL,
+           started_at = NULL, finished_at = NULL
+     WHERE id = ? AND status = 'paused'
+  `)
 
   const getTask = (id: string): Task | null => {
     const row = selectTask.get(id) as TaskRow | undefined
@@ -1387,6 +1404,31 @@ export function createTaskStore(dbPath: string): TaskStore {
     return resumed
       ? { resumed: true, task: after }
       : { resumed: false, task: after, reason: 'not-waiting' }
+  }
+
+  /**
+   * B3 v2: the owner replied `继续 <ref>` to a watchdog pause. Unlike
+   * `transition`, this resets the attempt counter — the resume is the owner's
+   * explicit grant of a fresh retry budget, so a task that exhausted its
+   * attempts while stalled can run again from the top.
+   */
+  function resumeTask(taskId: string): Task {
+    const task = getTask(taskId)
+    if (task === null) throw new TaskError('invalid-task', `task ${taskId} not found`)
+    if (task.status !== 'paused') {
+      throw new TaskError(
+        'invalid-transition',
+        `only a paused task can be resumed; ${task.id} is ${task.status}`,
+      )
+    }
+    return db.transaction(() => {
+      const changed = resumeTaskRow.run(task.id)
+      if (changed.changes !== 1) {
+        throw new TaskError('invalid-transition', `task ${task.id} is no longer paused`)
+      }
+      appendEvent(task.id, 'task.resumed', { from: 'paused', to: 'queued', reason: 'control:resume' })
+      return getTask(task.id) as Task
+    }).immediate()
   }
 
   /** Shared by `transition` and lease recovery (recovery must also write a receipt). */
@@ -1907,6 +1949,8 @@ export function createTaskStore(dbPath: string): TaskStore {
     holdForApproval,
 
     resumeFromApproval,
+
+    resumeTask,
 
     beginCheckpoint,
 

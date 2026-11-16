@@ -2096,3 +2096,26 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 
 `verify-gateway 116/116`；生产 `停止 bkgg4bba8m` → `cancelled`（74ms 内 checkpoint `aborted`、子进程消失），
 且未新建任务。
+
+---
+
+## Slice AL Spec — B3 v2 静默自动暂停与一键恢复（2026-11-16，release `2026.11.16-7`）
+
+## 1. 默认值（owner 授权选定）
+
+- 阈值：复用 `DSH_WFXM_TASK_STALL_MINUTES`，默认 **15 分钟**（单次 dsh 调用 10 分钟超时，超时必落事件，
+  故 15 分钟无事件≈真卡死）；
+- 开关：`DSH_WFXM_WATCHDOG_PAUSE`，默认 **开**，`0`/`false` 关闭回到 v1 只提醒；
+- 恢复：`继续 <ref>`，**从头执行**（dsh 单次调用不可断点续跑，通知里已写明）。
+
+## 2. 机制
+
+① 先入队「已自动暂停」通知（`stalled` 只在真正入队时上报）→ host 对每个 stalled 执行
+`worker.cancel()` 再 `transition(paused)`；`paused → queued` 由 `resumeTask()` 承担（清租约、
+`attempt=0`、清 `started_at`）；worker 见 `paused|cancelled` 只释放锁并 `skipped`。
+
+## 3. 验证
+
+单测：gateway 117、tasks 100、host 38、executor 20、serve 12。
+生产（阈值临时 1 分钟）：`tg66pk2dmq` 60s 自动暂停 + 子进程消失；`resumeTask` 150ms 内重新
+`running` 并拉起新子进程，60s 后再次暂停。

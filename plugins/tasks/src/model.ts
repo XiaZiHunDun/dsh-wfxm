@@ -249,7 +249,9 @@ export const ALLOWED_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   running: ['queued', 'waiting_approval', 'waiting_input', 'paused', 'succeeded', 'failed', 'cancelled'],
   waiting_approval: ['running', 'paused', 'failed', 'cancelled'],
   waiting_input: ['running', 'paused', 'failed', 'cancelled'],
-  paused: ['running', 'failed', 'cancelled'],
+  // `paused → queued` is the owner resume edge (B3 v2): `resumeTask` re-queues
+  // a watchdog-paused task so the worker can claim it from the top.
+  paused: ['running', 'queued', 'failed', 'cancelled'],
   succeeded: [],
   failed: [],
   cancelled: [],

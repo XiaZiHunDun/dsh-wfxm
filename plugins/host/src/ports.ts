@@ -90,7 +90,12 @@ export function createHostPorts(deps: HostPortDeps): HostPorts {
         })
         return { status: tasks.getTask(input.taskId)?.status ?? 'unknown' }
       }
-      const to = input.action === 'cancel' ? 'cancelled' : input.action === 'pause' ? 'paused' : 'running'
+      // B3 v2: "继续" re-queues a paused task (fresh attempt budget) instead of
+      // forcing it to `running`; only the worker may claim it into `running`.
+      if (input.action === 'resume') {
+        return { status: tasks.resumeTask(input.taskId).status }
+      }
+      const to = input.action === 'cancel' ? 'cancelled' : 'paused'
       const cancelled = input.action === 'cancel'
       // Real stop: kill the live child before flipping the row. The transition
       // stays for idempotency (a non-running task still gets its receipt).
