@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createApprovalStore, createGrantStore } from '@dsh-wfxm/governance'
+import { createChangeStore } from '@dsh-wfxm/changes'
 import { createReminderStore } from '@dsh-wfxm/reminder'
 import { createTaskStore, prepareAssertions } from '@dsh-wfxm/tasks'
 
@@ -97,7 +98,7 @@ function makeTransport() {
 /** One fresh host + DB per test, so nothing leaks between cases. */
 function makeHost(overrides = {}) {
   hostSeq += 1
-  const dbPath = join(dir, `host-${hostSeq}.sqlite`)
+  const dbPath = overrides.dbPath ?? join(dir, `host-${hostSeq}.sqlite`)
   const transport = overrides.transport ?? makeTransport()
   const calls = []
   const executor = overrides.executor ?? ((task) => {
@@ -1451,6 +1452,150 @@ await check('a reminder for a missing thread is dropped without guessing a chat'
   host.close()
   reminders.close()
   return ok
+})
+
+// ---- Slice AV: 启动恢复（changes 半应用台账） ---------------------------------
+
+await check('AV 1: startup recovery keeps a change whose task already succeeded', async () => {
+  hostSeq += 1
+  const dbPath = join(dir, `host-${hostSeq}.sqlite`)
+  const changes = createChangeStore(dbPath)
+  const { host } = makeHost({ dbPath, options: { changes } })
+  const task = host.stores.tasks.createTask({ intent: '已完成但没记账', riskLevel: 'R1' })
+  host.stores.tasks.transition(task.id, { to: 'running' })
+  host.stores.tasks.transition(task.id, { to: 'succeeded', summary: 'already finished' })
+  changes.begin({ taskId: task.id, target: '/srv/app' })
+
+  const report = await host.recoverChanges()
+  const row = changes.getByTask(task.id)
+  const ok = report.kept === 1
+    && report.rolledBack === 0
+    && report.failed === 0
+    && row?.status === 'kept'
+    && host.stores.tasks.getTask(task.id).status === 'succeeded'
+  host.close()
+  changes.close()
+  return ok
+})
+
+await check('AV 2: a failed task is rolled back through the preimage port, not by guessing', async () => {
+  hostSeq += 1
+  const dbPath = join(dir, `host-${hostSeq}.sqlite`)
+  const changes = createChangeStore(dbPath)
+  const rolled = []
+  const { host } = makeHost({
+    dbPath,
+    options: {
+      changes,
+      rollback: {
+        rollback(input) {
+          rolled.push(input)
+          return []
+        },
+      },
+    },
+  })
+  const task = host.stores.tasks.createTask({ intent: '改坏了一半', riskLevel: 'R2' })
+  host.stores.tasks.transition(task.id, { to: 'running' })
+  host.stores.tasks.transition(task.id, { to: 'failed', summary: 'executor failed' })
+  changes.begin({ taskId: task.id, target: '/srv/app' })
+  changes.markFailed(task.id, 'executor failed')
+
+  const report = await host.recoverChanges()
+  const row = changes.getByTask(task.id)
+  const ok = report.rolledBack === 1
+    && rolled.length === 1
+    && rolled[0].taskId === task.id
+    && row?.status === 'rolled_back'
+    && row?.rollbackStatus === 'done'
+  host.close()
+  changes.close()
+  return ok
+})
+
+await check('AV 3: a recorded snapshot restores the workspace instead of replaying preimages', async () => {
+  hostSeq += 1
+  const dbPath = join(dir, `host-${hostSeq}.sqlite`)
+  const changes = createChangeStore(dbPath)
+  const restored = []
+  const rolled = []
+  const { host } = makeHost({
+    dbPath,
+    options: {
+      changes,
+      restoreWorkspace: (snapshotId, taskId) => {
+        restored.push({ snapshotId, taskId })
+      },
+      rollback: {
+        rollback(input) {
+          rolled.push(input)
+          return []
+        },
+      },
+    },
+  })
+  const task = host.stores.tasks.createTask({ intent: 'R3 半应用', riskLevel: 'R3' })
+  host.stores.tasks.transition(task.id, { to: 'running' })
+  host.stores.tasks.transition(task.id, { to: 'failed', summary: 'boom' })
+  changes.begin({ taskId: task.id, target: '/srv/app', snapshotId: 'snap_av_host' })
+
+  const report = await host.recoverChanges()
+  const ok = report.rolledBack === 1
+    && restored.length === 1
+    && restored[0].snapshotId === 'snap_av_host'
+    && restored[0].taskId === task.id
+    && rolled.length === 0
+    && changes.getByTask(task.id)?.status === 'rolled_back'
+  host.close()
+  changes.close()
+  return ok
+})
+
+await check('AV 4: a rollback that cannot run is recorded as failed and warned, never retried in-process', async () => {
+  hostSeq += 1
+  const dbPath = join(dir, `host-${hostSeq}.sqlite`)
+  const changes = createChangeStore(dbPath)
+  const warns = []
+  const { host } = makeHost({
+    dbPath,
+    options: {
+      changes,
+      restoreWorkspace: () => {
+        throw new Error('restic locator cannot be restored')
+      },
+      logger: { warn: (message) => warns.push(message) },
+    },
+  })
+  const task = host.stores.tasks.createTask({ intent: '快照还不了', riskLevel: 'R3' })
+  host.stores.tasks.transition(task.id, { to: 'running' })
+  host.stores.tasks.transition(task.id, { to: 'failed', summary: 'boom' })
+  changes.begin({ taskId: task.id, target: '/srv/app', snapshotId: 'restic:abc:/srv/app' })
+
+  const report = await host.recoverChanges()
+  const row = changes.getByTask(task.id)
+  const second = await host.recoverChanges()
+  const ok = report.failed === 1
+    && row?.rollbackStatus === 'failed'
+    && row?.detail.includes('restic locator cannot be restored')
+    && warns.some((message) => message.includes('rollback failed'))
+    && second.failed === 0
+  host.close()
+  changes.close()
+  return ok
+})
+
+await check('AV 5: without a change store recovery is a quiet no-op', async () => {
+  const { host } = makeHost()
+  const report = await host.recoverChanges()
+  host.close()
+  return report.kept === 0 && report.rolledBack === 0 && report.failed === 0
+})
+
+await check('AV 6: serve restores half-applied work before the worker re-queues anything', async () => {
+  const serveSource = readFileSync(join(pkgRoot, '..', '..', 'scripts', 'serve.mjs'), 'utf8')
+  const changesAt = serveSource.indexOf('host.recoverChanges()')
+  const workerAt = serveSource.indexOf('host.worker.recover()')
+  return changesAt !== -1 && workerAt !== -1 && changesAt < workerAt
 })
 
 rmSync(dir, { recursive: true, force: true })

@@ -1575,3 +1575,39 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 
 - [x] 发布 `2026.11.18-10`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）
 - [x] 回写 `spec.md` Slice AU、`.trae/specs/add-mail-read/*`、`AGENTS.md §4`、`docs/08 J1`、`docs/09 J1`、`docs/12`、`docs/16 §12.37`、`docs/06 §六`
+
+# Slice AV — 变更生命周期与半应用回滚（⑦ changes，2026-11-18，release `2026.11.18-11`）
+
+## AV1 `@dsh-wfxm/changes`
+
+- [x] `changes` 表（`ops.sqlite`，`schema_migrations(module='changes', v1)`），`ux_changes_task` / `ix_changes_status`
+- [x] 状态机：`applying → applied → verified → kept`、`applying → failed`、`applying|failed → rolled_back`
+- [x] `begin`（按 `task_id` 幂等）/ `markApplied` / `markVerified` / `keep` / `markFailed` /
+      `claimRollback` / `markRolledBack` / `markRollbackFailed` / `get` / `getByTask` /
+      `listHalfApplied` / `listRecent` / `close`；非法迁移返回 `invalid-transition`
+- [x] `createTaskChangePort`（⑤ 的结构契约，AR32）
+
+## AV2 ⑤ 接入
+
+- [x] `TaskWorkerOptions.changes`、`WorkerSkipReason='change-refused'`
+- [x] R2/R3 执行前 `begin`（R3 带 `snapshotId`），成功 `keep`，终态失败 `markFailed`，
+      可重试失败保持 `applying`；`begin` 失败 → `failed(change-record-failed)`，不执行
+- [x] 端口未注入时行为与切片前一致
+
+## AV3 host 启动恢复
+
+- [x] `WfxmHostOptions.changes` / `restoreWorkspace`，`host.recoverChanges()`
+- [x] 已成功任务补账 `kept`；其余 `claimRollback` → 快照还原或前镜像回滚；失败留痕 + `warn`
+- [x] `serve` 第 6 步：`recoverChanges()` 先于 `worker.recover()`；日志 `recovery:changes`
+
+## AV4 验证
+
+- [x] `verify-changes`（11）
+- [x] `verify-tasks`（113，新增 6 例）/ `verify-host`（52，新增 6 例）；`verify-all` 注册 changes 套件
+- [x] `build` / `--noEmit` / `check-style 183 files` / `verify-all 44 passed`（preimages advisory）
+
+## AV5 发布与回写
+
+- [x] 发布 `2026.11.18-11`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）
+- [x] 回写 `spec.md` Slice AV、`.trae/specs/add-change-lifecycle/*`、`AGENTS.md §4`、
+      `docs/11 §5.4`、`docs/15 §模块 ⑦`、`docs/16 §12.38`、`docs/06 §六`

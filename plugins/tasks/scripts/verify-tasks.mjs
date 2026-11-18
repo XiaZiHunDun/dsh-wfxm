@@ -1146,6 +1146,7 @@ function workerFixture(options = {}) {
     backoffMs: [1_000, 5_000],
     now: workerNow,
     snapshot: options.snapshot ?? null,
+    ...options.changes === undefined ? {} : { changes: options.changes },
     execute: options.execute ?? ((task) => {
       calls.push(task.id)
       return { status: 'succeeded', summary: 'done' }
@@ -1385,6 +1386,202 @@ await check('a failed snapshot refuses execution and records the snapshot event 
     && allowedVerified?.payload.overall === 'pass'
     && snapshotEvent !== undefined
     && snapshotEvent.payload.snapshotId === 'snap_1'
+})
+
+// ---- Slice AV: ⑤ 的变更台账（R2/R3 begin → keep / markFailed） ----------------
+
+/** 结构替身：只记状态，不引入 `@dsh-wfxm/changes`（AR32）。 */
+function fakeChangePort(options = {}) {
+  const rows = new Map()
+  const calls = []
+  return {
+    rows,
+    calls,
+    begin(input) {
+      calls.push(['begin', input])
+      if (options.refuseBegin === true) return { ok: false, code: 'invalid-input' }
+      if (!rows.has(input.taskId)) rows.set(input.taskId, { ...input, status: 'applying' })
+      return { ok: true }
+    },
+    keep(input) {
+      calls.push(['keep', input])
+      const row = rows.get(input.taskId)
+      if (row === undefined || row.status !== 'applying') return { ok: false, code: 'invalid-transition' }
+      row.status = 'kept'
+      return { ok: true }
+    },
+    markFailed(input) {
+      calls.push(['markFailed', input])
+      const row = rows.get(input.taskId)
+      if (row === undefined || row.status !== 'applying') return { ok: false, code: 'invalid-transition' }
+      row.status = 'failed'
+      return { ok: true }
+    },
+  }
+}
+
+await check('an R2 success opens the ledger before running and keeps it after verification', async () => {
+  const ledger = fakeChangePort()
+  const store = createTaskStore(join(dir, 'changes-r2.sqlite'))
+  const marker = join(dir, 'changes-r2-marker.txt')
+  writeFileSync(marker, 'ok')
+  const task = store.createTask({ intent: 'r2 change', riskLevel: 'R2' })
+  // R2 cannot complete without criteria (17 §8.4).
+  for (const prepared of prepareAssertions([{ kind: 'file_exists', path: marker }])) {
+    store.addAssertion(task.id, prepared)
+  }
+  const worker = createTaskWorker({
+    store,
+    owner: 'worker-A',
+    leaseMs: 1_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    changes: ledger,
+    execute: () => ({ status: 'succeeded', summary: 'wrote app.conf' }),
+  })
+  const report = await worker.runOnce()
+  const row = ledger.rows.get(task.id)
+  store.close()
+  return report.outcome === 'succeeded'
+    && row?.status === 'kept'
+    && row?.kind === 'task'
+    && row?.snapshotId === null
+    && ledger.calls.filter(([action]) => action === 'begin').length === 1
+})
+
+await check('an R3 ledger row records the snapshot id taken before execution', async () => {
+  const ledger = fakeChangePort()
+  const store = createTaskStore(join(dir, 'changes-r3.sqlite'))
+  const marker = join(dir, 'changes-r3-marker.txt')
+  writeFileSync(marker, 'ok')
+  const task = store.createTask({ intent: 'r3 change', riskLevel: 'R3' })
+  for (const prepared of prepareAssertions([{ kind: 'file_exists', path: marker }])) {
+    store.addAssertion(task.id, prepared)
+  }
+  const worker = createTaskWorker({
+    store,
+    owner: 'worker-A',
+    leaseMs: 1_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    changes: ledger,
+    snapshot: { capture: () => ({ snapshotId: 'snap_av', baselineRef: 'HEAD' }) },
+    execute: () => ({ status: 'succeeded', summary: 'restarted the unit' }),
+  })
+  const report = await worker.runOnce()
+  const row = ledger.rows.get(task.id)
+  store.close()
+  return report.outcome === 'succeeded' && row?.snapshotId === 'snap_av' && row?.status === 'kept'
+})
+
+await check('a terminal failure marks the ledger row failed (rollback stays a startup decision)', async () => {
+  const ledger = fakeChangePort()
+  const store = createTaskStore(join(dir, 'changes-failed.sqlite'))
+  const worker = createTaskWorker({
+    store,
+    owner: 'worker-A',
+    leaseMs: 1_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    changes: ledger,
+    execute: () => ({ status: 'failed', summary: 'no permission', failure: 'permission_denied' }),
+  })
+  const task = store.createTask({ intent: 'r2 denied', riskLevel: 'R2', maxAttempts: 3 })
+  const report = await worker.runOnce()
+  const row = ledger.rows.get(task.id)
+  store.close()
+  return report.outcome === 'failed'
+    && row?.status === 'failed'
+    && ledger.calls.some(([action]) => action === 'markFailed')
+})
+
+await check('a retry re-uses the same ledger row and keeps it only when the retry succeeds', async () => {
+  const ledger = fakeChangePort()
+  const store = createTaskStore(join(dir, 'changes-retry.sqlite'))
+  const marker = join(dir, 'changes-retry-marker.txt')
+  writeFileSync(marker, 'ok')
+  const task = store.createTask({ intent: 'r2 flaky', riskLevel: 'R2', maxAttempts: 2 })
+  for (const prepared of prepareAssertions([{ kind: 'file_exists', path: marker }])) {
+    store.addAssertion(task.id, prepared)
+  }
+  let attempt = 0
+  const worker = createTaskWorker({
+    store,
+    owner: 'worker-A',
+    leaseMs: 1_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    backoffMs: [1_000],
+    changes: ledger,
+    execute: () => {
+      attempt += 1
+      return attempt === 1
+        ? { status: 'failed', summary: 'flaky', failure: 'transient' }
+        : { status: 'succeeded', summary: 'second try worked' }
+    },
+  })
+  const first = await worker.runOnce()
+  const midStatus = ledger.rows.get(task.id)?.status
+  workerAdvance(1_500)
+  const second = await worker.runOnce()
+  const row = ledger.rows.get(task.id)
+  const beginCalls = ledger.calls.filter(([action]) => action === 'begin').length
+  store.close()
+  return first.outcome === 'retried'
+    && midStatus === 'applying'
+    && second.outcome === 'succeeded'
+    && row?.status === 'kept'
+    && beginCalls === 2
+    && ledger.rows.size === 1
+})
+
+await check('a refused ledger refuses execution instead of writing without a record', async () => {
+  const ledger = fakeChangePort({ refuseBegin: true })
+  const store = createTaskStore(join(dir, 'changes-refused.sqlite'))
+  const calls = []
+  const worker = createTaskWorker({
+    store,
+    owner: 'worker-A',
+    leaseMs: 1_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    changes: ledger,
+    execute: (claimed) => {
+      calls.push(claimed.id)
+      return { status: 'succeeded', summary: 'should never run' }
+    },
+  })
+  const task = store.createTask({ intent: 'r2 unrecorded', riskLevel: 'R2' })
+  const report = await worker.runOnce()
+  const row = store.getTask(task.id)
+  const failedEvent = store.listEvents(task.id).find((event) => event.type === 'task.failed')
+  store.close()
+  return report.outcome === 'failed'
+    && report.skipped === 'change-refused'
+    && calls.length === 0
+    && row.status === 'failed'
+    && failedEvent?.payload.reason === 'change-record-failed'
+})
+
+await check('without a change port R2 behaves exactly as before (no rows, no refusals)', async () => {
+  const store = createTaskStore(join(dir, 'changes-null.sqlite'))
+  const marker = join(dir, 'changes-null-marker.txt')
+  writeFileSync(marker, 'ok')
+  const worker = createTaskWorker({
+    store,
+    owner: 'worker-A',
+    leaseMs: 1_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    execute: () => ({ status: 'succeeded', summary: 'legacy path' }),
+  })
+  const task = store.createTask({ intent: 'r2 no ledger', riskLevel: 'R2' })
+  for (const prepared of prepareAssertions([{ kind: 'file_exists', path: marker }])) {
+    store.addAssertion(task.id, prepared)
+  }
+  const report = await worker.runOnce()
+  store.close()
+  return report.outcome === 'succeeded' && report.skipped === null
 })
 
 await check('an executor claiming success is still gated by a failing assertion', async () => {

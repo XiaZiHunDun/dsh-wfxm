@@ -78,9 +78,25 @@ export interface SnapshotPort {
   capture(task: Task): Promise<{ snapshotId: string; baselineRef?: string | null }>
 }
 
+/**
+ * Slice AV: structural twin of ⑦'s `ChangePort` (AR32). ⑤ only reports "this
+ * task started / finished"; the ledger itself belongs to `@dsh-wfxm/changes`.
+ */
+export interface ChangePort {
+  begin(input: {
+    taskId: string
+    kind: 'task'
+    target: string
+    snapshotId?: string | null
+  }): { ok: boolean; code?: string }
+  keep(input: { taskId: string; detail?: string }): { ok: boolean; code?: string }
+  markFailed(input: { taskId: string; detail?: string }): { ok: boolean; code?: string }
+}
+
 export type WorkerSkipReason
   = | 'idle'
     | 'snapshot-refused'
+    | 'change-refused'
     | 'stale-lease'
     | 'resource-conflict'
     | 'cancelled'
@@ -101,6 +117,11 @@ export interface TaskWorkerOptions {
   execute: TaskExecutor
   /** Required for R3 tasks; without it every R3 claim is refused. */
   snapshot?: SnapshotPort | null
+  /**
+   * Slice AV: ⑦'s change ledger. Only R2/R3 tasks are recorded; absent/null
+   * keeps the pre-AV behaviour exactly (no rows, no refusals).
+   */
+  changes?: ChangePort | null
   /**
    * 17 §8.5 verifier context (adapters / cwd). Success is gated on the Verifier:
    * an executor saying "succeeded" is not enough (13 §3.3).
@@ -203,7 +224,7 @@ export interface TaskWorker {
 }
 
 export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
-  const { store, execute, snapshot = null } = options
+  const { store, execute, snapshot = null, changes = null } = options
   const owner = options.owner ?? `worker-${Math.random().toString(36).slice(2, 10)}`
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
@@ -217,6 +238,26 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
 
   const backoffFor = (attempt: number): number =>
     backoff[Math.min(Math.max(attempt - 1, 0), backoff.length - 1)]
+
+  /** Slice AV: only attempts that can change host state get a ledger row. */
+  const tracksChange = (task: Task): boolean =>
+    changes !== null && (task.riskLevel === 'R2' || task.riskLevel === 'R3')
+
+  /**
+   * Ledger updates never change the task outcome: `keep` runs after the
+   * Verifier accepted, `markFailed` after the row is already terminal. A
+   * failure here surfaces through `onError` and leaves the row for startup
+   * recovery to finish (AR13 — visible, not silently dropped).
+   */
+  function noteChange(action: 'keep' | 'markFailed', task: Task, detail?: string): void {
+    if (changes === null || !tracksChange(task)) return
+    try {
+      const result = changes[action]({ taskId: task.id, ...detail === undefined ? {} : { detail } })
+      if (!result.ok) options.onError?.(new Error(`change ${action} refused: ${result.code ?? 'unknown'}`))
+    } catch (error) {
+      options.onError?.(error)
+    }
+  }
 
   async function settle(task: Task, outcome: ExecOutcome, wakeAt: string | null): Promise<TaskRunReport> {
     // Slice AR: the attempt asked a question. Park the row so the host can
@@ -271,6 +312,8 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
             options.onError?.(error)
           }
         }
+        // Slice AV: the change is accepted (kept), never auto-rolled back.
+        noteChange('keep', task, outcome.summary.slice(0, 500))
         return {
           taskId: task.id,
           outcome: 'succeeded',
@@ -289,6 +332,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         } catch (transitionError) {
           options.onError?.(transitionError)
         }
+        noteChange('markFailed', task, messageOf(error))
         return {
           taskId: task.id,
           outcome: 'failed',
@@ -327,6 +371,9 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         ? `${outcome.failure}: attempts exhausted (${task.attempt}/${task.maxAttempts})`
         : outcome.failure,
     })
+    // Slice AV: terminal failure is the half-application signal; startup
+    // recovery decides whether to roll this task's writes back.
+    noteChange('markFailed', task, outcome.summary)
     return {
       taskId: task.id,
       outcome: 'failed',
@@ -353,6 +400,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
 
     // 13 §3.4: R3 must snapshot first; a failure refuses execution, it never
     // means "do it anyway".
+    let snapshotId: string | null = null
     if (task.riskLevel === 'R3') {
       if (snapshot === null) {
         store.transition(task.id, {
@@ -371,6 +419,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
       }
       try {
         const captured = await snapshot.capture(task)
+        snapshotId = captured.snapshotId
         store.appendEvent(task.id, 'task.snapshot', {
           snapshotId: captured.snapshotId,
           baselineRef: captured.baselineRef ?? null,
@@ -501,6 +550,43 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     } catch (error) {
       options.onError?.(error)
     }
+
+    // Slice AV: record the change before the first write can happen. A refused
+    // ledger means "do not execute" — 做了但不记账 is exactly what half-applied
+    // recovery cannot see. A retry re-uses the same row (`begin` is idempotent).
+    if (changes !== null && (task.riskLevel === 'R2' || task.riskLevel === 'R3')) {
+      const begun = changes.begin({
+        taskId: task.id,
+        kind: 'task',
+        target: task.worktreePath ?? task.projectId ?? 'workspace',
+        snapshotId,
+      })
+      if (!begun.ok) {
+        try {
+          store.transition(task.id, {
+            to: 'failed',
+            summary: `change ledger refused: ${begun.code ?? 'unknown'}`,
+            reason: 'change-record-failed',
+          })
+        } catch (transitionError) {
+          options.onError?.(transitionError)
+        }
+        try {
+          store.releaseTaskResourceLocks(task.id)
+        } catch (releaseError) {
+          options.onError?.(releaseError)
+        }
+        return {
+          taskId: task.id,
+          outcome: 'failed',
+          failure: 'unknown',
+          skipped: 'change-refused',
+          attempt: task.attempt,
+          wakeAt: null,
+        }
+      }
+    }
+
     const controller = new AbortController()
     activeAttempts.set(task.id, controller)
     try {

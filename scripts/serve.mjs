@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 
 import { createDshExecutor } from '@dsh-wfxm/executor'
+import { createChangeStore } from '@dsh-wfxm/changes'
 import {
   buildApprovalConfirmCard,
   buildApprovalResultCard,
@@ -47,6 +48,7 @@ import {
   createPreimageRollbackPort,
   createSnapshotPort,
   createSnapshotStore,
+  restoreWorkspace,
 } from '@dsh-wfxm/snapshot'
 import {
   createInspectionPatrol,
@@ -172,6 +174,8 @@ async function main() {
             snapshot: createSnapshotStore(config.dbPath),
             // Slice AT (J5): 提醒与任务同库不同表；本模块是 reminders 的唯一写者。
             reminders: createReminderStore(config.dbPath),
+            // Slice AV: 变更台账；⑦ 是 changes 的唯一写者。
+            changes: createChangeStore(config.dbPath),
           }
         } catch (error) {
           approvals.close()
@@ -187,6 +191,7 @@ async function main() {
         assertModules({
           createMemoryStore,
           createReminderStore,
+          createChangeStore,
           createSnapshotStore,
           createApprovalStore,
           createGrantStore,
@@ -247,6 +252,14 @@ async function main() {
           approvals: stores.approvals,
           grants: stores.grants,
           reminders: stores.reminders,
+          changes: stores.changes,
+          // Startup recovery restores a `dir:` workspace snapshot before the
+          // worker may re-queue anything (Slice AV).
+          restoreWorkspace: (snapshotId) => {
+            const snapshot = stores.snapshot.getSnapshot(snapshotId)
+            if (snapshot === null) throw new Error(`snapshot ${snapshotId} not found`)
+            restoreWorkspace({ root: config.workdir, locator: snapshot.locator })
+          },
           worker: {
             resourceLocks: config.resourceLocks,            verify: {
               cwd: config.workdir,
@@ -334,6 +347,7 @@ async function main() {
           foreground: config.foreground,
           runner: config.foreground === 'rule' ? null : config.decideRunner,
           reminders: 'on',
+          changes: 'on',
           spill: config.spillChars === 0 ? 'off' : config.spillChars,
           progress: config.taskProgress
             ? {
@@ -383,7 +397,11 @@ async function main() {
     {
       id: 6,
       name: 'recovery',
-      run() {
+      async run() {
+        // Slice AV: 先还原上一条进程遗留的半应用工作区，再让 ⑤ 重排任务——
+        // 反过来的话，重试会踩在尚未回滚的改动上（docs/11 §5.4）。
+        const settled = await host.recoverChanges()
+        log('recovery:changes', settled)
         const recovered = host.worker.recover()
         log('recovery', { requeued: recovered.requeued.length, failed: recovered.failed.length })
       },
@@ -815,6 +833,7 @@ async function main() {
       stores?.memory.close()
       stores?.snapshot.close()
       stores?.reminders.close()
+      stores?.changes.close()
     } catch (error) {
       log('shutdown:warn', `close failed: ${error instanceof Error ? error.message : String(error)}`)
     }

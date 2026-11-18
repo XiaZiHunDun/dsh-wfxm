@@ -1,0 +1,26 @@
+{
+  "name": "@dsh-wfxm/changes",
+  "version": "0.1.0",
+  "description": "dsh-wfxm change ledger (⑦): applying → applied → verified → kept, half-applied detection and rollback bookkeeping",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}

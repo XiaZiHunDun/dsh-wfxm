@@ -12,6 +12,7 @@
     "node": ">=24.9.0"
   },
   "dependencies": {
+    "@dsh-wfxm/changes": "workspace:*",
     "@dsh-wfxm/gateway": "workspace:*",
     "@dsh-wfxm/governance": "workspace:*",
     "@dsh-wfxm/knowledge": "workspace:*",

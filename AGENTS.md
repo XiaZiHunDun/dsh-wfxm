@@ -443,6 +443,12 @@
     前台新增 `remind` / `reminders` / `cancel_remind` 三种结构化动作（时间二次校验，过去即追问）；
     host pump 按 `reminder:<id>:<dueAt>` 幂等入队 `say`，周期推进只跳第一个未来时刻；
     不做待办清单与「到点执行任务」。
+  - **变更台账（Slice AV / ⑦ changes）**：新增 `@dsh-wfxm/changes`（`changes` 表，`applying→applied→verified→kept`
+    / `applying→failed` / `applying|failed→rolled_back`）；⑤ 的 R2/R3 执行前经结构端口 `begin`
+    （按 `task_id` 幂等，R3 带 `snapshotId`），Verifier 通过 `keep`，终态失败 `markFailed`；
+    `begin` 失败即拒绝执行（`change-record-failed`）。host 启动先 `recoverChanges()`（已成功只补账，
+    其余按快照/前镜像回滚，失败留痕不重试）再 `worker.recover()`。**不注册** `svc_*` 写工具，
+    `kind='service'` 只留表结构（见 [11 §5.4](docs/11-架构锚定.md)、[16 §12.38](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

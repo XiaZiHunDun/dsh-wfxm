@@ -40,6 +40,7 @@ import {
   type TaskProgressReport,
 } from '@dsh-wfxm/gateway'
 import type { ApprovalLevel, ApprovalStore, GrantStore } from '@dsh-wfxm/governance'
+import { createTaskChangePort, type ChangeStore } from '@dsh-wfxm/changes'
 import { nextDueAt as advanceReminder, type ReminderStore } from '@dsh-wfxm/reminder'
 import {
   createTaskStore,
@@ -181,6 +182,17 @@ export interface WfxmHostOptions {
   approvals?: ApprovalStore | null
   /** Slice AT (J5): reminders store; absent means the front desk cannot set reminders. */
   reminders?: ReminderStore | null
+  /**
+   * Slice AV: ⑦'s change ledger. Absent/null means no rows and no refusals —
+   * exactly the pre-AV worker behaviour.
+   */
+  changes?: ChangeStore | null
+  /**
+   * Slice AV: restore a `dir:` workspace snapshot during startup recovery.
+   * Absent means a half-applied task with a snapshot can only be left for a
+   * human (the rollback is marked failed, never silently skipped).
+   */
+  restoreWorkspace?: WorkspaceRestorePort | null
   project?: ProjectLookupPort | null
   rollback?: CheckpointRollbackPort | null
   worker?: HostWorkerOptions
@@ -212,12 +224,21 @@ export interface WfxmHost {
   ingest(input: IngestInboundInput): Promise<HostIngestResult>
   /** Issue an approval and post its card into `threadId` (docs/14 §六). */
   requestApproval(input: RequestApprovalInput): RequestApprovalResult
+  /**
+   * Slice AV: settle rows the previous process left in `applying` — keep tasks
+   * that already succeeded, roll the rest back. Runs before `worker.recover()`
+   * so a retry never starts on top of a half-applied workspace.
+   */
+  recoverChanges(): Promise<{ kept: number; rolledBack: number; failed: number }>
   pump(): Promise<HostPumpReport>
   runWorkerOnce(): Promise<TaskRunReport>
   start(): void
   stop(): void
   close(): void
 }
+
+/** Slice AV: ⑦ restores a workspace snapshot by id; the host never reads ⑦'s tables. */
+export type WorkspaceRestorePort = (snapshotId: string, taskId: string | null) => void | Promise<void>
 
 function textOf(content: Json): string | null {
   if (typeof content !== 'object' || content === null || Array.isArray(content)) return null
@@ -244,6 +265,8 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   const tasks = createTaskStore(options.dbPath)
   const approvals = options.approvals ?? null
   const reminders = options.reminders ?? null
+  const changes = options.changes ?? null
+  const restoreWorkspace = options.restoreWorkspace ?? null
 
   const ports = createHostPorts({
     tasks,
@@ -329,6 +352,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     store: tasks,
     execute: options.executor,
     snapshot: options.snapshot ?? null,
+    changes: changes === null ? null : createTaskChangePort(changes),
     now,
     ...workerOptions.owner === undefined ? {} : { owner: workerOptions.owner },
     ...workerOptions.leaseMs === undefined ? {} : { leaseMs: workerOptions.leaseMs },
@@ -924,6 +948,55 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     return { approvalId: ticket.id, expiresAt: ticket.expiresAt, outboxId: item.id }
   }
 
+  /**
+   * Slice AV startup recovery (docs/11 §5.4). Only rows left by a previous
+   * process are touched — nothing here runs periodically, so an in-flight
+   * attempt is never rolled back underneath the worker.
+   */
+  async function recoverChanges(): Promise<{ kept: number; rolledBack: number; failed: number }> {
+    const report = { kept: 0, rolledBack: 0, failed: 0 }
+    if (changes === null) return report
+
+    for (const row of changes.listHalfApplied(200)) {
+      const taskId = row.taskId
+      if (taskId === null) continue
+
+      // The task actually finished; only the ledger write was lost. 补账 —
+      // rolling a successful task back would undo work the owner already got.
+      if (row.status === 'applying' && tasks.getTask(taskId)?.status === 'succeeded') {
+        const kept = changes.keep(taskId, 'recovered: task already succeeded')
+        if (kept.ok) report.kept += 1
+        else logger?.warn?.(`change ${row.id}: keep refused during recovery (${kept.code})`)
+        continue
+      }
+
+      // A previous process may have claimed the rollback before crashing;
+      // only one process may own it, so claim when it is still unclaimed.
+      if (row.rollbackStatus !== 'ready' && !changes.claimRollback(taskId)) continue
+
+      try {
+        if (row.snapshotId !== null) {
+          if (restoreWorkspace === null) throw new Error('workspace restore port is not configured')
+          await restoreWorkspace(row.snapshotId, taskId)
+        } else {
+          if (ports.rollback === null) throw new Error('preimage rollback port is not configured')
+          ports.rollback.rollback({ taskId })
+        }
+        const marked = changes.markRolledBack(taskId, 'recovered: half-applied change rolled back')
+        if (!marked.ok) throw new Error(`markRolledBack refused: ${marked.code}`)
+        report.rolledBack += 1
+        logger?.info?.(`change ${row.id}: task ${taskId} rolled back during recovery`)
+      } catch (error) {
+        // 不猜、不反复重试：留痕并交给人工（docs/11 §5.4）。
+        const detail = messageOf(error)
+        changes.markRollbackFailed(taskId, detail)
+        report.failed += 1
+        logger?.warn?.(`change ${row.id}: task ${taskId} rollback failed: ${detail}`)
+      }
+    }
+    return report
+  }
+
   return {
     stores: { gateway, tasks },
     ports,
@@ -932,6 +1005,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
 
     ingest,
     requestApproval,
+    recoverChanges,
     pump,
 
     runWorkerOnce: () => worker.runOnce(),

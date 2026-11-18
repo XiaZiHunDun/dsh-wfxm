@@ -142,6 +142,7 @@ export type {
   ExecOutcome,
   ExecSuccess,
   FailureKind,
+  ChangePort,
   SnapshotPort,
   TaskExecutor,
   TaskRunReport,

@@ -2471,3 +2471,51 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
   `verify-release` 的依赖链接断言改为按实际插件数动态计算。
 - 发布 `2026.11.18-10`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）。
 - 文档：`docs/16 §12.37` 写明授权码获取与配置步骤；真机项登记 `docs/06 §六`。
+
+## Slice AV Spec — 变更生命周期与半应用回滚（⑦ changes，2026-11-18，release `2026.11.18-11`）
+
+### 1. 问题（已核对代码）
+
+- `changes` 表只在 `docs/15` 有 DDL，代码里不存在；`svcops` 只有 5 个只读工具，
+  `svc_start/stop/restart` 未注册（dsh headless 审批语义未统一）。
+- ⑤ 的 R3 任务会取工作区快照、R2/R3 会写文件前镜像，但**没有「这次任务改到哪一步」的台账**；
+  任务失败只改状态，不自动回滚；进程崩溃后没有恢复入口。
+- `/rollback` 是人工命令，不是启动恢复；半应用状态不可见。
+
+### 2. 机制
+
+- 新增 `@dsh-wfxm/changes`（`plugins/changes`）：`changes` 表落 `ops.sqlite`
+  （`schema_migrations(module='changes', v1)`），⑦ 是唯一写者（AR33）。
+- 状态机：`applying → applied → verified → kept`、`applying → failed`、
+  `applying|failed → rolled_back`；非法迁移返回 `{ok:false, code:'invalid-transition'}`。
+- ⑤ 只经结构端口 `begin/keep/markFailed` 记账（R2/R3 执行前 `begin`，按 `task_id` 幂等；
+  `begin` 失败即拒绝执行并落 `change-record-failed`；端口未注入时行为不变）。
+- host 启动恢复：`recoverChanges()` 先于 `worker.recover()`；任务已 `succeeded` → 补账 `kept`；
+  其余 `claimRollback` 后有 `snapshot_id` 走 `restoreWorkspace`，否则 `rollbackPreimages`；
+  成功 `rolled_back`，失败 `rollback_status='failed'` + `warn`（不猜、不自动重试）。
+
+### 3. 边界
+
+- 不注册服务写工具（避免任务层与 dsh 工具层双闸/绕过），`kind='service'` 只留表结构。
+- 不做运行中巡检，只在进程启动时恢复上一个进程的遗留。
+- 不自动重跑失败任务；回滚是失败分支，重试仍由 ⑤ 的既有策略决定。
+
+### 4. 验证
+
+- `verify-changes`（11）：状态机合法/非法迁移、`begin` 幂等、`claimRollback` 只成功一次、
+  半应用查询与列表、重开库不重跑迁移、⑤ 端口映射。
+- `verify-tasks`（113）：R2/R3 `begin→keep`、失败 `markFailed`、重试不重复建行、
+  `begin` 抛错拒绝执行、端口未注入行为不变。
+- `verify-host`（52）：启动恢复三分支（补账/前镜像回滚/快照还原）、回滚失败留痕不重试、
+  `serve` 中 changes 先于 worker.recover。
+- 全量 `44 passed · 0 failed · 1 advisory`（preimages）；`check-style 183 files`；发布 `2026.11.18-11`。
+
+### 5. 实施记录（2026-11-18，release `2026.11.18-11`）
+
+- 新增 `plugins/changes`（`store.ts` / `port.ts` / `index.ts` / `scripts/verify-changes.mjs`）。
+- ⑤：`WorkerSkipReason` 增 `change-refused`，`TaskWorkerOptions.changes`，R2/R3 执行前 `begin`、
+  Verifier 通过后 `keep`、终态失败 `markFailed`；`begin` 失败 → `failed(change-record-failed)`。
+- host：`WfxmHostOptions.changes` / `restoreWorkspace`，`recoverChanges()`；`serve` 第 6 步先
+  `recoverChanges()` 再 `worker.recover()`，日志 `recovery:changes`、`modules.changes='on'`。
+- 发布 `2026.11.18-11`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）。
+- 文档：`docs/11 §5.4`、`docs/15 §模块 ⑦`、`docs/16 §12.38`、`docs/06 §六`、`AGENTS.md §4`、根 `tasks.md`。

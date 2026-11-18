@@ -26,6 +26,7 @@ export type {
   RequestApprovalResult,
   WfxmHost,
   WfxmHostOptions,
+  WorkspaceRestorePort,
 } from './host.js'
 export {
   APPROVAL_CARD_TOPIC,
