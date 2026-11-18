@@ -20,6 +20,8 @@ CRED_DIR=$CONF_DIR/credentials
 UNIT_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm.service
 BACKUP_UNIT_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-backup.service
 BACKUP_TIMER_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-backup.timer
+HEALTH_UNIT_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-health.service
+HEALTH_TIMER_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-health.timer
 JOURNALD_SRC=$(cd "$(dirname "$0")" && pwd)/journald/10-dsh-wfxm.conf
 ENV_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm.env.example
 POLKIT_SRC=$(cd "$(dirname "$0")" && pwd)/polkit/50-dshwfxm.rules
@@ -127,6 +129,8 @@ run install -d -m 0755 -o root -g root /etc/polkit-1/rules.d
 run install -m 0644 -o root -g root "$UNIT_SRC" /etc/systemd/system/dsh-wfxm.service
 run install -m 0644 -o root -g root "$BACKUP_UNIT_SRC" /etc/systemd/system/dsh-wfxm-backup.service
 run install -m 0644 -o root -g root "$BACKUP_TIMER_SRC" /etc/systemd/system/dsh-wfxm-backup.timer
+run install -m 0644 -o root -g root "$HEALTH_UNIT_SRC" /etc/systemd/system/dsh-wfxm-health.service
+run install -m 0644 -o root -g root "$HEALTH_TIMER_SRC" /etc/systemd/system/dsh-wfxm-health.timer
 run install -m 0644 -o root -g root "$POLKIT_SRC" /etc/polkit-1/rules.d/50-dshwfxm.rules
 run install -m 0755 -o root -g root "$WRAPPER_SRC" /usr/local/sbin/dsh-wfxm-unit-control
 # Root-side helper (preferred path; works under NoNewPrivileges).
@@ -171,6 +175,8 @@ fi
 
 # 定时备份：只 enable timer，不 --now——安装不应立刻压一次备份。
 run systemctl enable dsh-wfxm-backup.timer
+# 健康告警：2 分钟一次；服务正常时脚本直接退出，不发消息。
+run systemctl enable dsh-wfxm-health.timer
 
 # 5. 发布根目录：属主是调用 sudo 的人，服务只读（ProtectSystem=strict）。
 run install -d -m 0755 -o "$RELEASE_OWNER" -g "$RELEASE_OWNER" "$RELEASE_ROOT"

@@ -7,6 +7,9 @@ Wants=network-online.target
 # few times and then stops instead of looping forever.
 StartLimitIntervalSec=300
 StartLimitBurst=5
+# Crashes restart via Restart=, but a crash loop stops here; the oneshot tells
+# the owner why (scripts/health-alert.mjs, docs/16 §12.29).
+OnFailure=dsh-wfxm-health.service
 
 [Service]
 Type=simple

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # No eslint/prettier binary in the repo: the style gate is dependency-free.
+      - run: node scripts/check-style.mjs
+
+      # Suites import each package's lib/, so build before verifying.
+      - run: node scripts/build.mjs
+      - run: node scripts/build.mjs --noEmit
+
+      # Host-only suites (credentials, systemd, docker, live ops DB) are skipped.
+      - run: node scripts/verify-all.mjs --ci

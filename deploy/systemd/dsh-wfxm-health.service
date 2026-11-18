@@ -1,0 +1,30 @@
+[Unit]
+Description=dsh-wfxm out-of-process health alert (runs only when the service is down)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dshwfxm
+Group=dshwfxm
+WorkingDirectory=/opt/dsh-wfxm/current
+EnvironmentFile=-/etc/dsh-wfxm/env
+Environment=HOME=/var/lib/dsh-wfxm/home
+Environment=DSH_WFXM_DATA_DIR=/var/lib/dsh-wfxm
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/node scripts/health-alert.mjs
+UMask=0077
+
+# Read-only apart from the alert state file under the data dir.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/dsh-wfxm

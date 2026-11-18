@@ -7,8 +7,11 @@
     "node": ">=24.9.0"
   },
   "scripts": {
-    "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
+    "build": "node scripts/build.mjs",
+    "typecheck": "node scripts/build.mjs --noEmit",
+    "verify:all": "node scripts/verify-all.mjs",
+    "verify:all:ci": "node scripts/verify-all.mjs --ci",
+    "check:style": "node scripts/check-style.mjs",
     "check:invariants": "node scripts/check-invariants.mjs",
     "verify:invariants": "node scripts/verify-invariants.mjs",
     "serve": "node scripts/serve.mjs",

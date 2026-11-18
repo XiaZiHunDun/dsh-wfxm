@@ -1,0 +1,10 @@
+[Unit]
+Description=Check dsh-wfxm every 2 minutes and alert the owner if it is down
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=dsh-wfxm-health.service
+
+[Install]
+WantedBy=timers.target

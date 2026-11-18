@@ -2117,3 +2117,26 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 
 `verify-patrol 31`、`verify-inspection 27`、`verify-report 10`、`verify-alerting 8`；
 生产：失败 unit → open（seen_count 2，无重复行）+ 即时告警；恢复 → resolved。
+
+## Slice AN Spec — 工程门禁与健康告警（2026-11-18，release `2026.11.18-2`）
+
+## 1. 范围
+
+- `scripts/verify-all.mjs`：显式 `SUITES` 清单 + `discover()` 漂移检测（未注册即失败）、`--ci/--list/--only`、
+  子进程逐套件执行、删除 `LD_LIBRARY_PATH`、600s 超时；
+- `scripts/build.mjs`：逐插件 `tsc -p`，`--noEmit` 即 typecheck；`scripts/lib/packages.mjs` 统一发现包；
+- `scripts/check-style.mjs`：CRLF、行尾空白、文件末尾换行、`debugger`、`.only(`、插件 src 的 `console.log`；
+- `.github/workflows/ci.yml`：Node 24 + pnpm 11.28.5，style → build → typecheck → `verify-all --ci`；
+- `scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}` + 主服务 `OnFailure=`：进程外健康检查，
+  异常发飞书、同状态 30 分钟冷却。
+
+## 2. 边界
+
+- `--ci` 只跑无外部依赖的套件；`live/deploy/audit/svcops-docker` 标 `ci:false`，本机全量时才跑；
+- `preimages` 在 root 下是 advisory（`chmod 000` 对 root 无效），不是豁免项；
+- 健康告警**不**替 owner 重启服务，只报丧；告警本身失败只写 journal，不递归告警。
+
+## 3. 验证
+
+`verify-all` 41 passed + 1 advisory；`--ci` 37 passed + 1 advisory（root）；`check-style` 167 files ok；
+`verify-health-alert` 7/7；本机 timer 已 enable，服务 active 时手动执行输出 `health-alert: healthy`。

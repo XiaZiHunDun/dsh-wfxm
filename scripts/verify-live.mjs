@@ -59,7 +59,14 @@ function assert(ok, message) {
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-const credentials = loadFeishuCredentials()
+const credentials = loadFeishuCredentials({
+  ...process.env.DSH_WFXM_FEISHU_CONFIG === undefined
+    ? {}
+    : { configPath: process.env.DSH_WFXM_FEISHU_CONFIG },
+  ...process.env.DSH_WFXM_CREDENTIALS === undefined
+    ? {}
+    : { credentialsPath: process.env.DSH_WFXM_CREDENTIALS },
+})
 const client = await createLarkClient({
   appId: credentials.appId,
   appSecret: credentials.appSecret,

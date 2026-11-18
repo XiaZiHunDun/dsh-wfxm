@@ -1408,3 +1408,5 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 协作式取消（`2026.11.16-4`）：`停止` 先 abort executor 子进程再落 `cancelled`；worker 遇 `cancelled` 只释放锁并返回 `skipped:'cancelled'`，不再 settle/迁移/补回执；`verify-executor 20`、`verify-tasks 97`、`verify-host 36`（Slice AJ）
 - [x] 纯文本控制命令（`2026.11.16-5`）：英文可裸用、中文必须带 ref 且整句锚定；生产 `停止 bkgg4bba8m` 命中 control，未新建任务；`verify-gateway 116/116`（Slice AK）
 - [x] B2 v1 主动候选路径（`2026.11.18-1`）：仅主机巡检发现项、全部 observe；候选表唯一键去重/恢复重开；即时告警附 observe、日报加候选段；生产演练失败 unit → open → resolved（Slice AM）
+- [x] 工程门禁（`2026.11.18-2`）：`scripts/build.mjs`（逐包 tsc / `--noEmit`）、`scripts/check-style.mjs`、`scripts/verify-all.mjs`（显式清单 + 漂移检测 + `--ci`）、GitHub Actions；本地全量 41 passed + 1 advisory，`--ci` 全绿（Slice AN）
+- [x] 服务健康告警（`2026.11.18-2`）：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟）+ 主服务 `OnFailure=`；同状态 30 分钟冷却，状态变化立即发；`verify-health-alert` 7/7；本机 timer 已 enable 并验证 `healthy`（Slice AN）

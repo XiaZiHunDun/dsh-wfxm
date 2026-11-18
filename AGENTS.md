@@ -409,6 +409,11 @@
     `tar.gz` + `.sha256`；restic 可选（未配即打印 `restic: skipped`，**不静默假装异地已备**）。演练先校验 hash → 解包 → `integrity_check` + 逐表行数比对 + 组件存在 →
     **在还原目录跑完整八步并断言 `8/8`**；篡改 hash / 缺 manifest / 行数不符 / 空数据目录均**拒绝**。
   - **验证**：`verify-serve` **12** / `verify-deploy` **5**（含 `systemd-analyze verify`）/ `verify-release` **7** / `verify-backup` **6**；全仓 29 套件全绿、`check-invariants` OK、逐包 `tsc --noEmit` 12/12。
+  - **一键门禁**：`scripts/build.mjs`（逐包 tsc；`--noEmit` 只 typecheck）、`scripts/check-style.mjs`（CRLF/空白/末尾换行/`debugger`/`.only(`/`console.log`）、
+    `scripts/verify-all.mjs`（显式 `SUITES` + `discover()` 漂移检测，`--ci` 跳过真机套件）。`live` 套件通过 `DSH_WFXM_FEISHU_CONFIG`/`DSH_WFXM_CREDENTIALS`
+    读 `/etc/dsh-wfxm/credentials/*`，root 也能跑全量。CI 见 `.github/workflows/ci.yml`（Node 24 + pnpm 11.28.5）。
+  - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
+    主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →
     建任务 → 真实 dsh 执行 → 回执，拿回真实 `om_` id，连续 16 分钟无 warn/error，`SIGTERM` 退出码 0，见 [16 §12.4](docs/16-部署与运行.md)）；
     蓝绿回滚**只做手动**（不做自动切回）；
