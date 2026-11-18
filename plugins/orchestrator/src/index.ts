@@ -16,7 +16,7 @@ export {
   NON_TEXT_REPLY,
   createOrchestratorForeground,
 } from './foreground.js'
-export type { DecisionContextInput } from './prompt.js'
+export type { ConversationTurn, DecisionContextInput } from './prompt.js'
 export { buildDecisionPrompt } from './prompt.js'
 export type {
   QuickAnswer,

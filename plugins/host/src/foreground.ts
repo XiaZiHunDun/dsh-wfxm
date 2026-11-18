@@ -24,6 +24,8 @@ export interface ForegroundInput {
   result: IngestResult
   /** Plain text body, already extracted from the channel payload. */
   text: string | null
+  /** Recent turns of this thread (旧→新), assembled by the host. */
+  history?: readonly { role: 'user' | 'assistant'; text: string }[]
 }
 
 export type ForegroundHandler = (

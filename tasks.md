@@ -1410,3 +1410,4 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] B2 v1 主动候选路径（`2026.11.18-1`）：仅主机巡检发现项、全部 observe；候选表唯一键去重/恢复重开；即时告警附 observe、日报加候选段；生产演练失败 unit → open → resolved（Slice AM）
 - [x] 工程门禁（`2026.11.18-2`）：`scripts/build.mjs`（逐包 tsc / `--noEmit`）、`scripts/check-style.mjs`、`scripts/verify-all.mjs`（显式清单 + 漂移检测 + `--ci`）、GitHub Actions；本地全量 41 passed + 1 advisory，`--ci` 全绿（Slice AN）
 - [x] 服务健康告警（`2026.11.18-2`）：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟）+ 主服务 `OnFailure=`；同状态 30 分钟冷却，状态变化立即发；`verify-health-alert` 7/7；本机 timer 已 enable 并验证 `healthy`（Slice AN）
+- [x] 对话连续性（`2026.11.18-3`）：`threadHistory` + 决策 prompt 最近 8 轮 + SDK 按 thread 独立会话；`steerTask` 让补充指令在 running 时打断重跑（attempt 归零、输入 delivered→read），queued 合并、waiting_* 记录；host 两条路由都应用并回执；`verify-gateway 118`/`verify-tasks 102`/`verify-orchestrator 52`/`verify-host 39`（Slice AO）

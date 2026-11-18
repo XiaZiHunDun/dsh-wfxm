@@ -412,6 +412,10 @@
   - **一键门禁**：`scripts/build.mjs`（逐包 tsc；`--noEmit` 只 typecheck）、`scripts/check-style.mjs`（CRLF/空白/末尾换行/`debugger`/`.only(`/`console.log`）、
     `scripts/verify-all.mjs`（显式 `SUITES` + `discover()` 漂移检测，`--ci` 跳过真机套件）。`live` 套件通过 `DSH_WFXM_FEISHU_CONFIG`/`DSH_WFXM_CREDENTIALS`
     读 `/etc/dsh-wfxm/credentials/*`，root 也能跑全量。CI 见 `.github/workflows/ci.yml`（Node 24 + pnpm 11.28.5）。
+  - **对话连续性（Slice AO）**：`gateway.threadHistory` 只取本线程的 `message` + 已发送 `say`（脱敏、旧→新）；
+    决策 prompt 带最近 8 轮，SDK 按 `threadId` 开独立 session；补充指令走 `tasks.steerTask`——
+    running/paused 打断重跑（intent 追加、attempt 归零、清租约，host 调 `worker.cancel()`），queued 合并，
+    waiting_* 记录；输入 `delivered`，claim 时 `read`。终态任务仍走 AR37 复验。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

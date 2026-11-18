@@ -11,6 +11,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { dirname } from 'node:path'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
 import { redactDeep } from '@dsh-wfxm/redact'
+import { inboundText } from './text.js'
 import {
   ACTOR_KINDS,
   GatewayError,
@@ -485,6 +486,13 @@ export interface OutboxFilter {
   limit?: number
 }
 
+/** One turn of a thread as the model should see it (text already redacted). */
+export interface ThreadHistoryEntry {
+  role: 'user' | 'assistant'
+  text: string
+  at: string
+}
+
 export interface OutboxHealthInput {
   /** Only failures among rows created at/after this instant are counted. */
   since?: Date
@@ -508,6 +516,12 @@ export interface GatewayStore {
   findInbox(channelId: string, msgId: string): InboxItem | null
   getInbox(id: string): InboxItem | null
   listInbox(filter?: InboxFilter): InboxItem[]
+  /**
+   * Recent user/assistant turns of one thread, oldest first. Only inbound
+   * `message` rows and delivered `say` rows count; controls, card actions and
+   * other outbox topics are not conversation. Text is redacted (① boundary).
+   */
+  threadHistory(threadId: string, limit?: number): ThreadHistoryEntry[]
   updateInboxStatus(id: string, status: InboxStatus, errorCode?: string | null): InboxItem
 
   createActor(input?: CreateActorInput): Actor
@@ -1046,6 +1060,16 @@ export function createGatewayStore(dbPath: string): GatewayStore {
   const listOutboxByStatus = db.prepare(
     'SELECT * FROM outbox WHERE status = ? ORDER BY created_at ASC, rowid ASC',
   )
+  const listHistoryInbox = db.prepare(`
+    SELECT content_json, received_at FROM inbox
+     WHERE thread_id = ? AND kind = 'message' AND status <> 'failed'
+     ORDER BY received_at DESC, rowid DESC LIMIT ?
+  `)
+  const listHistoryOutbox = db.prepare(`
+    SELECT payload_json, COALESCE(sent_at, created_at) AS at FROM outbox
+     WHERE thread_id = ? AND topic = 'say' AND status = 'sent'
+     ORDER BY COALESCE(sent_at, created_at) DESC, rowid DESC LIMIT ?
+  `)
   const countOutboxFailedSince = db.prepare(
     "SELECT COUNT(*) AS n FROM outbox WHERE status = 'failed' AND created_at >= ?",
   )
@@ -1179,6 +1203,34 @@ export function createGatewayStore(dbPath: string): GatewayStore {
       }
       const items = rows.map(toInbox)
       return limit === undefined ? items : items.slice(0, limit)
+    },
+
+    threadHistory(threadId, limit = 12) {
+      const n = Number.isInteger(limit) ? Math.max(1, Math.min(50, limit)) : 12
+      const entries: ThreadHistoryEntry[] = []
+      const inbound = listHistoryInbox.all(threadId, n) as Array<{
+        content_json: string
+        received_at: string
+      }>
+      for (const row of inbound) {
+        const text = inboundText(parseJson(row.content_json))
+        if (text !== null) entries.push({ role: 'user', text, at: row.received_at })
+      }
+      const outbound = listHistoryOutbox.all(threadId, n) as Array<{
+        payload_json: string
+        at: string
+      }>
+      for (const row of outbound) {
+        const payload = parseJson(row.payload_json)
+        if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) continue
+        const text = (payload as Record<string, Json>).text
+        if (typeof text === 'string' && text.trim() !== '') {
+          entries.push({ role: 'assistant', text: text.trim(), at: row.at })
+        }
+      }
+      return entries
+        .sort((a, b) => (a.at === b.at ? 0 : a.at < b.at ? -1 : 1))
+        .slice(-n)
     },
 
     updateInboxStatus(id, status, errorCode) {

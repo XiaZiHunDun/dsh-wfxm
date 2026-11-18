@@ -411,6 +411,45 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     return { expired, receipts, progress, dispatch }
   }
 
+  /**
+   * Slice AO: a supplement to a live task is applied, not parked. Steering a
+   * running attempt re-queues it with a fresh budget and aborts the child; the
+   * ack tells the user which of the three things just happened.
+   */
+  function applySupplement(input: {
+    taskId: string
+    inputId: string
+    text: string
+    threadId: string | null
+    replyToMsgId: string | null
+  }): void {
+    const task = tasks.getTask(input.taskId)
+    if (task === null) return
+    const ref = task.taskRef ?? input.taskId.slice(0, 8)
+    try {
+      const steered = tasks.steerTask({
+        taskId: task.id,
+        inputId: input.inputId,
+        text: input.text,
+      })
+      if (steered.applied === 'rerun') worker.cancel(task.id)
+      const text = steered.applied === 'rerun'
+        ? `已按补充指令重新开始（${ref}）。`
+        : steered.applied === 'merged'
+          ? `已并入任务 ${ref}，稍后按新内容执行。`
+          : `已记录补充指令（${ref}），任务恢复后生效。`
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text },
+        threadId: input.threadId,
+        replyToMsgId: input.replyToMsgId,
+        dedupeKey: `steer:${input.inputId}`,
+      })
+    } catch (error) {
+      logger?.warn?.(`steer failed: ${messageOf(error)}`)
+    }
+  }
+
   async function ingest(input: IngestInboundInput): Promise<HostIngestResult> {
     const result = await ingestInbound(
       {
@@ -498,13 +537,40 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       })
     }
 
+    // A reply target must be a real channel message id; the dedup key (event id)
+    // is not addressable and is rejected downstream (99992354). The channel
+    // carries its message id in content (docs/14 §三).
+    const external = result.inbox.content as { externalMsgId?: unknown } | null
+    const replyToMsgId
+      = typeof external?.externalMsgId === 'string' && external.externalMsgId !== ''
+        ? external.externalMsgId
+        : null
+
     if (result.target.kind !== 'orchestrator' || result.duplicate) {
+      // An anchored message on a live task is routed by ① straight to ⑤; that
+      // path used to end here with the input parked forever (Slice AO).
+      if (result.target.kind === 'task' && !result.duplicate && result.relay?.enqueued === true
+        && result.relay.inputId !== null) {
+        applySupplement({
+          taskId: result.target.taskId,
+          // `inputId` is the `task_inputs` row; the inbox id would not resolve.
+          inputId: result.relay.inputId,
+          text: textOf(input.content) ?? '',
+          threadId: result.thread?.id ?? null,
+          replyToMsgId,
+        })
+      }
       return { result, foreground: null, error: null }
     }
 
     let turn: ForegroundOutcome
     try {
-      turn = await foreground({ result, text: textOf(input.content) })
+      const history = result.thread === null ? [] : gateway.threadHistory(result.thread.id, 12)
+      turn = await foreground({
+        result,
+        text: textOf(input.content),
+        ...history.length === 0 ? {} : { history },
+      })
     } catch (error) {
       // AR13: a foreground that cannot decide is not a silent drop.
       const reason = `foreground failed: ${messageOf(error)}`
@@ -529,15 +595,6 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         threadId: result.thread?.id ?? null,
       })
     }
-
-    // A reply target must be a real channel message id; the dedup key (event id)
-    // is not addressable and is rejected downstream (99992354). The channel
-    // carries its message id in content (docs/14 §三).
-    const external = result.inbox.content as { externalMsgId?: unknown } | null
-    const replyToMsgId
-      = typeof external?.externalMsgId === 'string' && external.externalMsgId !== ''
-        ? external.externalMsgId
-        : null
 
     if (turn.action === 'reply') {
       gateway.enqueueOutbox({
@@ -600,6 +657,16 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         threadId: result.thread?.id ?? null,
         replyToMsgId,
         dedupeKey: `ack:${turn.taskId}`,
+      })
+    }
+
+    if (turn.action === 'input-queued') {
+      applySupplement({
+        taskId: turn.taskId,
+        inputId: turn.inputId,
+        text: textOf(input.content) ?? '',
+        threadId: result.thread?.id ?? null,
+        replyToMsgId,
       })
     }
 

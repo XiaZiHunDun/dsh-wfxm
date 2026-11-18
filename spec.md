@@ -2140,3 +2140,28 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 
 `verify-all` 41 passed + 1 advisory；`--ci` 37 passed + 1 advisory（root）；`check-style` 167 files ok；
 `verify-health-alert` 7/7；本机 timer 已 enable，服务 active 时手动执行输出 `health-alert: healthy`。
+
+## Slice AO Spec — 对话连续性：线程历史与补充指令（2026-11-18，release `2026.11.18-3`）
+
+## 1. 问题（均已实测）
+
+- `task_inputs` 只写不读：生产 4 条 `pending` 从未被消费，运行中补充指令被静默吞掉；
+- 前台决策共用一个常驻 SDK 会话且 prompt 无历史：追问无法延续、跨 chat 有串味风险；
+- 执行器只收到 `intent`：没有线程历史，「在刚才结果上再改」做不了。
+
+## 2. 机制
+
+- `gateway.threadHistory`：本线程入站 `message` + 已发送 `say`，脱敏、旧→新、上限 12；
+- 决策 prompt 带最近 8 轮（每轮 220 字）+ 指代解析规则；SDK 按 `threadId` 开独立 session；
+- `tasks.steerTask`：running/paused → queued（intent 追加、attempt 归零、清租约，`rerun`）；
+  queued → 只改写 intent（`merged`）；waiting_* → 只改写（`recorded`）；输入 `delivered`，claim 时 `read`；
+- host 在 orchestrator `input-queued` 与 ① 直连任务的锚定路径都调用 steer，running 时 `worker.cancel()`，
+  并回执「已按补充指令重新开始 / 已并入 / 已记录」。
+
+## 3. 边界
+
+- intent 追加不替换；审批卡摘要不重画；历史不是完整转写；终态任务唤醒仍走 AR37 复验。
+
+## 4. 验证
+
+`verify-gateway 118`、`verify-tasks 102`、`verify-orchestrator 52`、`verify-host 39`；全量 41 套件通过。

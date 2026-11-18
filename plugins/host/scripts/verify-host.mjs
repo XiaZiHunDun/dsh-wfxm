@@ -218,18 +218,20 @@ await check('replaying the same msgId is a duplicate and creates nothing new', a
 
 // ---- #9 连续前台：同一 thread、同一任务，第二条排队 -----------------------------------
 
-await check('a second message in the same chat queues into the live task on the same thread', async () => {
+await check('a second message in the same chat merges into the live task instead of parking', async () => {
   const { host } = makeHost()
   await pair(host)
   const first = await say(host, '第一步')
   const second = await say(host, '第二步')
   const taskId = first.result.foreground.taskId
   const inputs = host.stores.tasks.pendingInputs(taskId)
+  const task = host.stores.tasks.getTask(taskId)
   const tasks = host.stores.tasks.listTasks()
   const threadIds = new Set([
     first.result.result.thread.id,
     second.result.result.thread.id,
   ])
+  const outbound = host.stores.gateway.listOutbox({ status: 'pending' }).map((item) => item.payload.text)
   host.close()
   return threadIds.size === 1
     && second.result.result.target.kind === 'task'
@@ -237,8 +239,9 @@ await check('a second message in the same chat queues into the live task on the 
     && second.result.result.relay?.enqueued === true
     && second.result.foreground === null
     && tasks.length === 1
-    && inputs.length === 1
-    && inputs[0].inboxId === second.result.result.inbox.id
+    && inputs.length === 0
+    && task.intent.includes('第二步')
+    && outbound.some((text) => text.includes('已并入任务'))
 })
 
 // ---- 即时 ack：任务建好就回一条，长任务不至于看起来像死机 -----------------------------
@@ -358,12 +361,14 @@ await check('replying in place to the live task message resolves by anchor (#10 
   const taskId = first.result.foreground.taskId
   const reply = await say(host, '追问一句', { replyToMsgId: first.msgId })
   const inputs = host.stores.tasks.pendingInputs(taskId)
+  const task = host.stores.tasks.getTask(taskId)
   host.close()
   return reply.result.result.followUp?.matchedBy === 'anchor'
     && reply.result.result.target.kind === 'task'
     && reply.result.result.target.taskId === taskId
     && reply.result.result.relay?.enqueued === true
-    && inputs.length === 1
+    && inputs.length === 0
+    && task.intent.includes('追问一句')
 })
 
 // ---- AR37：已结束任务的锚点回复必须先过复验 ------------------------------------------
@@ -409,7 +414,8 @@ await check('a granted actor wakes the finished task into round 2 and queues the
     && task.status === 'queued'
     && task.round === 2
     && reply.result.result.target.taskId === taskId
-    && inputs.length === 1
+    && inputs.length === 0
+    && task.intent.includes('开始第二轮')
 })
 
 // ---- 控制命令 ------------------------------------------------------------------------
@@ -1212,6 +1218,40 @@ await check('a failed watchdog pause transition is logged and swallowed', async 
     && warnings.some((message) => /watchdog pause skipped/.test(message))
   host.close()
   return ok
+})
+
+// ---- Slice AO：补充指令打断重跑，而不是静默入库 ---------------------------------------
+
+await check('a supplement steers the running task and acks the restart', async () => {
+  const { host } = makeHost({
+    options: {
+      foregroundFactory: ({ tasks }) => (input) => {
+        const threadId = input.result.thread?.id ?? null
+        if (threadId === null) return { action: 'none', reason: 'no-thread' }
+        const live = tasks.listTaskThreads({ threadId, liveOnly: true })
+          .map((binding) => tasks.getTask(binding.taskId))
+          .find((task) => task !== null && task.status === 'running')
+        if (live === undefined || live === null) return { action: 'none', reason: 'no-live' }
+        const queued = tasks.enqueueInput({ taskId: live.id, inboxId: input.result.inbox.id })
+        return { action: 'input-queued', taskId: live.id, inputId: queued.id }
+      },
+    },
+  })
+  await pair(host)
+  const first = await say(host, '初始化线程')
+  const threadId = first.result.result.thread.id
+  const task = host.stores.tasks.createTask({ intent: '统计大文件', riskLevel: 'R1' })
+  host.stores.tasks.bindThread({ taskId: task.id, threadId, relation: 'default_owner' })
+  host.stores.tasks.claimTask({ owner: 'w1', leaseMs: 60_000, now: now() })
+
+  const second = await say(host, '只统计 /var')
+  const steered = host.stores.tasks.getTask(task.id)
+  const outbound = host.stores.gateway.listOutbox().map((item) => item.payload.text)
+  host.close()
+  return second.result.result.target.kind === 'task'
+    && steered.status === 'queued'
+    && steered.intent.includes('只统计 /var')
+    && outbound.some((text) => text.includes('已按补充指令重新开始'))
 })
 
 // ---- AR32 / AR33：组合根里不许出现表名、SQL 或渠道协议名 ------------------------------

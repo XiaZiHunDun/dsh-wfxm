@@ -30,7 +30,7 @@ export interface ResidentTurn {
   /** Boot (or reuse) the runtime. Idempotent. */
   start(): Promise<void>
   /** Send one prompt and resolve with the model's text for that turn. */
-  ask(prompt: string): Promise<string>
+  ask(prompt: string, sessionKey?: string): Promise<string>
   /** Reap the runtime. Terminal for this instance. */
   close(): Promise<void>
 }
@@ -88,7 +88,9 @@ export function createDshSdkTurn(options: DshSdkTurnOptions = {}): ResidentTurn 
   const patches = options.patches ?? [defaultSdkPatchPath()]
 
   let harness: DeepSeekHarness | null = null
-  let session: HarnessSessionLike | null = null
+  // One session per thread id: the runtime is shared (warm), the conversation
+  // is not. A chat must never see another chat's turns.
+  const sessions = new Map<string, HarnessSessionLike>()
 
   return {
     async start() {
@@ -112,14 +114,18 @@ export function createDshSdkTurn(options: DshSdkTurnOptions = {}): ResidentTurn 
           DSH_PERMISSION_MODE: 'read-only',
         },
       })
-      const handle = created.session() as unknown as HarnessSessionLike
       await created.start()
       harness = created
-      session = handle
     },
 
-    async ask(prompt) {
-      if (session === null) throw new Error('front-desk SDK runtime is not started')
+    async ask(prompt, sessionKey) {
+      if (harness === null) throw new Error('front-desk SDK runtime is not started')
+      const key = sessionKey ?? ''
+      let session = sessions.get(key)
+      if (session === undefined) {
+        session = harness.session(key === '' ? undefined : key) as unknown as HarnessSessionLike
+        sessions.set(key, session)
+      }
       const result = await session.run(prompt)
       return result.finalResponse
     },
@@ -127,7 +133,7 @@ export function createDshSdkTurn(options: DshSdkTurnOptions = {}): ResidentTurn 
     async close() {
       const current = harness
       harness = null
-      session = null
+      sessions.clear()
       if (current !== null) await current.close()
     },
   }
@@ -184,10 +190,10 @@ export function createSdkDecisionRunner(options: SdkDecisionRunnerOptions): SdkD
     }
   }
 
-  async function ask(prompt: string): Promise<string> {
+  async function ask(prompt: string, sessionKey?: string): Promise<string> {
     const active = await ensureTurn()
     try {
-      const text = await withTimeout(active.ask(prompt), timeoutMs)
+      const text = await withTimeout(active.ask(prompt, sessionKey), timeoutMs)
       if (text.trim() === '') throw new Error('front-desk decision returned no text')
       return text
     } catch (error) {
@@ -198,8 +204,8 @@ export function createSdkDecisionRunner(options: SdkDecisionRunnerOptions): SdkD
     }
   }
 
-  const decide = ((prompt: string): Promise<string> => {
-    const run = tail.then(() => ask(prompt), () => ask(prompt))
+  const decide = ((prompt: string, sessionKey?: string): Promise<string> => {
+    const run = tail.then(() => ask(prompt, sessionKey), () => ask(prompt, sessionKey))
     tail = run.then(
       () => undefined,
       () => undefined,

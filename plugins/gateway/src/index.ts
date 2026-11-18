@@ -55,6 +55,7 @@ export type {
   SetSessionRouteInput,
   TaskAnchor,
   ThreadFilter,
+  ThreadHistoryEntry,
 } from './store.js'
 export {
   PAIRING_CODE_DEFAULT_TTL_MS,

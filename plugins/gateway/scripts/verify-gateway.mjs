@@ -2704,6 +2704,43 @@ await check('apply opens the configured database, registers tools and closes on 
     && inject.includes('tools')
 })
 
+// ---- Slice AO: thread history for the front desk ----------------------------
+
+await check('threadHistory keeps only this thread’s messages and delivered replies', () => {
+  const historyStore = createGatewayStore(join(dir, 'history.sqlite'))
+  try {
+    const one = historyStore.resolveThread({ channelId: 'cli_h', chatId: 'chat_one' })
+    const two = historyStore.resolveThread({ channelId: 'cli_h', chatId: 'chat_two' })
+    historyStore.acceptInbound({
+      channelId: 'cli_h', msgId: 'h1', content: { text: '查一下 demo 服务' }, threadId: one.id,
+    })
+    historyStore.acceptInbound({
+      channelId: 'cli_h', msgId: 'h2', content: { text: '另一个会话' }, threadId: two.id,
+    })
+    historyStore.acceptInbound({
+      channelId: 'cli_h', msgId: 'h3', kind: 'control', content: { text: '停止 t1' }, threadId: one.id,
+    })
+    historyStore.enqueueOutbox({
+      topic: 'say', payload: { text: 'demo 服务运行中' }, threadId: one.id,
+    })
+    const claimed = historyStore.claimOutbox({ owner: 'h', leaseMs: 10_000 })
+    historyStore.markOutboxSent(claimed[0].id, 'om_h1')
+    // Pending replies were never seen by the user, so they must not enter history.
+    historyStore.enqueueOutbox({
+      topic: 'say', payload: { text: '还没送达' }, threadId: one.id,
+    })
+
+    const entries = historyStore.threadHistory(one.id)
+    return entries.length === 2
+      && entries[0].role === 'user'
+      && entries[0].text === '查一下 demo 服务'
+      && entries[1].role === 'assistant'
+      && entries[1].text === 'demo 服务运行中'
+  } finally {
+    historyStore.close()
+  }
+})
+
 // ---- teardown ----------------------------------------------------------------
 
 store.close()

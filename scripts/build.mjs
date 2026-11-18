@@ -5,8 +5,8 @@
  *   node scripts/build.mjs            # emit lib/
  *   node scripts/build.mjs --noEmit   # same traversal, typecheck only
  *
- * CI uses `pnpm -r build`; this exists so a machine without pnpm (and the
- * release script) still produces the artifacts the verify suites import.
+ * CI runs the same two commands; packages are built in dependency order so a
+ * clean checkout (no `lib/`) works on the first pass.
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'

@@ -373,6 +373,25 @@ export interface WakeTaskInput {
   reason?: string
 }
 
+/** Owner supplement already enqueued as a `task_inputs` row. */
+export interface SteerTaskInput {
+  taskId: string
+  inputId: string
+  /** Plain text of the supplement, already redacted by ①. */
+  text: string
+}
+
+/**
+ * `rerun`: the running attempt was interrupted and the task re-queued;
+ * `merged`: the task had not started, so the supplement joined its intent;
+ * `recorded`: the task is parked (`waiting_*`), the supplement applies when it
+ * resumes.
+ */
+export interface SteerTaskResult {
+  task: Task
+  applied: 'rerun' | 'merged' | 'recorded'
+}
+
 /** Approval gate (Slice I): park a task before the worker can lease it. */
 export interface HoldTaskInput {
   taskId: string
@@ -466,6 +485,15 @@ export interface TaskStore {
    * Throws `invalid-transition` unless the row is currently `paused`.
    */
   resumeTask(taskId: string): Task
+
+  /**
+   * Slice AO: apply an owner supplement to a live task instead of dropping it
+   * into `task_inputs` forever. `running`/`paused` → queued with the supplement
+   * appended to the intent and a fresh budget (the caller aborts the child);
+   * `queued`/`waiting_*` only rewrite the intent. The input row moves to
+   * `delivered`, and `claimTask` later marks it `read`.
+   */
+  steerTask(input: SteerTaskInput): SteerTaskResult
 
   /**
    * Worker lease API (13 §3.3). `claimTask` is the only way a task enters
@@ -1214,6 +1242,20 @@ export function createTaskStore(dbPath: string): TaskStore {
            started_at = NULL, finished_at = NULL
      WHERE id = ? AND status = 'paused'
   `)
+  // Slice AO: steering a running attempt is a new start, not a retry — the
+  // attempt budget resets so a supplement cannot be starved by prior failures.
+  const steerRunningRow = db.prepare(`
+    UPDATE tasks
+       SET intent = ?, status = 'queued', attempt = 0, lease_owner = NULL,
+           lease_expires_at = NULL, next_attempt_at = NULL,
+           started_at = NULL, finished_at = NULL
+     WHERE id = ? AND status = 'running'
+  `)
+  const rewriteIntentRow = db.prepare('UPDATE tasks SET intent = ? WHERE id = ?')
+  const markInputsReadForTask = db.prepare(`
+    UPDATE task_inputs SET status = 'read', read_at = ?
+     WHERE task_id = ? AND status = 'delivered'
+  `)
 
   const getTask = (id: string): Task | null => {
     const row = selectTask.get(id) as TaskRow | undefined
@@ -1431,6 +1473,48 @@ export function createTaskStore(dbPath: string): TaskStore {
     }).immediate()
   }
 
+  function steerTask(input: SteerTaskInput): SteerTaskResult {
+    const task = getTask(input.taskId)
+    if (task === null) throw new TaskError('invalid-task', `task ${input.taskId} not found`)
+    const supplement = input.text.trim()
+    if (supplement === '') throw new TaskError('invalid-input', 'supplement text is empty')
+    const row = selectInput.get(input.inputId) as TaskInputRow | undefined
+    if (row === undefined || row.task_id !== task.id) {
+      throw new TaskError('not-found', `task input ${input.inputId} does not belong to ${task.id}`)
+    }
+    const intent = `${task.intent}\n\n补充指令：${supplement}`
+    return db.transaction(() => {
+      let applied: SteerTaskResult['applied']
+      if (task.status === 'running') {
+        if (steerRunningRow.run(intent, task.id).changes !== 1) {
+          throw new TaskError('conflict', `task ${task.id} is no longer running`)
+        }
+        applied = 'rerun'
+      } else if (task.status === 'paused') {
+        rewriteIntentRow.run(intent, task.id)
+        if (resumeTaskRow.run(task.id).changes !== 1) {
+          throw new TaskError('conflict', `task ${task.id} is no longer paused`)
+        }
+        applied = 'rerun'
+      } else if (task.status === 'queued') {
+        rewriteIntentRow.run(intent, task.id)
+        applied = 'merged'
+      } else if (task.status === 'waiting_approval' || task.status === 'waiting_input') {
+        rewriteIntentRow.run(intent, task.id)
+        applied = 'recorded'
+      } else {
+        throw new TaskError('conflict', `cannot steer a ${task.status} task`)
+      }
+      markDeliveredStmt.run(new Date().toISOString(), input.inputId)
+      appendEvent(task.id, 'task.steered', {
+        applied,
+        inputId: input.inputId,
+        ...applied === 'rerun' ? { to: 'queued', reason: 'owner:supplement' } : {},
+      })
+      return { task: getTask(task.id) as Task, applied }
+    }).immediate()
+  }
+
   /** Shared by `transition` and lease recovery (recovery must also write a receipt). */
   function doTransition(taskId: string, input: TransitionInput): Task {
     const task = getTask(taskId)
@@ -1603,6 +1687,9 @@ export function createTaskStore(dbPath: string): TaskStore {
           leaseExpiresAt: leaseUntil,
           attempt: task.attempt,
         })
+        // A steered supplement was delivered into the intent; the claim is the
+        // moment it is actually consumed.
+        markInputsReadForTask.run(nowIso, candidate.id)
         return task
       }).immediate()
     },
@@ -1951,6 +2038,8 @@ export function createTaskStore(dbPath: string): TaskStore {
     resumeFromApproval,
 
     resumeTask,
+
+    steerTask,
 
     beginCheckpoint,
 

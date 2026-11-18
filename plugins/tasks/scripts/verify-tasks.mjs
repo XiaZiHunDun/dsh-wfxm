@@ -1919,6 +1919,56 @@ await check('task_status lists tasks by status', async () => {
     && value.task === null
 })
 
+// ---- Slice AO: owner supplements are applied, not parked --------------------
+
+await check('steerTask re-queues a running attempt with the supplement and consumes the input', () => {
+  const steerStore = createTaskStore(join(dir, 'steer.sqlite'))
+  try {
+    const task = steerStore.createTask({ intent: '统计大文件', riskLevel: 'R1' })
+    const claimed = steerStore.claimTask({ owner: 'w1', leaseMs: 60_000, now: new Date() })
+    if (claimed === null || claimed.id !== task.id) return false
+    const input = steerStore.enqueueInput({ taskId: task.id, inboxId: 'inbox-steer-1' })
+    const steered = steerStore.steerTask({
+      taskId: task.id,
+      inputId: input.id,
+      text: '只统计 /var',
+    })
+    const raw = new DatabaseConstructor(join(dir, 'steer.sqlite'))
+    const delivered = raw.prepare('SELECT status FROM task_inputs WHERE id = ?').get(input.id)
+    raw.close()
+    const events = steerStore.listEvents(task.id)
+    if (steered.applied !== 'rerun') return false
+    if (steered.task.status !== 'queued' || steered.task.attempt !== 0) return false
+    if (steered.task.leaseOwner !== null || steered.task.startedAt !== null) return false
+    if (!steered.task.intent.includes('只统计 /var')) return false
+    if (delivered.status !== 'delivered') return false
+    if (!events.some((event) => event.type === 'task.steered')) return false
+
+    // The next claim is when the intent is actually consumed.
+    const again = steerStore.claimTask({ owner: 'w2', leaseMs: 60_000, now: new Date() })
+    const after = new DatabaseConstructor(join(dir, 'steer.sqlite'))
+    const read = after.prepare('SELECT status FROM task_inputs WHERE id = ?').get(input.id)
+    after.close()
+    return again !== null && again.id === task.id && read.status === 'read'
+  } finally {
+    steerStore.close()
+  }
+})
+
+await check('steerTask merges into a queued task without burning an attempt', () => {
+  const mergeStore = createTaskStore(join(dir, 'steer-merge.sqlite'))
+  try {
+    const task = mergeStore.createTask({ intent: '检查磁盘', riskLevel: 'R1' })
+    const input = mergeStore.enqueueInput({ taskId: task.id, inboxId: 'inbox-steer-2' })
+    const steered = mergeStore.steerTask({ taskId: task.id, inputId: input.id, text: '顺便看 inode' })
+    return steered.applied === 'merged'
+      && steered.task.status === 'queued'
+      && steered.task.intent.includes('顺便看 inode')
+  } finally {
+    mergeStore.close()
+  }
+})
+
 // ---- teardown ---------------------------------------------------------------
 
 httpServer.close()

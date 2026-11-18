@@ -63,6 +63,8 @@ export type {
   ResourceLockFilter,
   ResumeFromApprovalInput,
   ResumeFromApprovalResult,
+  SteerTaskInput,
+  SteerTaskResult,
   TaskFilter,
   TaskStore,
   TransitionInput,

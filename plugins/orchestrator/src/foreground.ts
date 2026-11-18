@@ -23,7 +23,7 @@ import type { IngestResult } from '@dsh-wfxm/gateway'
 import { planTaskRisk } from '@dsh-wfxm/tasks'
 import type { RiskLevel, TaskStore } from '@dsh-wfxm/tasks'
 import { parseDecision, type Decision } from './decision.js'
-import { buildDecisionPrompt } from './prompt.js'
+import { buildDecisionPrompt, type ConversationTurn } from './prompt.js'
 import { createQuickAnswer, type QuickAnswer, type QuickChecks, type ResourceSnapshot } from './quick-answer.js'
 
 export type ForegroundOutcome =
@@ -36,6 +36,8 @@ export interface ForegroundInput {
   result: IngestResult
   /** Plain text body, already extracted from the channel payload. */
   text: string | null
+  /** Recent turns of this thread (旧→新), assembled by the host. */
+  history?: readonly ConversationTurn[]
 }
 
 export type ForegroundHandler = (
@@ -61,7 +63,7 @@ export const NON_TEXT_REPLY = '暂时只支持文本消息，请直接发文字�
 export interface OrchestratorForegroundOptions {
   tasks: TaskStore
   /** The model seam: prompt in, raw model text out. `createDshDecisionRunner`. */
-  decide: (prompt: string) => Promise<string>
+  decide: (prompt: string, sessionKey?: string) => Promise<string>
   /** Downgrade path for a failed / rejected decision. Defaults to the rule foreground. */
   fallback?: ForegroundHandler
   liveStatuses?: readonly string[]
@@ -148,7 +150,7 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
     return { ...outcome, note }
   }
 
-  return async ({ result, text }) => {
+  return async ({ result, text, history }) => {
     if (result.target.kind !== 'orchestrator') {
       return { action: 'none', reason: `target:${result.target.kind}` }
     }
@@ -178,21 +180,22 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
       text: trimmed,
       projectName: result.project?.name ?? null,
       liveTask: live,
+      ...history === undefined ? {} : { history },
     })
 
     let decision: Decision
     try {
-      const raw = await decide(prompt)
+      const raw = await decide(prompt, thread.id)
       const parsed = parseDecision(raw, {
         liveTask: live !== null,
         ...options.maxReplyChars === undefined ? {} : { maxReplyChars: options.maxReplyChars },
         ...options.maxIntentChars === undefined ? {} : { maxIntentChars: options.maxIntentChars },
       })
-      if (!parsed.ok) return await degrade({ result, text }, thread.id, parsed.reason)
+      if (!parsed.ok) return await degrade({ result, text, ...history === undefined ? {} : { history } }, thread.id, parsed.reason)
       decision = parsed.decision
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      return await degrade({ result, text }, thread.id, `decision-failed: ${message}`)
+      return await degrade({ result, text, ...history === undefined ? {} : { history } }, thread.id, `decision-failed: ${message}`)
     }
 
     if (decision.action === 'reply') {

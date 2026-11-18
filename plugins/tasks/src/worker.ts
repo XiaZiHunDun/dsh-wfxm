@@ -427,6 +427,13 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     // transition, so that case is reported below instead of `stale-lease`.
     const latest = store.getTask(task.id)
     if (latest?.leaseOwner !== owner && latest?.status !== 'cancelled' && latest?.status !== 'paused') {
+      // Owner steer (Slice AO) moved the row back to `queued` and cleared the
+      // lease; the aborted attempt must release what it had leased too.
+      try {
+        store.releaseTaskResourceLocks(task.id)
+      } catch (error) {
+        options.onError?.(error)
+      }
       return stale()
     }
 

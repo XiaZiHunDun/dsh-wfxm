@@ -13,7 +13,12 @@
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-export type DecisionRunner = (prompt: string) => Promise<string>
+/**
+ * One decision turn. `sessionKey` scopes the model conversation (the thread id
+ * in production): the SDK runner keeps one session per key so chats never see
+ * each other's turns. Headless runners ignore it — each call is a fresh process.
+ */
+export type DecisionRunner = (prompt: string, sessionKey?: string) => Promise<string>
 
 export interface DshDecisionRunnerOptions {
   /** dsh binary; default `dsh` (resolved through the child's PATH). */
@@ -60,8 +65,7 @@ export function createDshDecisionRunner(options: DshDecisionRunnerOptions = {}):
   const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS
   const cwd = options.cwd ?? (process.env.TMPDIR ?? '/tmp')
 
-  return function decide(prompt) {
-    return new Promise<string>((resolve, reject) => {
+  return function decide(prompt) {    return new Promise<string>((resolve, reject) => {
       const env: Record<string, string> = {
         ...(process.env as Record<string, string>),
         ...(options.env ?? {}),

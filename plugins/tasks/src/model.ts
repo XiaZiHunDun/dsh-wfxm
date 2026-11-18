@@ -60,6 +60,7 @@ export type TaskEventType =
   | 'task.checkpoint'
   | 'task.rollback'
   | 'task.woken'
+  | 'task.steered'
   | 'task.verified'
   | 'task.merge'
   | 'task.receipt'

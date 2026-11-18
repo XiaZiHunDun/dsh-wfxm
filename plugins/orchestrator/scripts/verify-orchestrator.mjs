@@ -222,6 +222,35 @@ await check('the prompt carries text, project and live task, and no plugin/proto
     && !leaked
 })
 
+await check('the prompt carries recent history in order and tells the model to resolve references', () => {
+  const prompt = buildDecisionPrompt({
+    text: '那它现在呢？',
+    history: [
+      { role: 'user', text: '看看 demo 服务' },
+      { role: 'assistant', text: 'demo 服务运行中' },
+    ],
+  })
+  return prompt.includes('最近对话')
+    && prompt.indexOf('看看 demo 服务') < prompt.indexOf('demo 服务运行中')
+    && prompt.includes('指代')
+})
+
+await check('a decision turn is scoped to the thread id, never a shared session', async () => {
+  const keys = []
+  const { host } = makeHost({
+    decide: async (_prompt, sessionKey) => {
+      keys.push(sessionKey)
+      return '{"action":"reply","text":"好的"}'
+    },
+  })
+  await pair(host)
+  const { result } = await say(host, '你好')
+  await host.pump()
+  const threadId = result.result.thread?.id ?? null
+  host.close()
+  return threadId !== null && keys.length === 1 && keys[0] === threadId
+})
+
 // ---- 快问直答：只读问题不跑模型、不建任务 -------------------------------------------
 
 const SNAPSHOT = { diskUsedPct: 42, memAvailablePct: 61, load1: 0.42, cpuCores: 8 }
