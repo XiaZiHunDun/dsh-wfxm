@@ -1619,6 +1619,7 @@ await check('H4 1: 全局停止 writes the kill file, parks running work and blo
   })
 
   const ack = await say(host, '全局停止')
+  const status = await say(host, '全局状态')
   const gate = await host.runWorkerOnce()
   const before = host.stores.tasks.listTasks().length
   const blocked = await say(host, '帮我重启一下服务')
@@ -1628,6 +1629,7 @@ await check('H4 1: 全局停止 writes the kill file, parks running work and blo
     .listDue(new Date('2026-11-10T10:00:00.000Z'))
     .some((item) => item.id === due.id)
   const ackSent = transport.sent.some((delivery) => delivery.payload?.text?.includes('已全局停止'))
+  const statusSent = transport.sent.some((delivery) => delivery.payload?.text?.includes('全局状态：stopped'))
 
   const ok = existsSync(haltFile)
     && host.isHalted()
@@ -1637,7 +1639,9 @@ await check('H4 1: 全局停止 writes the kill file, parks running work and blo
     && pump.reminders === 0
     && stillPending
     && ackSent
+    && statusSent
     && ack.result.result.global?.halted === true
+    && status.result.result.global?.halted === true
     && blocked.result.foreground === null
   host.close()
   reminders.close()

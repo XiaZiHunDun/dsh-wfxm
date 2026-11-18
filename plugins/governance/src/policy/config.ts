@@ -118,8 +118,10 @@ export function loadPolicy(): Policy | null {
         ? undefined
         : resolve(parsed.preimages.contentDir),
     },
-    killSwitchPath: isAbsolute(parsed.killSwitchFile)
-      ? parsed.killSwitchFile
-      : resolve(configDir, parsed.killSwitchFile),
+    killSwitchPath: process.env.DSH_WFXM_HALT_FILE !== undefined && process.env.DSH_WFXM_HALT_FILE !== ''
+      ? resolve(process.env.DSH_WFXM_HALT_FILE)
+      : isAbsolute(parsed.killSwitchFile)
+        ? parsed.killSwitchFile
+        : resolve(configDir, parsed.killSwitchFile),
   }
 }

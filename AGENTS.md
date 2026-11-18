@@ -455,8 +455,9 @@
   - **项目级授权（Slice AX / E3）**：`config/project-tools.json` 按 `project_id` 列工具白名单
     （`exec_*` 通配）；执行器注入 `DSH_WFXM_PROJECT_ID`，③ 的 `pre-execute` 拒绝白名单外工具
     （`rule='project-tool'`）。文件缺失=不限制，格式错误=fail-closed（[11 §5.2](docs/11-架构锚定.md)、[16 §12.39](docs/16-部署与运行.md)）。
-  - **IM 全局停止（Slice AY / H4）**：IM 发 `全局停止`/`halt` 写 `config/KILL`（工具调用即拒）、
-    中止运行中尝试置 `paused`、停新任务与提醒；`全局恢复` 解除，跨重启保持。
+  - **IM 全局停止（Slice AY / H4）**：IM 发 `全局停止`/`halt` 写停止文件（`DSH_WFXM_HALT_FILE`，
+    默认 `$DSH_WFXM_DATA_DIR/KILL`；工具调用即拒）、中止运行中尝试置 `paused`、停新任务与提醒；
+    `全局恢复` 解除，跨重启保持。
     停止期间控制命令与 outbox 仍工作；不撤销 Grant、不自动重跑（[11 §5.3](docs/11-架构锚定.md)、[16 §12.40](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。

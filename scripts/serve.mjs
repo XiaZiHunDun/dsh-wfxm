@@ -262,8 +262,10 @@ async function main() {
           },
           // H4: same file governance treats as its kill switch; the file (not
           // memory) is the source of truth so a restart keeps the stop state.
+          // Never inside the release: releases are immutable and owned by the
+          // deploy user, while the service runs as dshwfxm.
           haltFile: process.env.DSH_WFXM_HALT_FILE
-            ?? fileURLToPath(new URL('../config/KILL', import.meta.url)),
+            ?? join(process.env.DSH_WFXM_DATA_DIR ?? fileURLToPath(new URL('..', import.meta.url)), 'KILL'),
           worker: {
             resourceLocks: config.resourceLocks,            verify: {
               cwd: config.workdir,

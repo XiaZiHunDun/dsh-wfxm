@@ -1640,3 +1640,4 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 
 - [x] `build` / `--noEmit` / `check-style` / `verify-all 46 passed`
 - [x] 发布 `2026.11.18-12`、重启、勾选 checklist、提交推送
+- [x] 飞书真机验收（停 → 拦消息 → 恢复）；修复停止文件路径与 `status_all` 文案，发布 `2026.11.18-14`

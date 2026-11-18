@@ -576,8 +576,14 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
 
   function haltAll(): { halted: boolean } {
     if (haltFile === null) throw new Error('global stop is not configured')
-    mkdirSync(dirname(haltFile), { recursive: true })
-    writeFileSync(haltFile, `${now().toISOString()}\n`, { encoding: 'utf8', mode: 0o640 })
+    try {
+      mkdirSync(dirname(haltFile), { recursive: true })
+      writeFileSync(haltFile, `${now().toISOString()}\n`, { encoding: 'utf8', mode: 0o640 })
+    } catch (error) {
+      // 不能静默退化成"看起来停了"：调用方会据此拒绝新任务。
+      logger?.warn?.(`halt: cannot write ${haltFile}: ${messageOf(error)}`)
+      throw error
+    }
     // Stop claiming new work in this process too; the file gate alone would
     // only take effect after a restart.
     worker.stop()
@@ -801,12 +807,15 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     // would look like the command was lost.
     if (result.global !== null && result.global !== undefined) {
       const halted = result.global.halted
+      const command = result.target.kind === 'control' ? result.target.command : null
       const text = result.global.executed
-        ? halted === true
-          ? '已全局停止：新任务与提醒暂停，运行中的尝试已中止并置为暂停。发送「全局恢复」后继续。'
-          : halted === false
-            ? '已全局恢复：新任务与提醒继续；被暂停的任务需要单独回复「继续 <任务号>」。'
-            : '全局状态不可用。'
+        ? command === 'status_all'
+          ? `全局状态：${halted === true ? 'stopped（已停止）' : halted === false ? 'running（运行中）' : '不可用'}`
+          : halted === true
+            ? '已全局停止：新任务与提醒暂停，运行中的尝试已中止并置为暂停。发送「全局恢复」后继续。'
+            : halted === false
+              ? '已全局恢复：新任务与提醒继续；被暂停的任务需要单独回复「继续 <任务号>」。'
+              : '全局状态不可用。'
         : '全局停止不可用：主机未配置停止开关。'
       gateway.enqueueOutbox({
         topic: 'say',

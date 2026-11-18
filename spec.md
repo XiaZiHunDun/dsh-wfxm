@@ -2561,3 +2561,6 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
   `halt`/`resume`、`skipped='halted'`、提醒跳过与停止期对话拦截；serve 传 `haltFile` 并记录 `halt`。
 - 文档：`docs/09` E3/H4/J6、`docs/11 §5.2/§5.3`、`docs/16 §12.39/§12.40`、`docs/06 §六`、
   `AGENTS.md §4`、根 `tasks.md`。
+- 真机验收（2026-11-18，飞书网页版）：停 → 普通消息被拦（任务数 34→34）→ 恢复，通过。
+  期间修复停止文件误落 release 目录（服务用户不可写）→ `DSH_WFXM_HALT_FILE=/var/lib/dsh-wfxm/KILL`；
+  以及 `status_all` 文案。修复后发布 `2026.11.18-14`。

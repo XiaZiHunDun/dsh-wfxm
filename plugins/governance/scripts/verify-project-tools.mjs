@@ -100,6 +100,14 @@ await check('the kill switch still wins over a project allowlist', async () =>
   evaluate(killRoot, 'read', {}, 'proj-a').rule === 'kill-switch')
 rmSync(join(killRoot.killSwitchPath), { force: true })
 
+await check('DSH_WFXM_HALT_FILE overrides the policy-relative kill switch', async () => {
+  const runtimeKill = join(dir, 'runtime-KILL')
+  process.env.DSH_WFXM_HALT_FILE = runtimeKill
+  const resolved = loadPolicy().killSwitchPath === runtimeKill
+  delete process.env.DSH_WFXM_HALT_FILE
+  return resolved
+})
+
 rmSync(dir, { recursive: true, force: true })
 console.log(`\n${pass} passed · ${fail} failed`)
 if (fail > 0) process.exit(1)
