@@ -192,6 +192,23 @@
 
 **待定**：哪些事件源进 v1；observe 记录如何呈现；auto 的初始白名单。
 
+#### B2 v1 实施记（2026-11-18，release `2026.11.18-1`）
+
+owner 拍板结果：
+
+- 事件源只接**主机巡检发现项**（磁盘 / 内存 / 负载 / 失败 unit / 端口 / 错误日志），不接 CI、邮件、订阅会话；
+- 呈现为「即时一条摘要 + 日报汇总」，不新增推送通道；
+- 全部 **observe**：只记录候选，绝不自动建任务；auto 等误报率有数据后再逐条放开。
+
+实现：新增静态规则表 `CANDIDATE_RULES`（6 项清单，`strength` 恒为 `observe`，代码里刻意没有 auto 分支）；
+`inspection_candidates` 以 `(rule_id, item_id, target)` 唯一，重复命中只累加 `seen_count`；条目恢复后自动
+`resolved`，再次失败会重开；即时失败告警正文追加「已记录为候选（observe，不自动建任务）。」；日报新增
+「候选：新增 N · 恢复 K · 未决 M」段与最多 5 条明细，无候选时整段省略。周报未加，避免一次改两处。
+
+生产演练（巡检临时调到 1 分钟）：制造 `dsh-wfxm-drill-fail.service` 失败 → 首个 tick 记录候选
+`failed-units` 并推送带 observe 字样的即时告警；连续两个 tick `seen_count = 2` 且无重复行；
+`reset-failed` 后一个 tick 内 `status = resolved`。
+
 ### B3 Watchdog：先做确定性"无进展检测"
 
 **现状**：租约只解决"进程死了"；G2 巡检是外部服务；没有"任务活着但原地打转"的判定。原型**未实现** Watchdog，

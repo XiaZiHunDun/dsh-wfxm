@@ -2099,23 +2099,21 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 
 ---
 
-## Slice AL Spec — B3 v2 静默自动暂停与一键恢复（2026-11-16，release `2026.11.16-7`）
+## Slice AM Spec — B2 v1 主动候选路径（2026-11-18，release `2026.11.18-1`）
 
-## 1. 默认值（owner 授权选定）
+## 1. owner 拍板
 
-- 阈值：复用 `DSH_WFXM_TASK_STALL_MINUTES`，默认 **15 分钟**（单次 dsh 调用 10 分钟超时，超时必落事件，
-  故 15 分钟无事件≈真卡死）；
-- 开关：`DSH_WFXM_WATCHDOG_PAUSE`，默认 **开**，`0`/`false` 关闭回到 v1 只提醒；
-- 恢复：`继续 <ref>`，**从头执行**（dsh 单次调用不可断点续跑，通知里已写明）。
+- 事件源：仅主机巡检发现项；不接 CI / 邮件 / 订阅会话；
+- 呈现：即时一条摘要 + 日报汇总；
+- auto：全部 observe，不自动建任务。
 
 ## 2. 机制
 
-① 先入队「已自动暂停」通知（`stalled` 只在真正入队时上报）→ host 对每个 stalled 执行
-`worker.cancel()` 再 `transition(paused)`；`paused → queued` 由 `resumeTask()` 承担（清租约、
-`attempt=0`、清 `started_at`）；worker 见 `paused|cancelled` 只释放锁并 `skipped`。
+`CANDIDATE_RULES`（6 项清单，strength 恒 observe）→ `deriveCandidates(fail|warn)` →
+`inspection_candidates` upsert（唯一键 rule/item/target，累加 seen_count，恢复 resolved、再失败重开）→
+即时告警追加 observe 字样；日报追加候选计数与明细，无候选省略。
 
 ## 3. 验证
 
-单测：gateway 117、tasks 100、host 38、executor 20、serve 12。
-生产（阈值临时 1 分钟）：`tg66pk2dmq` 60s 自动暂停 + 子进程消失；`resumeTask` 150ms 内重新
-`running` 并拉起新子进程，60s 后再次暂停。
+`verify-patrol 31`、`verify-inspection 27`、`verify-report 10`、`verify-alerting 8`；
+生产：失败 unit → open（seen_count 2，无重复行）+ 即时告警；恢复 → resolved。

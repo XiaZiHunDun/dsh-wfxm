@@ -49,13 +49,15 @@ export type {
 } from './inspection/checklist.js'
 export { gradeInspection } from './inspection/alerting.js'
 export type { AlertDecision, AlertLevel } from './inspection/alerting.js'
+export { CANDIDATE_RULES, deriveCandidates } from './inspection/candidates.js'
+export type { CandidateInput, CandidateRule, CandidateStrength } from './inspection/candidates.js'
 export {
   parseExpectedPorts,
   parseThresholds,
   readInspectionConfig,
 } from './inspection/config.js'
 export type { InspectionConfig, InspectionConfigResult } from './inspection/config.js'
-export { summarize } from './inspection/report.js'
+export { formatCandidateDigest, summarize } from './inspection/report.js'
 export type {
   InspectionDigest,
   InspectionDigestLatest,
@@ -71,7 +73,13 @@ export {
   probeMemory,
 } from './inspection/probes.js'
 export { createInspectionStore } from './inspection/store.js'
-export type { InspectionRecord, InspectionStore } from './inspection/store.js'
+export type {
+  CandidateDigest,
+  CandidateDigestItem,
+  CandidateStatus,
+  InspectionRecord,
+  InspectionStore,
+} from './inspection/store.js'
 export type { ResourceProbeOptions, ResourceSnapshot } from './inspection/resources.js'
 export { createResourceProbe } from './inspection/resources.js'
 export {

@@ -6,7 +6,7 @@
 
 import { gradeInspection, type AlertLevel } from './alerting.js'
 import type { InspectionItemStatus } from './checklist.js'
-import type { InspectionRecord } from './store.js'
+import type { CandidateDigest, InspectionRecord } from './store.js'
 
 export interface InspectionDigestOptions {
   hours: number
@@ -93,4 +93,30 @@ export function summarize(
     latest,
     findings,
   }
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+/** Local `MM-DD HH:mm`; the digest text is read by a human on this host. */
+function shortTime(iso: string): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return iso
+  return `${pad2(at.getMonth() + 1)}-${pad2(at.getDate())} ${pad2(at.getHours())}:${pad2(at.getMinutes())}`
+}
+
+/**
+ * B2 v1 candidate block for the daily digest. Returns `null` when nothing was
+ * opened/resolved and nothing is open, so a quiet host adds no section at all.
+ */
+export function formatCandidateDigest(digest: CandidateDigest): string | null {
+  if (digest.opened === 0 && digest.resolved === 0 && digest.stillOpen === 0) return null
+  const lines = [`候选：新增 ${digest.opened} · 恢复 ${digest.resolved} · 未决 ${digest.stillOpen}`]
+  for (const item of digest.open.slice(0, 5)) {
+    lines.push(
+      `- ${item.title}（${item.lastObserved}，首次 ${shortTime(item.firstSeenAt)} / 最近 ${shortTime(item.lastSeenAt)}）`,
+    )
+  }
+  return lines.join('\n')
 }

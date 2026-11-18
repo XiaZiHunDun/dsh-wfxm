@@ -41,6 +41,10 @@ const OK = report('ok', [
   { id: 'disk', label: '根分区使用率', status: 'ok', value: '41%', threshold: '≥85% 警告 / ≥92% 失败' },
   { id: 'memory', label: '可用内存', status: 'ok', value: '63%', threshold: '≤15% 警告 / ≤7% 失败' },
 ])
+const WARN = report('warn', [
+  { id: 'disk', label: '根分区使用率', status: 'warn', value: '86%', threshold: '≥85% 警告 / ≥92% 失败' },
+  { id: 'memory', label: '可用内存', status: 'ok', value: '48%', threshold: '≤15% 警告 / ≤7% 失败' },
+])
 
 const checks = []
 function check(name, fn) {
@@ -638,6 +642,140 @@ check('runOnce: weekly sections are isolated, and non-weekly/early ticks skip th
   assert.equal((await early.runOnce()).pushed, null)
   assert.equal(earlyCalls, 0)
   early.stop()
+})
+
+check('candidates: a repeated fail bumps seen_count without duplicating rows', async () => {
+  const dbPath = tempPath('candidate-repeat')
+  let current = new Date(2026, 10, 11, 10, 0, 0)
+  const patrol = createInspectionPatrol({
+    dbPath,
+    config: { intervalMinutes: 15, digestHour: -1, target: 'h' },
+    collect: async () => FAIL,
+    now: () => current,
+    deliver: () => {},
+  })
+
+  await patrol.runOnce()
+  current = new Date(2026, 10, 11, 10, 16, 0)
+  const second = await patrol.runOnce()
+  // The alert is quieted here, but candidate recording still runs.
+  assert.equal(second.pushed, null)
+  patrol.stop()
+
+  const store = createInspectionStore(dbPath)
+  const digest = store.candidateDigest('2026-01-01T00:00:00.000Z')
+  assert.equal(digest.opened, 1)
+  assert.equal(digest.stillOpen, 1)
+  assert.equal(digest.open.length, 1)
+  assert.equal(digest.open[0].ruleId, 'disk-pressure')
+  assert.equal(digest.open[0].lastObserved, '95%')
+  assert.equal(digest.open[0].seenCount, 2)
+  store.close()
+})
+
+check('candidates: recovery resolves, and a later fail reopens', async () => {
+  const dbPath = tempPath('candidate-reopen')
+  let current = new Date(2026, 10, 11, 10, 0, 0)
+  let currentReport = FAIL
+  const patrol = createInspectionPatrol({
+    dbPath,
+    config: { intervalMinutes: 15, digestHour: -1, target: 'h' },
+    collect: async () => currentReport,
+    now: () => current,
+    deliver: () => {},
+  })
+
+  await patrol.runOnce()
+  currentReport = OK
+  current = new Date(2026, 10, 11, 10, 16, 0)
+  await patrol.runOnce()
+
+  const store = createInspectionStore(dbPath)
+  const recovered = store.candidateDigest('2026-01-01T00:00:00.000Z')
+  assert.equal(recovered.opened, 1)
+  assert.equal(recovered.resolved, 1)
+  assert.equal(recovered.stillOpen, 0)
+  assert.equal(recovered.open.length, 0)
+
+  currentReport = FAIL
+  current = new Date(2026, 10, 11, 10, 32, 0)
+  await patrol.runOnce()
+  const reopened = store.candidateDigest('2026-01-01T00:00:00.000Z')
+  assert.equal(reopened.resolved, 0)
+  assert.equal(reopened.stillOpen, 1)
+  assert.equal(reopened.open[0].seenCount, 2)
+
+  store.close()
+  patrol.stop()
+})
+
+check('candidates: the daily digest shows counts/bullets and omits an empty section', async () => {
+  const deliveries = []
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('candidate-digest'),
+    config: { intervalMinutes: 15, digestHour: 9, target: 'h' },
+    collect: async () => FAIL,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => deliveries.push(delivery),
+  })
+  await patrol.runOnce()
+  patrol.stop()
+
+  const digest = deliveries.find((item) => item.dedupeKey.startsWith('patrol-digest:'))
+  assert.ok(digest !== undefined)
+  assert.match(digest.text, /候选：新增 1 · 恢复 0 · 未决 1/)
+  assert.match(digest.text, /- 根分区使用率偏高（95%，首次 .* \/ 最近 .*）/)
+
+  const quietDeliveries = []
+  const quiet = createInspectionPatrol({
+    dbPath: tempPath('candidate-digest-empty'),
+    config: { intervalMinutes: 15, digestHour: 9, target: 'h' },
+    collect: async () => OK,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => quietDeliveries.push(delivery),
+  })
+  await quiet.runOnce()
+  quiet.stop()
+  assert.equal(quietDeliveries.length, 1)
+  assert.doesNotMatch(quietDeliveries[0].text, /候选/)
+})
+
+check('candidates: the immediate fail alert carries the observe line', async () => {
+  const deliveries = []
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('candidate-alert-line'),
+    config: { intervalMinutes: 15, digestHour: -1, target: 'h' },
+    collect: async () => FAIL,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => deliveries.push(delivery),
+  })
+  await patrol.runOnce()
+  patrol.stop()
+  assert.equal(deliveries.length, 1)
+  assert.match(deliveries[0].text, /已记录为候选（observe，不自动建任务）。/)
+})
+
+check('candidates: warn findings open candidates but push no immediate alert', async () => {
+  const dbPath = tempPath('candidate-warn')
+  const deliveries = []
+  const patrol = createInspectionPatrol({
+    dbPath,
+    config: { intervalMinutes: 15, digestHour: -1, target: 'h' },
+    collect: async () => WARN,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => deliveries.push(delivery),
+  })
+  const result = await patrol.runOnce()
+  assert.equal(result.pushed, null)
+  assert.equal(deliveries.length, 0)
+  patrol.stop()
+
+  const store = createInspectionStore(dbPath)
+  const digest = store.candidateDigest('2026-01-01T00:00:00.000Z')
+  assert.equal(digest.opened, 1)
+  assert.equal(digest.stillOpen, 1)
+  assert.equal(digest.open[0].ruleId, 'disk-pressure')
+  store.close()
 })
 
 for (const [name, fn] of checks) {

@@ -202,6 +202,8 @@
   `attempt = 0`、清 `started_at`，worker 下一 tick 从头执行（不是断点续跑）。
   **静默自动暂停**：`running` 超过 `DSH_WFXM_TASK_STALL_MINUTES`（默认 15）无事件 → 先杀子进程再 `paused`，
   受 `DSH_WFXM_WATCHDOG_PAUSE`（默认开，`0` 关）控制。
+  **主动候选（observe）**：巡检 fail/warn 写入 `inspection_candidates`（唯一键 rule/item/target，恢复转 resolved），
+  即时告警附「observe，不自动建任务」，日报汇总候选计数；**没有 auto 分支**，候选不会创建任务。
 - **模块 ① 渠道网关已落地第六片（2026-11-09，session_routes 改名 + 出口脱敏）**：`gateway` **v4/v5/v6** 按 15 §9.3
   三步落地（expand `chat_id` / backfill / contract 重建表，**不合并**；v6 前 `guard` 校验 `chat_id` 非空且无重复 PK，
   半迁移库**拒绝启动**不回退）；PK 改为 `(channel_id, chat_id, session_kind)`，`thread_id` 已删；

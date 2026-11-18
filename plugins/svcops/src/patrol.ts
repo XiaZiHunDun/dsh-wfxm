@@ -9,6 +9,7 @@
 
 import { hostname } from 'node:os'
 import { gradeInspection, type AlertDecision } from './inspection/alerting.js'
+import { deriveCandidates } from './inspection/candidates.js'
 import {
   DEFAULT_THRESHOLDS,
   evaluate,
@@ -16,7 +17,7 @@ import {
   type InspectionThresholds,
 } from './inspection/checklist.js'
 import { collectHostMetrics } from './inspection/probes.js'
-import { summarize, type InspectionDigest } from './inspection/report.js'
+import { formatCandidateDigest, summarize, type InspectionDigest } from './inspection/report.js'
 import { createInspectionStore, type InspectionRecord } from './inspection/store.js'
 import { spawnRunner } from './systemd.js'
 
@@ -120,6 +121,7 @@ export function formatInspectionAlert(input: AlertTextInput): string {
     `[巡检告警] ${input.target} · ${input.status}`,
     `清单 ${input.checklistId} · ${input.ranAt}`,
     ...input.reasons.map((reason) => `- ${reason}`),
+    '已记录为候选（observe，不自动建任务）。',
     '回复「巡检」可查看最近一次报告。',
   ].join('\n')
 }
@@ -303,6 +305,11 @@ export function createInspectionPatrol(options: InspectionPatrolOptions): Inspec
       items: report.items,
       ranAt: at.toISOString(),
     })
+    // B2 v1: observe-only candidates are recorded on every cycle, including
+    // cycles whose alert is suppressed by the quiet window.
+    const candidates = deriveCandidates(report, target)
+    store.recordCandidates(candidates, at)
+    store.resolveCandidates(candidates, target, at)
     const alert = gradeInspection(report)
     let pushed: string | null = null
 
@@ -381,8 +388,13 @@ export function createInspectionPatrol(options: InspectionPatrolOptions): Inspec
           now: at,
         })
         if (digest.runs > 0) {
+          const candidateSection = formatCandidateDigest(store.candidateDigest(from.toISOString()))
           push({
-            text: [formatInspectionDigest(digest, target), readOutboxLine(from, at) ?? '']
+            text: [
+              formatInspectionDigest(digest, target),
+              candidateSection ?? '',
+              readOutboxLine(from, at) ?? '',
+            ]
               .filter((line) => line !== '')
               .join('\n'),
             dedupeKey: `patrol-digest:${target}:${day}`,
