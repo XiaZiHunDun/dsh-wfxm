@@ -1307,7 +1307,8 @@ await check('a waiting_input task is asked once, and the reply requeues it', asy
 const spillDir = join(dir, 'outbox-files')
 
 await check('AS 1: a receipt over the spill threshold is written to a file and sent as kind=file', async () => {
-  const summary = `部署日志 ${'x'.repeat(120)}`
+  const secret = 'sk-1234567890abcdefghij'
+  const summary = `部署日志 ${secret} ${'x'.repeat(120)}`
   const { host, transport } = makeHost({
     executor: () => ({ status: 'succeeded', summary }),
     options: { spill: { dir: spillDir, thresholdChars: 50 } },
@@ -1322,13 +1323,15 @@ await check('AS 1: a receipt over the spill threshold is written to a file and s
   const payload = row.payload
   const delivered = transport.sent.find((item) => item.topic === 'task.receipt')
   const path = join(spillDir, `receipt-${payload.receiptId}.md`)
+  const fileBody = existsSync(path) ? readFileSync(path, 'utf8') : ''
   host.close()
   return payload.kind === 'file'
     && payload.filePath === path
-    && existsSync(path)
-    && readFileSync(path, 'utf8') === summary
+    && fileBody.startsWith('部署日志')
+    // H7: the spill file is redacted before it ever hits disk.
+    && !fileBody.includes(secret)
     && payload.text.includes('见附件')
-    && payload.summary === summary
+    && payload.summary.startsWith('部署日志')
     && delivered !== undefined
 })
 
