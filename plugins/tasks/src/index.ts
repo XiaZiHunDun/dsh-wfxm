@@ -56,6 +56,7 @@ export type {
   HoldTaskInput,
   IsolationPatch,
   PendingReceipt,
+  ParkForInputInput,
   RequeueTaskInput,
   ReleaseThreadInput,
   RenewLeaseInput,
@@ -136,6 +137,7 @@ export {
 export type {
   ExecFailure,
   ExecHooks,
+  ExecNeedsInput,
   ExecOutcome,
   ExecSuccess,
   FailureKind,

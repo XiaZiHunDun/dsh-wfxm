@@ -31,6 +31,11 @@ process.stdin.on('end', () => {
         text: `task=${process.env.DSH_WFXM_TASK_ID ?? ''} cp=${process.env.DSH_WFXM_CHECKPOINT_ID ?? ''} attempt=${process.env.DSH_WFXM_ATTEMPT ?? ''} approved=${process.env.DSH_WFXM_APPROVED_LEVEL ?? 'none'}`,
       })
       break
+    case 'need-input':
+      writeFileSync(process.env.STUB_OUTFILE, `stub read: ${input.trim()}\n`)
+      emit({ type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } })
+      emit({ type: 'final', text: '[[NEED_INPUT]] 目标目录是哪个？' })
+      break
     case 'fail-exit':
       process.stderr.write('boom: the change is impossible\n')
       process.exit(3)

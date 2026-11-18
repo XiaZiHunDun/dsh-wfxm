@@ -2198,3 +2198,67 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
   并缓存恢复的句柄；其他错误（超时/传输）不恢复，仍丢弃运行时并降级。
 - 边界：只恢复 `already exists` 这一种；空 thread 不恢复；不改变既有降级语义（AR13）。
 - 验证：`verify-orchestrator 54`；全量 41 套件通过；生产重启回归无 `front:warn`。
+
+## Slice AR Spec — 等待输入闭环（D11，2026-11-18，release `2026.11.18-7`）
+
+## 1. 问题（已核对代码）
+
+- `waiting_input` 状态、迁移表、事件类型、提醒文案都已存在，但全仓没有
+  `to:'waiting_input'` 的写入入口：执行器没有「需要信息」这一结果，worker 不会停放任务。
+- `steerTask` 对 `waiting_input` 只改写 `intent`（`applied='recorded'`），不唤醒；
+  `wakeTask` 只接受 `succeeded`。结果是：即使任务停进去，用户回复也无法让它继续。
+- 因此「执行中缺信息 → 问人 → 人回复 → 继续」这一条设计流程目前是断的。
+
+## 2. 机制
+
+- **执行器协议**：`plugins/executor/src/executor.ts` 的 `ExecOutcome` 增加
+  `{ status: 'needs_input'; question: string; summary?: string }`。prompt 末尾追加一条固定约定
+  （在 `intent`、`threadContext` 之后）：缺关键信息时不要猜测、不做写操作，只输出
+  `[[NEED_INPUT]] 问题`。子进程退出 0 且最终文本含该标记时，关闭 checkpoint 为 `aborted`
+  （未完成的一次尝试不回滚不提交半成品 → 按“未发生”处理），返回 `needs_input`。
+- **⑤ 停放**：`plugins/tasks/src/store.ts` 新增 `parkForInput({ taskId, question })`：
+  仅允许 `running → waiting_input`，走既有 `updateTransition`（清租约），追加事件
+  `task.input_requested`（payload 保存 `question`、`from`、`reason:'needs-input'`）。
+  工作线程 `plugins/tasks/src/worker.ts` 的 `settle()` 处理 `needs_input`：
+  调用 `parkForInput`，返回 `TaskRunReport.outcome='needs-input'`；若任务已不在 `running`
+  （被停止/取消），记录错误并返回 `skipped:'cancelled'`，不写回执、不迁移。
+- **⑤ 唤醒**：`ALLOWED_TRANSITIONS.waiting_input` 增加 `queued`（受控边，仅 `steerTask` 使用）。
+  `steerTask` 的 `waiting_input` 分支改为：intent 追加补充文本 → `waiting_input → queued`
+  （`attempt=0`、清租约/`next_attempt_at`/`started_at`/`finished_at`）→ `applied='rerun'`，
+  输入置 `delivered`；worker 下一轮 claim 即重新执行。`waiting_approval` 保持 `recorded` 不变。
+- **host 投递**：`plugins/host/src/host.ts` 的 `pump()` 增加 `askForInput()`：
+  扫描 `status='waiting_input'` 的任务，取其 `latestEvent`；若类型为 `task.input_requested`，
+  按 `dedupeKey=task-input-request:<taskId>:<seq>` 向该任务 live 线程入队一条 `say`：
+  「任务 `<ref>` 需要补充信息：<question>；直接回复本条消息即可继续。」。
+  已有 outbox 行则跳过，因此进程重启不会重复问、也不会漏问。
+- **用户回复**：沿用 AO 的 live 线程路径——前台把消息作为补充输入入队，`applySupplement`
+  调 `steerTask` 得到 `rerun`，回执「已按补充指令重新开始」；任务从顶部重新执行，
+  `threadContext` 仍随行。
+
+## 3. 边界
+
+- 问题只存 `task_events` payload，不新建表、不改 `tasks` schema；不写终态、不产生回执。
+- 只认 `[[NEED_INPUT]]` 一种协议标记；标记识别只在退出码 0、无 `turn_end error` 时生效。
+- 一次尝试最多停一次：停放后执行器已退出，再次执行是一次新 attempt；不做自动重试。
+- 只读 ⑤ 自己的表；① 的 outbox 仍由 host 写入；无 live 线程的任务不猜地址，等 owner 在
+  任意消息里补充（现有锚定/线程路径负责）。
+
+## 4. 验证
+
+- `plugins/tasks/scripts/verify-tasks.mjs`：`running → waiting_input` + `task.input_requested`
+  落库；`steerTask` 唤醒到 `queued`、intent 追加、attempt 归零、输入 delivered；非法状态拒绝。
+- `plugins/executor/scripts/verify-executor.mjs` + `stub-dsh.mjs`：stub 输出标记 →
+  `needs_input` 及问题文本；prompt 含约定说明；正常成功/失败路径不回归。
+- `plugins/host/scripts/verify-host.mjs`：`waiting_input` + `input_requested` → `pump()`
+  入队且只入队一次（第二次仍只有一条）；回复后任务回到 `queued` 并回执。
+- 全量：`node scripts/build.mjs`、`--noEmit`、`check-style`、`verify-all`（41 套件）。
+- 生产：发布 `2026.11.18-7`，飞书实测「任务问人 → 回复 → 继续执行」，回写 `docs/16 §12.34`。
+
+## 5. 实施记录（2026-11-18，release `2026.11.18-7`）
+
+- 执行器标记识别、⑤ `parkForInput`/唤醒、host `pump()` 追问全部按 §2 落地；问题存
+  `task.input_requested` 事件，未改 `tasks` schema。
+- 新增用例后：`verify-tasks 107`、`verify-executor 23`、`verify-host 41`；全量 41 套件通过，
+  `build --noEmit` 与 `check-style 167 files` 全绿。
+- 发布 `prepare/verify 8/8 → switch → restart`，服务 `active`、`NRestarts=0`；
+  飞书真机项登记 `docs/06 §六`（需 owner 发一条缺信息任务后回复）。

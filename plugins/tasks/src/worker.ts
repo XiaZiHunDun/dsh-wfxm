@@ -34,7 +34,18 @@ export interface ExecFailure {
   failure: FailureKind
 }
 
-export type ExecOutcome = ExecSuccess | ExecFailure
+/**
+ * Slice AR: the attempt stopped because a key fact was missing. The task is
+ * parked in `waiting_input` and the owner is asked; no receipt is written.
+ */
+export interface ExecNeedsInput {
+  status: 'needs_input'
+  /** Shown to the owner verbatim (already truncated by the executor). */
+  question: string
+  summary?: string
+}
+
+export type ExecOutcome = ExecSuccess | ExecFailure | ExecNeedsInput
 
 export interface ExecHooks {
   /** Extend the lease; false means another worker owns the task now. */
@@ -70,7 +81,7 @@ export type WorkerSkipReason
 
 export interface TaskRunReport {
   taskId: string | null
-  outcome: 'succeeded' | 'failed' | 'retried' | 'skipped'
+  outcome: 'succeeded' | 'failed' | 'retried' | 'skipped' | 'needs-input'
   failure: FailureKind | null
   skipped: WorkerSkipReason | null
   attempt: number | null
@@ -196,6 +207,32 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     backoff[Math.min(Math.max(attempt - 1, 0), backoff.length - 1)]
 
   async function settle(task: Task, outcome: ExecOutcome, wakeAt: string | null): Promise<TaskRunReport> {
+    // Slice AR: the attempt asked a question. Park the row so the host can
+    // relay it; a cancelled/already-settled task loses this race harmlessly.
+    if (outcome.status === 'needs_input') {
+      try {
+        store.parkForInput({ taskId: task.id, question: outcome.question })
+        return {
+          taskId: task.id,
+          outcome: 'needs-input',
+          failure: null,
+          skipped: null,
+          attempt: task.attempt,
+          wakeAt: null,
+        }
+      } catch (error) {
+        options.onError?.(error)
+        return {
+          taskId: task.id,
+          outcome: 'skipped',
+          failure: null,
+          skipped: 'cancelled',
+          attempt: task.attempt,
+          wakeAt: null,
+        }
+      }
+    }
+
     if (outcome.status === 'succeeded') {
       // 13 §3.3 / 17 §8.5: the executor's "succeeded" is a claim, not a verdict.
       // Only the Verifier may move a task to `succeeded`; a failure here is a

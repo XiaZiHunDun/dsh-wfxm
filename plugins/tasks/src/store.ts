@@ -382,6 +382,13 @@ export interface SteerTaskInput {
   text: string
 }
 
+/** Slice AR: the executor stopped because a key fact was missing. */
+export interface ParkForInputInput {
+  taskId: string
+  /** The question shown to the owner; stored in `task_events`, never in `tasks`. */
+  question: string
+}
+
 /**
  * `rerun`: the running attempt was interrupted and the task re-queued;
  * `merged`: the task had not started, so the supplement joined its intent;
@@ -482,6 +489,13 @@ export interface TaskStore {
    * Throws `conflict` when the task already left `queued`.
    */
   holdForApproval(input: HoldTaskInput): Task
+  /**
+   * Slice AR: a running attempt found it needs information the owner has not
+   * provided. `running → waiting_input` (lease cleared) plus a
+   * `task.input_requested` event carrying the question. The host relays it and
+   * the owner's reply steers the task back to `queued`.
+   */
+  parkForInput(input: ParkForInputInput): Task
   /**
    * Approval granted: `waiting_approval → queued`, lease cleared, so the next
    * worker tick picks it up. A second call is a no-op (`resumed: false`).
@@ -1268,6 +1282,15 @@ export function createTaskStore(dbPath: string): TaskStore {
            started_at = NULL, finished_at = NULL
      WHERE id = ? AND status = 'running'
   `)
+  // Slice AR: the owner answered a question. Same fresh-start semantics as a
+  // running steer — the parked attempt never produced a result.
+  const steerWaitingInputRow = db.prepare(`
+    UPDATE tasks
+       SET intent = ?, status = 'queued', attempt = 0, lease_owner = NULL,
+           lease_expires_at = NULL, next_attempt_at = NULL,
+           started_at = NULL, finished_at = NULL
+     WHERE id = ? AND status = 'waiting_input'
+  `)
   const rewriteIntentRow = db.prepare('UPDATE tasks SET intent = ? WHERE id = ?')
   const markInputsReadForTask = db.prepare(`
     UPDATE task_inputs SET status = 'read', read_at = ?
@@ -1438,6 +1461,36 @@ export function createTaskStore(dbPath: string): TaskStore {
   }
 
   /**
+   * Slice AR: the attempt asked a question instead of finishing. The row is
+   * parked in `waiting_input`; the question lives in the event so the host can
+   * relay it without changing the `tasks` schema.
+   */
+  function parkForInput(input: ParkForInputInput): Task {
+    const task = getTask(input.taskId)
+    if (task === null) throw new TaskError('not-found', `task ${input.taskId} not found`)
+    if (task.status !== 'running') {
+      throw new TaskError('conflict', `only a running task can ask for input; ${task.id} is ${task.status}`)
+    }
+    const question = input.question.trim()
+    return db.transaction(() => {
+      const changed = updateTransition.run('waiting_input', task.attempt, task.startedAt, null, task.id)
+      if (changed.changes !== 1) {
+        throw new TaskError('conflict', `task ${task.id} left running before it could be parked`)
+      }
+      appendEvent(task.id, 'task.waiting_input', {
+        from: 'running',
+        to: 'waiting_input',
+        reason: 'needs-input',
+      })
+      appendEvent(task.id, 'task.input_requested', {
+        from: 'running',
+        question: question === '' ? '请补充继续执行所需的信息。' : question,
+      })
+      return getTask(task.id) as Task
+    }).immediate()
+  }
+
+  /**
    * Slice I: an approved task goes back to `queued` (not straight to `running`) —
    * only `claimTask` may enter `running`, and it must take the lease.
    */
@@ -1516,7 +1569,14 @@ export function createTaskStore(dbPath: string): TaskStore {
       } else if (task.status === 'queued') {
         rewriteIntentRow.run(intent, task.id)
         applied = 'merged'
-      } else if (task.status === 'waiting_approval' || task.status === 'waiting_input') {
+      } else if (task.status === 'waiting_input') {
+        // Slice AR: the answer unblocks the task, so it re-queues with a fresh
+        // budget instead of sitting parked forever.
+        if (steerWaitingInputRow.run(intent, task.id).changes !== 1) {
+          throw new TaskError('conflict', `task ${task.id} is no longer waiting_input`)
+        }
+        applied = 'rerun'
+      } else if (task.status === 'waiting_approval') {
         rewriteIntentRow.run(intent, task.id)
         applied = 'recorded'
       } else {
@@ -2084,6 +2144,7 @@ export function createTaskStore(dbPath: string): TaskStore {
     wakeTask,
 
     holdForApproval,
+    parkForInput,
 
     resumeFromApproval,
 

@@ -53,6 +53,7 @@ export type TaskEventType =
   | 'task.resumed'
   | 'task.waiting_approval'
   | 'task.waiting_input'
+  | 'task.input_requested'
   | 'task.paused'
   | 'task.retried'
   | 'task.deferred'
@@ -260,7 +261,9 @@ export const ALLOWED_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   // may re-queue, and only while `attempt < max_attempts`.
   running: ['queued', 'waiting_approval', 'waiting_input', 'paused', 'succeeded', 'failed', 'cancelled'],
   waiting_approval: ['running', 'paused', 'failed', 'cancelled'],
-  waiting_input: ['running', 'paused', 'failed', 'cancelled'],
+  // `waiting_input → queued` is the owner's answer edge (Slice AR): only
+  // `steerTask` may take it, so the worker can re-claim after a supplement.
+  waiting_input: ['running', 'queued', 'paused', 'failed', 'cancelled'],
   // `paused → queued` is the owner resume edge (B3 v2): `resumeTask` re-queues
   // a watchdog-paused task so the worker can claim it from the top.
   paused: ['running', 'queued', 'failed', 'cancelled'],

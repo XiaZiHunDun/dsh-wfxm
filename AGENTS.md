@@ -424,6 +424,10 @@
     executor 拼在 `intent` 之后同 stdin 送入；只读 ⑤ 自己的表，读取失败不阻塞执行。
   - **重启会话续接（Slice AQ）**：`runOnThreadSession` 在 `session "<threadId>" already exists`
     时 `resumeSession` 并重试一次；其他错误不恢复，仍丢弃运行时并降级（AR13）。
+  - **等待输入闭环（Slice AR）**：执行器约定 `[[NEED_INPUT]] 问题` → `needs_input`（checkpoint
+    `aborted`）→ ⑤ `parkForInput` 落 `waiting_input` + `task.input_requested`（问题在事件里，
+    不建表）→ host `pump()` 向 live 线程追问一次（按事件 seq 去重）→ 用户回复经 `steerTask`
+    追加 intent 并回 `queued`（`attempt=0`），worker 下一轮继续；不写终态、不写回执。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

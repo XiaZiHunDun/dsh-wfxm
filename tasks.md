@@ -1414,3 +1414,37 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 消息去重（`2026.11.18-4`）：① 在 triage 前对同线程紧邻同文本消息按窗口（默认 60s，`DSH_WFXM_DUPLICATE_WINDOW_SECONDS`）忽略，重复消息不建任务/不投递/不打断/不回执；仅纯文本，control 与卡片动作不受影响；`verify-gateway 119`、`verify-host 41`，全量 41 套件通过（Slice AO.1）
 - [x] 任务执行上下文（`2026.11.18-5`）：⑤ 新增 `recentThreadResults(taskId, 2)`（同线程 succeeded 回执，排除自身），worker 组装 `threadContext`（2 条、每条 300 字）传给执行器，executor 拼在 intent 之后同 stdin 送入；只读 ⑤ 自己的表、读取失败不阻塞；`verify-tasks 104`、`verify-executor 21`，全量 41 套件通过（Slice AP）
 - [x] 重启后前台 SDK 会话续接（`2026.11.18-6`）：`runOnThreadSession` 命中 `session "<threadId>" already exists` 时 `resumeSession` 并重试一次，其他错误不恢复；修复重启后老线程决策静默降级到规则；`verify-orchestrator 54`，全量 41 套件通过（Slice AQ）
+
+# Slice AR — 等待输入闭环（D11，2026-11-18）
+
+> 目标：打通「执行中缺信息 → `waiting_input` → 追问 → 用户回复 → 继续执行」；
+> 不新建表，问题存 `task_events`。
+
+## AR1 执行器协议
+
+- [x] `plugins/executor/src/executor.ts`：`ExecOutcome` 增加 `needs_input`（含 `question`）
+- [x] prompt 末尾追加 `[[NEED_INPUT]]` 约定（intent / threadContext 之后）
+- [x] 退出码 0 且最终文本含标记 → checkpoint `aborted` + `needs_input`
+- [x] 正常成功/失败/超时/取消路径不变
+
+## AR2 ⑤ 停放与唤醒
+
+- [x] `plugins/tasks/src/model.ts`：`waiting_input` 允许到 `queued`；新增事件 `task.input_requested`
+- [x] `plugins/tasks/src/store.ts`：`parkForInput`（running → waiting_input，清租约，事件带 question）
+- [x] `steerTask` 的 `waiting_input` 分支改为追加 intent 后回 `queued`（`applied='rerun'`）
+- [x] `plugins/tasks/src/worker.ts`：`needs_input` → `parkForInput`，报告 `needs-input`；非 running 时不写回执
+
+## AR3 host 投递
+
+- [x] `plugins/host/src/host.ts`：`pump()` 扫描 `waiting_input` 的 `task.input_requested`
+- [x] 按 `task-input-request:<taskId>:<seq>` 去重，向 live 线程入队追问
+- [x] 用户回复走 AO 路径：入队输入 → `steerTask` → `queued` + 回执
+
+## AR4 验证与发布
+
+- [x] `verify-tasks`：停放/事件/唤醒/非法状态（107）
+- [x] `verify-executor` + `stub-dsh`：标记识别、prompt 约定、既有路径回归（23）
+- [x] `verify-host`：pump 只入队一次；回复后回 `queued`（41）
+- [x] `build` / `--noEmit` / `check-style` / `verify-all`（41 套件）全绿
+- [x] 发布 `2026.11.18-7`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）；飞书真机项已登记 `docs/06 §六` 待 owner 触发
+- [x] 回写 `spec.md` Slice AR、`AGENTS.md §4`、`docs/11` 生命周期说明、`docs/16 §12.34`

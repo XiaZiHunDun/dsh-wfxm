@@ -1269,6 +1269,38 @@ await check('an identical repeat does not steer the live task', async () => {
     && !outbound.some((text) => text.includes('已按补充指令重新开始'))
 })
 
+// ---- Slice AR：任务问人 → pump 追问一次 → 回复后继续 ----------------------------------
+
+await check('a waiting_input task is asked once, and the reply requeues it', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const first = await say(host, '把报告写到指定目录')
+  const threadId = first.result.result.thread.id
+  const taskId = first.result.foreground.taskId
+
+  host.stores.tasks.claimTask({ owner: 'w1', leaseMs: 60_000, now: now() })
+  host.stores.tasks.parkForInput({ taskId, question: '目标目录是哪个？' })
+
+  await host.pump()
+  const asked = host.stores.gateway.listOutbox()
+    .filter((item) => typeof item.payload.text === 'string' && item.payload.text.includes('需要补充信息'))
+  const secondPump = await host.pump()
+
+  const parked = host.stores.tasks.getTask(taskId)
+  const reply = await say(host, '/tmp/report')
+  const resumed = host.stores.tasks.getTask(taskId)
+  const outbound = host.stores.gateway.listOutbox().map((item) => item.payload.text)
+  host.close()
+  return asked.length === 1
+    && asked[0].payload.text.includes('目标目录是哪个？')
+    && secondPump.inputRequests === 0
+    && parked.status === 'waiting_input'
+    && reply.result.result.target.kind === 'task'
+    && resumed.status === 'queued'
+    && resumed.intent.includes('/tmp/report')
+    && outbound.some((text) => typeof text === 'string' && text.includes('已按补充指令重新开始'))
+})
+
 // ---- AR32 / AR33：组合根里不许出现表名、SQL 或渠道协议名 ------------------------------
 
 await check('plugins/host/src contains no SQL, table names or channel protocol nouns', () => {

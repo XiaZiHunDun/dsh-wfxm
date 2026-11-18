@@ -67,6 +67,11 @@ export interface HostIngestResult {
 export interface HostPumpReport {
   /** Pending approvals that ran past `expires_at` during this tick. */
   expired: number
+  /**
+   * Slice AR: `waiting_input` tasks whose question was enqueued in this tick.
+   * Deduplicated by the request event's seq, so a restart never asks twice.
+   */
+  inputRequests: number
   receipts: ReceiptRelayReport
   /** Slice R: null when progress notices are disabled (or routing-only host). */
   progress: TaskProgressReport | null
@@ -398,10 +403,48 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     }
   }
 
+  /**
+   * Slice AR: a parked task asked a question. The question lives in the
+   * `task.input_requested` event, so this scan is restart-safe: the outbox
+   * dedupe key pins it to that event's seq.
+   */
+  function askForInput(): number {
+    let asked = 0
+    for (const task of tasks.listTasks({ status: 'waiting_input', limit: 50 })) {
+      const last = tasks.latestEvent(task.id)
+      if (last === null || last.type !== 'task.input_requested') continue
+      const question = payloadString(last.payload ?? null, 'question')
+      if (question === null) continue
+      const threadId = tasks
+        .listTaskThreads({ taskId: task.id, liveOnly: true })
+        .slice()
+        .sort((a, b) => (a.relation === b.relation
+          ? b.createdAt.localeCompare(a.createdAt)
+          : a.relation === 'default_owner' ? -1 : 1))
+        .map((thread) => thread.threadId)
+        .find((id) => gateway.getThread(id) !== null) ?? null
+      // No addressable thread: never guess a chat; the owner can still answer
+      // from the thread that created the task once it has one.
+      if (threadId === null) continue
+      const dedupeKey = `task-input-request:${task.id}:${last.seq}`
+      if (gateway.findOutboxByDedupe(dedupeKey) !== null) continue
+      const ref = task.taskRef ?? task.id.slice(0, 8)
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text: `任务 ${ref} 需要补充信息：${question}\n直接回复本条消息即可继续。` },
+        threadId,
+        dedupeKey,
+      })
+      asked += 1
+    }
+    return asked
+  }
+
   async function pump(): Promise<HostPumpReport> {
     // Settle expired approvals first: a task released here produces its receipt
     // in this same tick instead of the next one.
     const expired = expireOverdueApprovals()
+    const inputRequests = askForInput()
     const receipts = receiptRelay.pump()
     // Slice R: enqueue progress notices before the dispatcher claims, so a due
     // reminder goes out in this same tick instead of waiting for the next one.
@@ -410,7 +453,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     // learns why the task stopped.
     if (progress !== null) pauseStalled(progress.stalled)
     const dispatch = dispatcher === null ? null : await dispatcher.runOnce()
-    return { expired, receipts, progress, dispatch }
+    return { expired, inputRequests, receipts, progress, dispatch }
   }
 
   /**

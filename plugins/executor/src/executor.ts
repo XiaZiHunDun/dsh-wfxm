@@ -53,7 +53,14 @@ export interface ExecFailure {
   failure: FailureKind
 }
 
-export type ExecOutcome = ExecSuccess | ExecFailure
+/** Slice AR: the run needs a fact only the owner can supply. */
+export interface ExecNeedsInput {
+  status: 'needs_input'
+  question: string
+  summary?: string
+}
+
+export type ExecOutcome = ExecSuccess | ExecFailure | ExecNeedsInput
 
 /** Structural twin of the `Task` fields the executor reads. */
 export interface ExecutorTaskRef {
@@ -117,6 +124,27 @@ export const DEFAULT_KILL_GRACE_MS = 5_000
 export const DEFAULT_HEARTBEAT_MS = 15_000
 export const DEFAULT_MAX_SUMMARY_CHARS = 4_000
 
+/**
+ * Slice AR: the protocol between this executor and the task worker. The child
+ * is told (in the prompt) to emit this marker instead of guessing, so the task
+ * can park in `waiting_input` and ask the owner.
+ */
+export const NEED_INPUT_MARKER = '[[NEED_INPUT]]'
+const NEED_INPUT_INSTRUCTION = '【执行约定】如果缺少继续执行所必需的信息（目标路径/地址、账号、要修改的具体对象等），'
+  + '不要猜测、不要执行任何写操作，只输出一行：'
+  + `${NEED_INPUT_MARKER} 你的问题。收到补充信息后会重新执行本任务。`
+
+/** `null` unless the final text carried the marker; the rest is the question. */
+function parseNeedsInput(text: string): string | null {
+  const index = text.indexOf(NEED_INPUT_MARKER)
+  if (index < 0) return null
+  const question = text
+    .slice(index + NEED_INPUT_MARKER.length)
+    .replace(/^[\s:：-]+/, '')
+    .trim()
+  return question === '' ? '请补充继续执行所需的信息。' : question
+}
+
 /** Network/limits that justify a backoff retry (13 §3.3). */
 const TRANSIENT_PATTERN =
   /rate.?limit|too many requests|\b429\b|econnreset|econnrefused|etimedout|eai_again|enotfound|socket hang up|network error|timed?\s?out|temporarily unavailable|overloaded|502 bad gateway|503 service/i
@@ -163,8 +191,9 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
       return { status: 'failed', failure: 'invalid_input', summary: 'task has an empty intent; nothing to run' }
     }
     // Slice AP: context is an appendix, so the intent always comes first.
+    // Slice AR: the asking convention is the last block, never before the intent.
     const threadContext = task.threadContext?.trim() ?? ''
-    const prompt = threadContext.length === 0 ? intent : `${intent}\n\n${threadContext}`
+    const prompt = `${intent}\n\n${threadContext.length === 0 ? '' : `${threadContext}\n\n`}${NEED_INPUT_INSTRUCTION}`
 
     let cwd: string
     if (options.workdirResolver !== undefined) {
@@ -397,8 +426,22 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
           return
         }
 
-        closeCheckpoint('committed')
         const text = finalText ?? (textFallback.length > 0 ? textFallback.join('') : null)
+        if (text !== null) {
+          const question = parseNeedsInput(text)
+          if (question !== null) {
+            // The attempt stopped before producing a result; roll its step back
+            // so a later run starts clean.
+            closeCheckpoint('aborted')
+            resolve({
+              status: 'needs_input',
+              question: truncate(question, 500),
+              summary: truncate(text.trim(), maxSummary),
+            })
+            return
+          }
+        }
+        closeCheckpoint('committed')
         resolve({
           status: 'succeeded',
           summary: truncate(text === null || text.trim() === '' ? '(no output)' : text.trim(), maxSummary),

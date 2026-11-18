@@ -4,11 +4,13 @@ export {
   DEFAULT_KILL_GRACE_MS,
   DEFAULT_MAX_SUMMARY_CHARS,
   DEFAULT_TIMEOUT_MS,
+  NEED_INPUT_MARKER,
 } from './executor.js'
 export type {
   CheckpointPort,
   DshExecutorOptions,
   ExecFailure,
+  ExecNeedsInput,
   ExecOutcome,
   ExecSuccess,
   ExecutorHooks,

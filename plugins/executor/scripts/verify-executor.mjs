@@ -211,6 +211,33 @@ await check('only approved R2/R3 tasks hand DSH_WFXM_APPROVED_LEVEL to the child
     && plainOutcome.summary.includes('approved=none')
 })
 
+// ---- Slice AR: the run asks for input --------------------------------------
+
+const promptFile = join(dir, 'need-input-prompt.txt')
+const ask = makeTask({ intent: '把报告写到指定目录' })
+const askWorker = makeWorker({ STUB_MODE: 'need-input', STUB_OUTFILE: promptFile })
+const askReport = await askWorker.runOnce()
+
+await check('the [[NEED_INPUT]] marker parks the task instead of succeeding', () => {
+  const task = store.getTask(ask.id)
+  const requested = store.listEvents(ask.id).filter((event) => event.type === 'task.input_requested')
+  return askReport.outcome === 'needs-input'
+    && askReport.failure === null
+    && task.status === 'waiting_input'
+    && requested.length === 1
+    && requested[0].payload.question === '目标目录是哪个？'
+    && store.listReceipts(ask.id).length === 0
+})
+
+await check('the asking attempt aborts its checkpoint and the prompt states the convention', () => {
+  const checkpoints = store.listCheckpoints(ask.id)
+  const prompt = existsSync(promptFile) ? readFileSync(promptFile, 'utf8') : ''
+  return checkpoints.length === 1
+    && checkpoints[0].status === 'aborted'
+    && prompt.includes('把报告写到指定目录')
+    && prompt.includes('[[NEED_INPUT]]')
+})
+
 // ---- failure classification ---------------------------------------------------
 
 const boom = makeTask({ intent: 'fail with a plain error' })

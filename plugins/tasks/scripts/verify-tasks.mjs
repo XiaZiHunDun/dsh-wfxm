@@ -2034,6 +2034,67 @@ await check('steerTask merges into a queued task without burning an attempt', ()
   }
 })
 
+// ---- Slice AR: a run that needs input parks, and the answer resumes it ------
+
+await check('parkForInput moves running → waiting_input and records the question', () => {
+  const parkStore = createTaskStore(join(dir, 'park.sqlite'))
+  try {
+    const task = parkStore.createTask({ intent: '把报告写到指定目录', riskLevel: 'R1' })
+    parkStore.claimTask({ owner: 'w1', leaseMs: 60_000, now: new Date() })
+    const parked = parkStore.parkForInput({ taskId: task.id, question: '目标目录是哪个？' })
+    const events = parkStore.listEvents(task.id)
+    const requested = events.filter((event) => event.type === 'task.input_requested')
+    return parked.status === 'waiting_input'
+      && parked.leaseOwner === null
+      && parked.attempt === 1
+      && requested.length === 1
+      && requested[0].payload.question === '目标目录是哪个？'
+      && events.some((event) => event.type === 'task.waiting_input')
+      && parkStore.listReceipts(task.id).length === 0
+  } finally {
+    parkStore.close()
+  }
+})
+
+await check('parkForInput refuses a task that is not running', () => {
+  const parkStore = createTaskStore(join(dir, 'park-refuse.sqlite'))
+  try {
+    const task = parkStore.createTask({ intent: '还没开始', riskLevel: 'R1' })
+    try {
+      parkStore.parkForInput({ taskId: task.id, question: '?' })
+      return false
+    } catch (error) {
+      return error.code === 'conflict'
+    }
+  } finally {
+    parkStore.close()
+  }
+})
+
+await check('the owner reply wakes a waiting_input task back to queued', () => {
+  const parkStore = createTaskStore(join(dir, 'park-steer.sqlite'))
+  try {
+    const task = parkStore.createTask({ intent: '导出日志', riskLevel: 'R1' })
+    parkStore.claimTask({ owner: 'w1', leaseMs: 60_000, now: new Date() })
+    parkStore.parkForInput({ taskId: task.id, question: '导到哪个目录？' })
+    const input = parkStore.enqueueInput({ taskId: task.id, inboxId: 'inbox-park-1' })
+    const steered = parkStore.steerTask({
+      taskId: task.id,
+      inputId: input.id,
+      text: '导到 /tmp/logs',
+    })
+    const claimed = parkStore.claimTask({ owner: 'w2', leaseMs: 60_000, now: new Date() })
+    return steered.applied === 'rerun'
+      && steered.task.status === 'queued'
+      && steered.task.attempt === 0
+      && steered.task.intent.includes('导到 /tmp/logs')
+      && claimed !== null
+      && claimed.id === task.id
+  } finally {
+    parkStore.close()
+  }
+})
+
 // ---- teardown ---------------------------------------------------------------
 
 httpServer.close()
