@@ -61,6 +61,7 @@ const {
   runOnThreadSession,
 } = await import('../lib/index.js')
 const { createRuleForeground, createWfxmHost } = await import('@dsh-wfxm/host')
+const { createReminderPort, createReminderStore } = await import('@dsh-wfxm/reminder')
 
 let pass = 0
 let fail = 0
@@ -106,11 +107,13 @@ function makeTransport() {
 }
 
 /** One fresh host + DB per case; the foreground is built by the host's factory. */
-function makeHost({ decide, fallback, logger, foreground, probe, checks } = {}) {
+function makeHost({ decide, fallback, logger, foreground, probe, checks, withReminders = true } = {}) {
   hostSeq += 1
   const dbPath = join(dir, `orchestrator-${hostSeq}.sqlite`)
   const transport = makeTransport()
   const calls = []
+  // Slice AT: 提醒与 host 共用同一个库；关闭时验证"能力不存在"的降级。
+  const reminders = withReminders ? createReminderStore(dbPath) : null
   const host = createWfxmHost({
     dbPath,
     executor: (task) => {
@@ -119,6 +122,7 @@ function makeHost({ decide, fallback, logger, foreground, probe, checks } = {}) 
     },
     transport,
     now,
+    ...reminders === null ? {} : { reminders },
     ...foreground === undefined
       ? {
           foregroundFactory: ({ tasks }) => createOrchestratorForeground({
@@ -131,11 +135,12 @@ function makeHost({ decide, fallback, logger, foreground, probe, checks } = {}) 
             logger: logger ?? null,
             ...probe === undefined ? {} : { probe },
             ...checks === undefined ? {} : { checks },
+            ...reminders === null ? {} : { reminders: createReminderPort(reminders, now), now },
           }),
         }
       : { foreground },
   })
-  return { host, transport, calls, dbPath }
+  return { host, transport, calls, dbPath, reminders }
 }
 
 async function pair(host, { externalUserId = 'ou_owner', chatId = CHAT } = {}) {
@@ -1156,6 +1161,167 @@ await check('src has no SQL, table or channel-protocol names (AR32/AR33)', () =>
     if (banned.test(code)) throw new Error(`banned token in ${file}`)
   }
   return true
+})
+
+// ---- 提醒（Slice AT / J5）--------------------------------------------------------
+
+await check('remind normalizes a local instant to UTC', () => {
+  const parsed = parseDecision(
+    '{"action":"remind","at":"2026-11-11T20:00:00+08:00","text":"交水电费","repeat":"none"}',
+    { now: CLOCK, remindersEnabled: true },
+  )
+  return parsed.ok
+    && parsed.decision.action === 'remind'
+    && parsed.decision.at === '2026-11-11T12:00:00.000Z'
+    && parsed.decision.repeat === 'none'
+})
+
+await check('past / too-far / oversized / unknown-repeat reminders are rejected', () => {
+  const past = parseDecision('{"action":"remind","at":"2026-11-11T09:59:00Z","text":"x"}', { now: CLOCK, remindersEnabled: true })
+  const far = parseDecision('{"action":"remind","at":"2027-12-01T00:00:00Z","text":"x"}', { now: CLOCK, remindersEnabled: true })
+  const long = parseDecision(
+    JSON.stringify({ action: 'remind', at: '2026-11-12T00:00:00Z', text: 'x'.repeat(201) }),
+    { now: CLOCK, remindersEnabled: true },
+  )
+  const repeat = parseDecision(
+    '{"action":"remind","at":"2026-11-12T00:00:00Z","text":"x","repeat":"monthly"}',
+    { now: CLOCK, remindersEnabled: true },
+  )
+  return !past.ok && past.reason === 'remind-at-past'
+    && !far.ok && far.reason === 'remind-at-too-far'
+    && !long.ok && long.reason === 'remind-text-too-long'
+    && !repeat.ok && repeat.reason === 'invalid-repeat'
+})
+
+await check('reminder actions require the capability to be mounted', () => {
+  const remind = parseDecision('{"action":"remind","at":"2026-11-12T00:00:00Z","text":"x"}', { now: CLOCK })
+  const list = parseDecision('{"action":"reminders"}', { now: CLOCK })
+  return !remind.ok && remind.reason === 'reminders-unavailable'
+    && !list.ok && list.reason === 'reminders-unavailable'
+})
+
+await check('cancel_remind only accepts a 1-based integer index', () => {
+  const ok = parseDecision('{"action":"cancel_remind","index":2}', { remindersEnabled: true })
+  const zero = parseDecision('{"action":"cancel_remind","index":0}', { remindersEnabled: true })
+  const fraction = parseDecision('{"action":"cancel_remind","index":1.5}', { remindersEnabled: true })
+  return ok.ok && ok.decision.action === 'cancel_remind' && ok.decision.index === 2
+    && !zero.ok && zero.reason === 'invalid-reminder-index'
+    && !fraction.ok && fraction.reason === 'invalid-reminder-index'
+})
+
+await check('prompt carries time and pending reminders only when enabled', () => {
+  const nowAt = new Date('2026-11-11T10:00:00.000Z') // 上海 18:00
+  const enabled = buildDecisionPrompt({
+    text: '提醒我',
+    now: nowAt,
+    remindersEnabled: true,
+    reminders: [{ index: 1, when: '明天 09:00', text: '交水电费', repeatLabel: '（每天）' }],
+  })
+  const disabled = buildDecisionPrompt({ text: '提醒我', now: nowAt })
+  return enabled.includes('当前时间：2026-11-11 18:00（Asia/Shanghai）')
+    && enabled.includes('1. 明天 09:00 交水电费（每天）')
+    && enabled.includes('"action":"remind"')
+    && !disabled.includes('当前时间')
+    && !disabled.includes('"action":"remind"')
+})
+
+await check('a remind turn stores it and acks with a local time', async () => {
+  const { host, transport, reminders } = makeHost({
+    decide: async () => '{"action":"remind","at":"2026-11-11T12:00:00Z","text":"交水电费","repeat":"none"}',
+  })
+  await pair(host)
+  const { result } = await say(host, '明天提醒我交水电费')
+  await host.pump()
+  const threadId = result.result?.thread?.id ?? null
+  const pending = threadId === null ? [] : reminders.listPending(threadId)
+  const texts = transport.sent.map((item) => item.payload?.text ?? '')
+  return pending.length === 1
+    && pending[0].text === '交水电费'
+    && pending[0].dueAt === '2026-11-11T12:00:00.000Z'
+    && texts.includes('已设提醒：今天 20:00「交水电费」。到点会在这里提醒你。')
+})
+
+await check('list and cancel follow the ordering the model saw', async () => {
+  let mode = 'reply'
+  const { host, transport, reminders } = makeHost({
+    decide: async () => {
+      if (mode === 'list') return '{"action":"reminders"}'
+      if (mode === 'cancel') return '{"action":"cancel_remind","index":1}'
+      return '{"action":"reply","text":"好的"}'
+    },
+  })
+  await pair(host)
+  const { result } = await say(host, '你好')
+  const threadId = result.result?.thread?.id ?? null
+  reminders.create({ threadId, text: '第一件', dueAt: '2026-11-11T11:00:00Z', now: new Date('2026-11-11T09:00:00Z') })
+  reminders.create({ threadId, text: '第二件', dueAt: '2026-11-11T13:00:00Z', now: new Date('2026-11-11T09:00:00Z') })
+
+  mode = 'list'
+  await say(host, '我的提醒')
+  await host.pump()
+  const listed = transport.sent.map((item) => item.payload?.text ?? '').find((text) => text.startsWith('当前提醒：'))
+
+  mode = 'cancel'
+  await say(host, '取消第一个')
+  await host.pump()
+  const cancelled = transport.sent.map((item) => item.payload?.text ?? '').find((text) => text.startsWith('已取消提醒：'))
+  const left = reminders.listPending(threadId)
+  return listed?.includes('1. 今天 19:00 第一件') === true
+    && listed.includes('2. 今天 21:00 第二件')
+    && cancelled === '已取消提醒：今天 19:00「第一件」。'
+    && left.length === 1
+    && left[0].text === '第二件'
+})
+
+await check('due reminders are delivered exactly once', async () => {
+  const { host, transport, reminders } = makeHost()
+  await pair(host)
+  const { result } = await say(host, '你好')
+  const threadId = result.result?.thread?.id ?? null
+  const item = reminders.create({
+    threadId,
+    text: '交水电费',
+    dueAt: '2026-11-11T09:00:00Z',
+    now: new Date('2026-11-11T08:00:00Z'),
+  })
+  await host.pump()
+  await host.pump()
+  const sent = transport.sent.filter((entry) => entry.payload?.text === '提醒：交水电费')
+  return sent.length === 1 && reminders.get(item.id)?.status === 'done'
+})
+
+await check('a daily reminder advances to the next future slot', async () => {
+  const { host, transport, reminders } = makeHost()
+  await pair(host)
+  const { result } = await say(host, '你好')
+  const item = reminders.create({
+    threadId: result.result?.thread?.id ?? null,
+    text: '吃药',
+    dueAt: '2026-11-10T01:00:00Z',
+    repeat: 'daily',
+    now: new Date('2026-11-10T00:30:00Z'),
+  })
+  await host.pump()
+  const after = reminders.get(item.id)
+  const texts = transport.sent.map((entry) => entry.payload?.text ?? '')
+  return after?.status === 'pending'
+    && after.dueAt === '2026-11-12T01:00:00.000Z'
+    && texts.includes('提醒：吃药')
+})
+
+await check('a reminder without an addressable thread is dropped, not guessed', async () => {
+  const { host, transport, reminders } = makeHost()
+  const item = reminders.create({
+    threadId: 'thread-gone',
+    text: '孤儿提醒',
+    dueAt: '2026-11-11T09:00:00Z',
+    now: new Date('2026-11-11T08:00:00Z'),
+  })
+  const report = await host.pump()
+  const texts = transport.sent.map((entry) => entry.payload?.text ?? '')
+  return report.reminders === 0
+    && reminders.get(item.id)?.status === 'done'
+    && !texts.includes('提醒：孤儿提醒')
 })
 
 // ---- 汇总 ------------------------------------------------------------------------

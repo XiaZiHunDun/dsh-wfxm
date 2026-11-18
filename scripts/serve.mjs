@@ -37,6 +37,7 @@ import { createApprovalStore, createGrantStore } from '@dsh-wfxm/governance'
 import { inboundText, redactedText, summarizeConversationDigest } from '@dsh-wfxm/gateway'
 import { createWfxmHost, createRuleForeground } from '@dsh-wfxm/host'
 import { createMemoryStore, createProjectLookupPort } from '@dsh-wfxm/knowledge'
+import { createReminderPort, createReminderStore } from '@dsh-wfxm/reminder'
 import {
   createDecisionRunner,
   createOrchestratorForeground,
@@ -169,6 +170,8 @@ async function main() {
             grants: createGrantStore(config.dbPath),
             memory: createMemoryStore(config.dbPath),
             snapshot: createSnapshotStore(config.dbPath),
+            // Slice AT (J5): 提醒与任务同库不同表；本模块是 reminders 的唯一写者。
+            reminders: createReminderStore(config.dbPath),
           }
         } catch (error) {
           approvals.close()
@@ -183,6 +186,7 @@ async function main() {
       run() {
         assertModules({
           createMemoryStore,
+          createReminderStore,
           createSnapshotStore,
           createApprovalStore,
           createGrantStore,
@@ -242,6 +246,7 @@ async function main() {
           rollback: createPreimageRollbackPort(stores.snapshot),
           approvals: stores.approvals,
           grants: stores.grants,
+          reminders: stores.reminders,
           worker: {
             resourceLocks: config.resourceLocks,            verify: {
               cwd: config.workdir,
@@ -299,6 +304,8 @@ async function main() {
                 logErrors: (minutes) => probeLogErrors(spawnRunner, minutes ?? quickLogWindowMinutes),
               },
               fallback: createRuleForeground({ tasks }),
+              // Slice AT (J5): 前台只能写提醒表，不执行任何外部动作。
+              reminders: createReminderPort(stores.reminders),
               logger: { warn: (message) => log('front:warn', message) },
             })
           },
@@ -326,6 +333,7 @@ async function main() {
         log('modules', {
           foreground: config.foreground,
           runner: config.foreground === 'rule' ? null : config.decideRunner,
+          reminders: 'on',
           spill: config.spillChars === 0 ? 'off' : config.spillChars,
           progress: config.taskProgress
             ? {
@@ -806,6 +814,7 @@ async function main() {
       stores?.grants.close()
       stores?.memory.close()
       stores?.snapshot.close()
+      stores?.reminders.close()
     } catch (error) {
       log('shutdown:warn', `close failed: ${error instanceof Error ? error.message : String(error)}`)
     }

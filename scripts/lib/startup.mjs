@@ -61,6 +61,7 @@ export const STARTUP_STEPS = Object.freeze([
 /** Core module APIs the composition root cannot start without. */
 export const REQUIRED_MODULES = Object.freeze([
   'createMemoryStore',
+  'createReminderStore',
   'createSnapshotStore',
   'createApprovalStore',
   'createGrantStore',

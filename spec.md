@@ -2370,3 +2370,57 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 - 发布 `prepare/verify 8/8 → switch → restart`，服务 `active`、`NRestarts=0`；
   飞书真机三项（发图/发文件、长回执附件、`[[ATTACH]]` 产物）登记 `docs/06 §六`。
 - 边界：语音转写（ASR）未做，语音按附件落盘并提示补文字；PDF 解析仍属 J9。
+
+## Slice AT Spec — 提醒（J5，2026-11-18，release `2026.11.18-9`）
+
+### 1. 问题（已核对代码）
+
+- **没有「提醒」实体**：`plugins/` 下无提醒表；future 时间的提醒塞进 ⑤ 会被 worker 立刻领取执行。
+- **自然语言无解析入口**：前台只产出 `reply` / `task` / `queue`，「明天九点提醒我交水电费」
+  要么被当成任务执行，要么被随口答掉。
+- **到点投递无调度**：host pump 只有审批过期、等待输入、回执、进度与派发，没有「时间到了发一条消息」。
+
+### 2. 机制
+
+- 新增 `@dsh-wfxm/reminder`（`plugins/reminder`）：`reminders` 表（`thread_id` / `text` / `due_at` /
+  `repeat` / `status` / `source_msg_id` / `fired_at`），`schema_migrations(module='reminder', v1)`，
+  本模块唯一写者；`repeat ∈ none|daily|weekly`。纯函数 `nextDueAt`（周期推进，错过多次只跳第一个
+  未来时刻）与 `formatReminderDue`（`Asia/Shanghai`：今天/明天 `HH:mm`，同年 `MM-DD HH:mm`，跨年带年份）。
+- 前台三种结构化动作（`plugins/orchestrator`）：
+  `{"action":"remind","at":"ISO8601+08:00","text":"…","repeat":"none|daily|weekly"}` /
+  `{"action":"reminders"}` / `{"action":"cancel_remind","index":N}`。
+  prompt 增加当前时间与待触发列表（仅端口注入时展示）；`at` 必须晚于当前时间、≤366 天，
+  `text` ≤200 字，`index` 1..20；非法/过去时间降级为追问（不猜）。
+  前台只写提醒表，不建任务、不执行外部动作。
+- host pump 每轮扫描 `due_at <= now` 的 pending：先按 `reminder:<id>:<dueAt>` 入队 `say`
+  「提醒：<text>」，再推进状态（一次性 `done`；周期 `due_at = nextDueAt(...)`）；
+  目标线程不可寻址则不猜 chat，结束并 warn。
+- 确认文案由 host 用预格式化的 `when` / `repeatLabel` 生成，模型不编造时间。
+
+### 3. 边界
+
+- 不做个人待办清单（J11 后续）；不做「到点执行任务」（G2/G3 巡检）；不支持每月/自定义 cron。
+- 提醒正文只是通知内容，不构成指令；不触发任务、工具或审批。
+- 展示固定 `Asia/Shanghai`，存储统一 UTC ISO。
+
+### 4. 验证
+
+- `verify-reminder`（14）：迁移幂等、CRUD、`markFired`、周期推进、时区展示。
+- `verify-host`（46）：到点只投一次、周期推进、缺失线程丢弃。
+- `verify-orchestrator`（65）：决策解析/拒绝、prompt、创建/列表/取消端到端。
+- `verify-release`：依赖硬链接数 13 → 14。
+- 全量 `42 passed · 0 failed · 1 advisory`（preimages 为 root 下既有）。
+
+### 5. 实施记录（2026-11-18，release `2026.11.18-9`）
+
+- 新增 `plugins/reminder`（store / time / view，14 例）；`plugins/orchestrator`
+  （`decision.ts` / `prompt.ts` / `foreground.ts`）新增三种动作与端口；
+  `plugins/host` 装配 `reminders` 选项与 `fireDueReminders()`，新增 `HostPumpReport.reminders`。
+- `scripts/serve.mjs` 创建 store、注入 host 与 `foregroundFactory`、`shutdown` 关闭；
+  `startup.mjs` 的 `REQUIRED_MODULES` 增加 `createReminderStore`；`modules` 日志 `reminders: "on"`。
+- 验证：`verify-reminder 14`、`verify-host 46`、`verify-orchestrator 65`；`build` / `--noEmit` /
+  `check-style 173 files` / `verify-all 42 passed`（preimages advisory）；`verify-release` 的
+  `deps linked` 断言随新包从 13 改为 14。
+- 发布 `2026.11.18-9`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`），
+  生产库已建 `reminders` 表与 `schema_migrations(module='reminder', v1)`。
+- 真机项：设一句提醒 → 到点收到消息，登记 `docs/06 §六`。

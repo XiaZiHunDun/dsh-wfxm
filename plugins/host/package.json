@@ -15,6 +15,7 @@
     "@dsh-wfxm/gateway": "workspace:*",
     "@dsh-wfxm/governance": "workspace:*",
     "@dsh-wfxm/knowledge": "workspace:*",
+    "@dsh-wfxm/reminder": "workspace:*",
     "@dsh-wfxm/tasks": "workspace:*"
   },
   "devDependencies": {

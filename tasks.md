@@ -1499,3 +1499,47 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `build` / `--noEmit` / `check-style` / `verify-all` 全绿
 - [x] 发布 `2026.11.18-8`（`prepare/verify → switch → restart`，`active`、`NRestarts=0`）
 - [x] 回写 `spec.md` Slice AS、`AGENTS.md §4`、`docs/14 §五`、`docs/16 §12.35`、`docs/06 §六`
+
+# Slice AT — 提醒（J5，2026-11-18，release `2026.11.18-9`）
+
+> 目标：自然语言设提醒（一次性/每天/每周），到点推到原线程；提醒不是任务，不执行任何动作。
+
+## AT1 `@dsh-wfxm/reminder`
+
+- [x] `reminders` 表 + `schema_migrations(module='reminder', v1)`，索引 `(status,due_at)` / `(thread_id,status,due_at)`
+- [x] store：`create` / `get` / `listPending` / `listDue` / `markFired` / `cancel` / `close`
+- [x] `nextDueAt`（周期推进、错过多次只跳第一个未来时刻）+ `formatReminderDue`（Asia/Shanghai）
+- [x] `createReminderPort` / `toReminderView`（`when` / `repeatLabel` 预格式化）
+
+## AT2 前台识别
+
+- [x] `decision.ts`：`remind` / `reminders` / `cancel_remind`，未来（≤366 天）、≤200 字、repeat 白名单、index 1..20
+- [x] `prompt.ts`：当前时间 + 待触发列表（仅端口存在时展示三种动作）
+- [x] `foreground.ts`：端口写库/列表/取消，端口缺失或写入失败可见降级
+
+## AT3 host 到点投递
+
+- [x] `WfxmHostOptions.reminders` + `HostPumpReport.reminders`
+- [x] pump：`due_at <= now` → `say`（幂等键 `reminder:<id>:<dueAt>`）→ 一次性/周期推进
+- [x] 目标线程不可寻址：不猜 chat、结束并 warn
+- [x] 三种 outcome 的确认文案（host 生成，模型不编造时间）
+
+## AT4 运行接线
+
+- [x] `scripts/serve.mjs`：创建 store、注入 host 与 `foregroundFactory`、`shutdown` 关闭
+- [x] `scripts/lib/startup.mjs`：`createReminderStore` 进 `REQUIRED_MODULES`
+- [x] `modules` 启动日志含 `reminders: "on"`
+
+## AT5 验证
+
+- [x] 新增 `verify-reminder`（14）：迁移幂等、CRUD、周期推进、时区展示
+- [x] `verify-host`（46）：到点只投一次 + 周期推进 + 缺失线程丢弃
+- [x] `verify-orchestrator`（65）：决策校验、prompt、创建/列表/取消端到端
+- [x] `verify-release`：依赖硬链接数 13 → 14
+- [x] `build` / `--noEmit` / `check-style 173 files` / `verify-all 42 passed`（preimages 为 root 下既有 advisory）
+
+## AT6 发布与回写
+
+- [x] 发布 `2026.11.18-9`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）
+- [x] 生产库已有 `reminders` 表与 `schema_migrations(module='reminder', v1)`，日志 `reminders: "on"`
+- [x] 回写 `spec.md` Slice AT、`.trae/specs/add-reminder/*`、`AGENTS.md §4`、`docs/08 J5`、`docs/09 J5`、`docs/15 §四`、`docs/16 §12.36`、`docs/06 §六`

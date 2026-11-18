@@ -15,6 +15,17 @@ export interface ConversationTurn {
   text: string
 }
 
+/** 已由宿主格式化好的待触发提醒（本包不做时区计算）。 */
+export interface ReminderPromptItem {
+  /** 从 1 开始的序号，对应 `cancel_remind.index`。 */
+  index: number
+  /** 展示用时间，例如「明天 09:00」。 */
+  when: string
+  text: string
+  /** 「（每天）」之类的后缀；一次性为空串。 */
+  repeatLabel: string
+}
+
 export interface DecisionContextInput {
   /** Plain text body of the inbound message. */
   text: string
@@ -28,11 +39,35 @@ export interface DecisionContextInput {
    * the full transcript, only the last few clipped turns.
    */
   history?: readonly ConversationTurn[]
+  /** 当前时间（缺省系统时间）；提醒的相对时间按它换算。 */
+  now?: Date
+  /** 本线程待触发的提醒（已格式化、按时间升序）。 */
+  reminders?: readonly ReminderPromptItem[]
+  /** 未注入提醒端口时不展示提醒动作。 */
+  remindersEnabled?: boolean
 }
 
 const MAX_CONTEXT_INTENT = 120
 const MAX_HISTORY_TURNS = 8
 const MAX_HISTORY_CHARS = 220
+
+const REMINDER_TIME_ZONE = 'Asia/Shanghai'
+
+/** `2026-11-18 11:00`（上海墙钟）；只用于提示词，不参与存储。 */
+function formatNow(when: Date): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: REMINDER_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(when)
+  const get = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? ''
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`
+}
 
 function clip(text: string, max: number): string {
   const trimmed = text.replace(/\s+/g, ' ').trim()
@@ -50,23 +85,42 @@ export function buildDecisionPrompt(context: DecisionContextInput): string {
     .filter((turn) => turn.text.trim() !== '')
     .slice(-MAX_HISTORY_TURNS)
     .map((turn) => `${turn.role === 'user' ? '用户' : '助手'}：${clip(turn.text, MAX_HISTORY_CHARS)}`)
+  const remindersEnabled = context.remindersEnabled === true
+  const reminderLines = (context.reminders ?? [])
+    .map((item) => `${item.index}. ${item.when} ${clip(item.text, 80)}${item.repeatLabel}`)
 
   return [
     '你是个人运维助手的前台。你只做一件事：判断这条消息该怎么处理。你不执行任何工作，不编造任何结果。',
     '',
     `项目：${project}`,
     `同线程进行中的任务：${live}`,
+    ...remindersEnabled
+      ? [`当前时间：${formatNow(context.now ?? new Date())}（${REMINDER_TIME_ZONE}）`]
+      : [],
     ...history.length === 0 ? [] : ['', '最近对话（旧→新）：', ...history],
+    ...remindersEnabled
+      ? ['', '待触发提醒（旧→新）：',
+        ...reminderLines.length === 0 ? ['（无）'] : reminderLines]
+      : [],
     '',
     '消息：',
     '"""',
     context.text.trim(),
     '"""',
     '',
-    '只输出一个 JSON 对象，不要解释、不要 Markdown 代码块。三选一：',
+    remindersEnabled
+      ? '只输出一个 JSON 对象，不要解释、不要 Markdown 代码块。以下之一：'
+      : '只输出一个 JSON 对象，不要解释、不要 Markdown 代码块。三选一：',
     '{"action":"reply","text":"给用户看的话"}',
     '{"action":"task","intent":"交给执行者的一句话任务","risk":"R0"}',
     '{"action":"queue","text":"补充给进行中任务的指令"}',
+    ...remindersEnabled
+      ? [
+          '{"action":"remind","at":"2026-11-19T09:00:00+08:00","text":"交水电费","repeat":"none"}',
+          '{"action":"reminders"}',
+          '{"action":"cancel_remind","index":1}',
+        ]
+      : [],
     '',
     '规则：',
     '1. 寒暄、致谢、澄清、追问，或仅凭上文就能回答 → reply。',
@@ -80,5 +134,13 @@ export function buildDecisionPrompt(context: DecisionContextInput): string {
     // summary would leave the executor without the file.
     '8. 消息里带「本地路径：<path>」的附件行时，intent 必须原样保留这些路径（含文件名），不要改写、不要省略。',
     '9. 只有附件、没有文字要求时，intent 写「查看/处理附件 <path>」，不要猜测用户意图。',
+    ...remindersEnabled
+      ? [
+          '10. 用户明确要求「提醒我 / 到点告诉我 / 别忘了」→ remind；at 用 ISO8601 带 +08:00，必须晚于「当前时间」。',
+          '11. 「每天早上」「每周某天」→ repeat 分别用 daily / weekly；「每月」「每小时」等不支持，用 reply 说明只支持一次性、每天、每周。',
+          '12. 用户问「我有哪些提醒 / 我的提醒」→ reminders；用户要取消时按上面列表的序号 → cancel_remind。',
+          '13. 不要给普通任务顺手设提醒；时间已经过去或算不出来时用 reply 问清楚，不要猜。',
+        ]
+      : [],
   ].join('\n')
 }

@@ -435,6 +435,10 @@
     再发媒体消息），永久失败降级文本；回执超 `DSH_WFXM_SPILL_CHARS`（默认 600，0 关闭）
     写 `<dataDir>/outbox-files/` 并作为附件发送，写入前 `redactedText`；执行器 `[[ATTACH]] <path>`
     （仅 cwd 内、≤3、≤20MB）经 worker `onArtifacts` 由 host 入队 `task.artifact`。
+  - **提醒（Slice AT / J5）**：新增 `@dsh-wfxm/reminder`（`reminders` 表，一次性/每天/每周）；
+    前台新增 `remind` / `reminders` / `cancel_remind` 三种结构化动作（时间二次校验，过去即追问）；
+    host pump 按 `reminder:<id>:<dueAt>` 幂等入队 `say`，周期推进只跳第一个未来时刻；
+    不做待办清单与「到点执行任务」。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

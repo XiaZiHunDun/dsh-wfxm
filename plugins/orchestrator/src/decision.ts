@@ -10,10 +10,16 @@
 
 export type DecisionRisk = 'R0' | 'R1'
 
+/** 提醒的重复类型（与 `@dsh-wfxm/reminder` 一致，但本包不 import 它）。 */
+export type DecisionRepeat = 'none' | 'daily' | 'weekly'
+
 export type Decision =
   | { action: 'reply'; text: string }
   | { action: 'task'; intent: string; risk: DecisionRisk }
   | { action: 'queue'; text: string }
+  | { action: 'remind'; at: string; text: string; repeat: DecisionRepeat }
+  | { action: 'reminders' }
+  | { action: 'cancel_remind'; index: number }
 
 export type DecisionParse =
   | { ok: true; decision: Decision }
@@ -26,11 +32,21 @@ export interface ParseDecisionOptions {
   maxReplyChars?: number
   /** Intents longer than this are rejected. */
   maxIntentChars?: number
+  /** 当前时间；`remind.at` 必须晚于它（缺省取系统时间）。 */
+  now?: Date
+  /** 前台是否挂了提醒端口；未挂时三种提醒动作一律视为未知。 */
+  remindersEnabled?: boolean
 }
 
 export const DEFAULT_MAX_REPLY_CHARS = 4_000
 /** ⑤ caps a task intent at 500 characters; validate here so it degrades early. */
 export const DEFAULT_MAX_INTENT_CHARS = 500
+/** 提醒语最多 200 字：它只是通知，不是任务描述。 */
+export const DEFAULT_MAX_REMINDER_CHARS = 200
+/** 提醒最远一年：超出多半是模型算错时间。 */
+export const MAX_REMINDER_AHEAD_MS = 366 * 86_400_000
+/** 列表最多展示 20 条，序号也以此为上限。 */
+export const MAX_REMINDER_INDEX = 20
 
 /** Strip fences / prose and return the outermost JSON object, or null. */
 export function extractJsonObject(raw: string): string | null {
@@ -107,6 +123,50 @@ export function parseDecision(raw: string, options: ParseDecisionOptions = {}): 
     if (text.length > maxIntent) return { ok: false, reason: 'queue-too-long' }
     if (options.liveTask !== true) return { ok: false, reason: 'queue-without-task' }
     return { ok: true, decision: { action: 'queue', text } }
+  }
+
+  // 提醒动作只在端口注入时才存在：没有能力就不让模型"决定"一个做不到的动作。
+  if (action === 'remind' || action === 'reminders' || action === 'cancel_remind') {
+    if (options.remindersEnabled !== true) return { ok: false, reason: 'reminders-unavailable' }
+  }
+
+  if (action === 'remind') {
+    const at = nonEmpty(record.at)
+    if (at === null) return { ok: false, reason: 'remind-at-missing' }
+    const due = Date.parse(at)
+    if (Number.isNaN(due)) return { ok: false, reason: 'remind-at-invalid' }
+    const now = options.now ?? new Date()
+    if (due <= now.getTime()) return { ok: false, reason: 'remind-at-past' }
+    if (due - now.getTime() > MAX_REMINDER_AHEAD_MS) return { ok: false, reason: 'remind-at-too-far' }
+
+    const text = nonEmpty(record.text)
+    if (text === null) return { ok: false, reason: 'remind-text-empty' }
+    if (text.length > DEFAULT_MAX_REMINDER_CHARS) return { ok: false, reason: 'remind-text-too-long' }
+
+    const rawRepeat = record.repeat
+    let repeat: DecisionRepeat = 'none'
+    if (rawRepeat !== undefined && rawRepeat !== null && rawRepeat !== '') {
+      if (typeof rawRepeat !== 'string') return { ok: false, reason: 'invalid-repeat' }
+      const value = rawRepeat.trim().toLowerCase()
+      if (value !== 'none' && value !== 'daily' && value !== 'weekly') {
+        return { ok: false, reason: 'invalid-repeat' }
+      }
+      repeat = value
+    }
+    // 归一化为 UTC ISO：存储与展示分开，模型给的 +08:00 不进入数据。
+    return { ok: true, decision: { action: 'remind', at: new Date(due).toISOString(), text, repeat } }
+  }
+
+  if (action === 'reminders') {
+    return { ok: true, decision: { action: 'reminders' } }
+  }
+
+  if (action === 'cancel_remind') {
+    const raw = record.index
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > MAX_REMINDER_INDEX) {
+      return { ok: false, reason: 'invalid-reminder-index' }
+    }
+    return { ok: true, decision: { action: 'cancel_remind', index: raw } }
   }
 
   return { ok: false, reason: 'unknown-action' }

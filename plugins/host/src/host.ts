@@ -40,6 +40,7 @@ import {
   type TaskProgressReport,
 } from '@dsh-wfxm/gateway'
 import type { ApprovalLevel, ApprovalStore, GrantStore } from '@dsh-wfxm/governance'
+import { nextDueAt as advanceReminder, type ReminderStore } from '@dsh-wfxm/reminder'
 import {
   createTaskStore,
   createTaskWorker,
@@ -59,6 +60,10 @@ const TURN_ROUTE_ACTION: Record<ForegroundOutcome['action'], RouteAction> = {
   'task-created': 'accept',
   'input-queued': 'attach',
   reply: 'answer',
+  // Slice AT (J5): 建提醒/取消提醒都算"接受了这条请求"，列表是回答。
+  'reminder-created': 'accept',
+  'reminder-list': 'answer',
+  'reminder-cancelled': 'accept',
   none: 'ignore',
 }
 
@@ -77,6 +82,8 @@ export interface HostPumpReport {
    * Deduplicated by the request event's seq, so a restart never asks twice.
    */
   inputRequests: number
+  /** Slice AT (J5): 本轮到点并入队的提醒数。 */
+  reminders: number
   receipts: ReceiptRelayReport
   /** Slice R: null when progress notices are disabled (or routing-only host). */
   progress: TaskProgressReport | null
@@ -172,6 +179,8 @@ export interface WfxmHostOptions {
   grants?: GrantStore | null
   /** ③'s approval store; without it approval cards cannot be issued or answered. */
   approvals?: ApprovalStore | null
+  /** Slice AT (J5): reminders store; absent means the front desk cannot set reminders. */
+  reminders?: ReminderStore | null
   project?: ProjectLookupPort | null
   rollback?: CheckpointRollbackPort | null
   worker?: HostWorkerOptions
@@ -234,6 +243,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   const gateway = createGatewayStore(options.dbPath)
   const tasks = createTaskStore(options.dbPath)
   const approvals = options.approvals ?? null
+  const reminders = options.reminders ?? null
 
   const ports = createHostPorts({
     tasks,
@@ -519,11 +529,50 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     return asked
   }
 
+  /**
+   * Slice AT (J5): 到点提醒进 outbox。先入队（幂等键固定）再推进状态：
+   * 入队成功而状态写入失败时，下一轮命中去重键，不会重复发；反之（先改状态）
+   * 一旦崩溃就永久丢提醒。
+   *
+   * 目标线程不可寻址时不猜 chat：直接结束并留 warn（不反复堆积）。
+   */
+  function fireDueReminders(): number {
+    if (reminders === null) return 0
+    const at = now()
+    let fired = 0
+    for (const item of reminders.listDue(at, 50)) {
+      if (gateway.getThread(item.threadId) === null) {
+        reminders.markFired(item.id, { nextDueAt: null, now: at })
+        logger?.warn?.(`reminder ${item.id}: thread ${item.threadId} is gone; dropped`)
+        continue
+      }
+      try {
+        gateway.enqueueOutbox({
+          topic: 'say',
+          payload: { text: `提醒：${item.text}` },
+          threadId: item.threadId,
+          dedupeKey: `reminder:${item.id}:${item.dueAt}`,
+        })
+      } catch (error) {
+        logger?.warn?.(`reminder ${item.id}: enqueue failed: ${messageOf(error)}`)
+        continue
+      }
+      reminders.markFired(item.id, {
+        nextDueAt: advanceReminder(item.dueAt, item.repeat, at),
+        now: at,
+      })
+      fired += 1
+    }
+    return fired
+  }
+
   async function pump(): Promise<HostPumpReport> {
     // Settle expired approvals first: a task released here produces its receipt
     // in this same tick instead of the next one.
     const expired = expireOverdueApprovals()
     const inputRequests = askForInput()
+    // Slice AT: 到期提醒在派发前入队，同一轮就能发出去。
+    const remindersFired = fireDueReminders()
     const receipts = receiptRelay.pump()
     // Slice R: enqueue progress notices before the dispatcher claims, so a due
     // reminder goes out in this same tick instead of waiting for the next one.
@@ -532,7 +581,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     // learns why the task stopped.
     if (progress !== null) pauseStalled(progress.stalled)
     const dispatch = dispatcher === null ? null : await dispatcher.runOnce()
-    return { expired, inputRequests, receipts, progress, dispatch }
+    return { expired, inputRequests, reminders: remindersFired, receipts, progress, dispatch }
   }
 
   /**
@@ -794,6 +843,43 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         text: textOf(input.content) ?? '',
         threadId: result.thread?.id ?? null,
         replyToMsgId,
+      })
+    }
+
+    // Slice AT (J5): 确认文案由宿主生成（时间已格式化），模型只负责决定。
+    if (turn.action === 'reminder-created') {
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: {
+          text: `已设提醒：${turn.when}「${turn.text}」${turn.repeatLabel}。到点会在这里提醒你。`,
+        },
+        threadId: turn.threadId,
+        replyToMsgId,
+        dedupeKey: `reminder-ack:${turn.reminderId}`,
+      })
+    }
+
+    if (turn.action === 'reminder-list') {
+      const lines = turn.items.map(
+        (item, index) => `${index + 1}. ${item.when} ${item.text}${item.repeatLabel}`,
+      )
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: {
+          text: lines.length === 0 ? '当前没有待触发的提醒。' : `当前提醒：\n${lines.join('\n')}`,
+        },
+        threadId: turn.threadId,
+        replyToMsgId,
+      })
+    }
+
+    if (turn.action === 'reminder-cancelled') {
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text: `已取消提醒：${turn.when}「${turn.text}」。` },
+        threadId: turn.threadId,
+        replyToMsgId,
+        dedupeKey: `reminder-cancel:${turn.reminderId}`,
       })
     }
 

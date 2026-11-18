@@ -1,7 +1,10 @@
-export type { Decision, DecisionParse, DecisionRisk, ParseDecisionOptions } from './decision.js'
+export type { Decision, DecisionParse, DecisionRepeat, DecisionRisk, ParseDecisionOptions } from './decision.js'
 export {
   DEFAULT_MAX_INTENT_CHARS,
+  DEFAULT_MAX_REMINDER_CHARS,
   DEFAULT_MAX_REPLY_CHARS,
+  MAX_REMINDER_AHEAD_MS,
+  MAX_REMINDER_INDEX,
   extractJsonObject,
   parseDecision,
 } from './decision.js'
@@ -10,13 +13,15 @@ export type {
   ForegroundInput,
   ForegroundOutcome,
   OrchestratorForegroundOptions,
+  ReminderPort,
+  ReminderView,
 } from './foreground.js'
 export {
   DEFAULT_LIVE_STATUSES,
   NON_TEXT_REPLY,
   createOrchestratorForeground,
 } from './foreground.js'
-export type { ConversationTurn, DecisionContextInput } from './prompt.js'
+export type { ConversationTurn, DecisionContextInput, ReminderPromptItem } from './prompt.js'
 export { buildDecisionPrompt } from './prompt.js'
 export type {
   QuickAnswer,

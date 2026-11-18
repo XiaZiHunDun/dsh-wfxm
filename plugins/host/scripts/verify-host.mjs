@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createApprovalStore, createGrantStore } from '@dsh-wfxm/governance'
+import { createReminderStore } from '@dsh-wfxm/reminder'
 import { createTaskStore, prepareAssertions } from '@dsh-wfxm/tasks'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -1398,6 +1399,59 @@ await check('plugins/host/src contains no SQL, table names or channel protocol n
 })
 
 // ---- teardown -----------------------------------------------------------------------
+
+// ---- 提醒（Slice AT / J5）：pump 到点投递一次 -----------------------------------------
+
+await check('pump fires due reminders once and advances a daily one', async () => {
+  const reminders = createReminderStore(join(dir, `reminders-${hostSeq + 1}.sqlite`))
+  const { host, transport } = makeHost({ options: { reminders } })
+  await pair(host)
+  const { result } = await say(host, '你好')
+  const threadId = result.result.thread?.id ?? null
+  const once = reminders.create({
+    threadId,
+    text: '交水电费',
+    dueAt: '2026-11-10T09:00:00Z',
+    now: new Date('2026-11-10T08:00:00Z'),
+  })
+  const daily = reminders.create({
+    threadId,
+    text: '吃药',
+    dueAt: '2026-11-09T01:00:00Z',
+    repeat: 'daily',
+    now: new Date('2026-11-10T00:00:00Z'),
+  })
+  const first = await host.pump()
+  const second = await host.pump()
+  const texts = transport.sent.map((item) => item.payload?.text ?? '')
+  const ok = first.reminders === 2
+    && second.reminders === 0
+    && texts.filter((text) => text === '提醒：交水电费').length === 1
+    && reminders.get(once.id)?.status === 'done'
+    && reminders.get(daily.id)?.status === 'pending'
+    && reminders.get(daily.id)?.dueAt === '2026-11-11T01:00:00.000Z'
+  host.close()
+  reminders.close()
+  return ok
+})
+
+await check('a reminder for a missing thread is dropped without guessing a chat', async () => {
+  const reminders = createReminderStore(join(dir, `reminders-${hostSeq + 1}.sqlite`))
+  const { host, transport } = makeHost({ options: { reminders } })
+  const item = reminders.create({
+    threadId: 'thread-gone',
+    text: '孤儿提醒',
+    dueAt: '2026-11-10T09:00:00Z',
+    now: new Date('2026-11-10T08:00:00Z'),
+  })
+  const report = await host.pump()
+  const ok = report.reminders === 0
+    && transport.sent.length === 0
+    && reminders.get(item.id)?.status === 'done'
+  host.close()
+  reminders.close()
+  return ok
+})
 
 rmSync(dir, { recursive: true, force: true })
 

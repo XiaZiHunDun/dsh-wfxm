@@ -43,6 +43,7 @@ const SUITES = [
   { name: 'orchestrator', file: 'plugins/orchestrator/scripts/verify-orchestrator.mjs', ci: true },
   { name: 'semantic', file: 'plugins/orchestrator/scripts/verify-semantic.mjs', ci: true },
   { name: 'redact', file: 'plugins/redact/scripts/verify-redact.mjs', ci: true },
+  { name: 'reminder', file: 'plugins/reminder/scripts/verify-reminder.mjs', ci: true },
   { name: 'snapshot', file: 'plugins/snapshot/scripts/verify-snapshot.mjs', ci: true },
   { name: 'alerting', file: 'plugins/svcops/scripts/verify-alerting.mjs', ci: true },
   { name: 'inspection', file: 'plugins/svcops/scripts/verify-inspection.mjs', ci: true },

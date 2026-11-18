@@ -14,10 +14,41 @@ import type { IngestResult } from '@dsh-wfxm/gateway'
 import { planTaskRisk } from '@dsh-wfxm/tasks'
 import type { RiskLevel, TaskStore } from '@dsh-wfxm/tasks'
 
+/** 体现前台的提醒视图（与 orchestrator 的结构一致；本包不依赖它）。 */
+export interface ForegroundReminder {
+  id: string
+  text: string
+  dueAt: string
+  repeat: 'none' | 'daily' | 'weekly'
+  when: string
+  repeatLabel: string
+}
+
 export type ForegroundOutcome =
   | { action: 'task-created'; taskId: string; note?: string }
   | { action: 'input-queued'; taskId: string; inputId: string; note?: string }
   | { action: 'reply'; text: string; threadId: string; note?: string }
+  // Slice AT (J5): 提醒相关的三种结果；宿主据此生成确认文案。
+  | {
+      action: 'reminder-created'
+      reminderId: string
+      text: string
+      dueAt: string
+      repeat: 'none' | 'daily' | 'weekly'
+      when: string
+      repeatLabel: string
+      threadId: string
+      note?: string
+    }
+  | { action: 'reminder-list'; items: ForegroundReminder[]; threadId: string; note?: string }
+  | {
+      action: 'reminder-cancelled'
+      reminderId: string
+      text: string
+      when: string
+      threadId: string
+      note?: string
+    }
   | { action: 'none'; reason: string; note?: string }
 
 export interface ForegroundInput {

@@ -58,7 +58,7 @@ function current() {
 check('prepare v1 → 自检八步全过（跑的是 release 自己的代码）', () => {
   const prepared = run(['prepare', '--version', 'v1'])
   assert(prepared.code === 0, prepared.output)
-  assert(prepared.output.includes('deps linked=13'), `deps not hard-linked: ${prepared.output}`)
+  assert(prepared.output.includes('deps linked=14'), `deps not hard-linked: ${prepared.output}`)
   const verified = run(['verify', '--version', 'v1'])
   assert(verified.code === 0, verified.output)
   assert(verified.output.includes('[startup] 8/8'), verified.output)

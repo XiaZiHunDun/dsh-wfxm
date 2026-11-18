@@ -22,14 +22,60 @@
 import type { IngestResult } from '@dsh-wfxm/gateway'
 import { planTaskRisk } from '@dsh-wfxm/tasks'
 import type { RiskLevel, TaskStore } from '@dsh-wfxm/tasks'
-import { parseDecision, type Decision } from './decision.js'
+import { parseDecision, type Decision, type DecisionRepeat } from './decision.js'
 import { buildDecisionPrompt, type ConversationTurn } from './prompt.js'
 import { createQuickAnswer, type QuickAnswer, type QuickChecks, type ResourceSnapshot } from './quick-answer.js'
+
+/**
+ * 已由宿主格式化好的提醒视图（本包不 import reminder，保持端口无关）。
+ * `when` / `repeatLabel` 由宿主按 `Asia/Shanghai` 生成，模型与确认文案共用。
+ */
+export interface ReminderView {
+  id: string
+  text: string
+  dueAt: string
+  repeat: DecisionRepeat
+  when: string
+  repeatLabel: string
+}
+
+/** 前台能做的提醒写入，仅此三项；端口缺失即能力不存在。 */
+export interface ReminderPort {
+  create(input: {
+    threadId: string
+    text: string
+    dueAt: string
+    repeat: DecisionRepeat
+    sourceMsgId: string | null
+  }): ReminderView
+  listPending(threadId: string, limit?: number): ReminderView[]
+  cancel(id: string): ReminderView | null
+}
 
 export type ForegroundOutcome =
   | { action: 'task-created'; taskId: string; note?: string }
   | { action: 'input-queued'; taskId: string; inputId: string; note?: string }
   | { action: 'reply'; text: string; threadId: string; note?: string }
+  | {
+      action: 'reminder-created'
+      reminderId: string
+      text: string
+      dueAt: string
+      repeat: DecisionRepeat
+      when: string
+      repeatLabel: string
+      threadId: string
+      note?: string
+    }
+  | { action: 'reminder-list'; items: ReminderView[]; threadId: string; note?: string }
+  | {
+      action: 'reminder-cancelled'
+      reminderId: string
+      text: string
+      when: string
+      threadId: string
+      note?: string
+    }
   | { action: 'none'; reason: string; note?: string }
 
 export interface ForegroundInput {
@@ -82,6 +128,10 @@ export interface OrchestratorForegroundOptions {
   probe?: (() => Promise<ResourceSnapshot>) | null
   /** Slice S: read-only unit / port / log checks; absent methods fall through. */
   checks?: QuickChecks | null
+  /** Slice AT (J5): 提醒端口；缺失时前台不提供提醒动作。 */
+  reminders?: ReminderPort | null
+  /** 可注入时钟（测试与提醒的相对时间换算）。 */
+  now?: () => Date
 }
 
 interface LiveTask {
@@ -106,6 +156,8 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
   const liveStatuses = options.liveStatuses ?? DEFAULT_LIVE_STATUSES
   const logger = options.logger ?? null
   const quickAnswer = createQuickAnswer({ tasks, probe: options.probe ?? null, checks: options.checks ?? null })
+  const reminders = options.reminders ?? null
+  const clock = options.now ?? (() => new Date())
 
   /** Rule-shaped actions, so a model decision and a fallback look the same. */
   function createTask(result: IngestResult, threadId: string, intent: string, risk: RiskLevel): ForegroundOutcome {
@@ -176,11 +228,22 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
     }
 
     const live = liveTaskOn(tasks, thread.id, liveStatuses)
+    const nowAt = clock()
+    // 本轮只读一次：prompt 里的序号与取消时用的是同一份列表。
+    const pendingReminders = reminders === null ? [] : reminders.listPending(thread.id, 8)
     const prompt = buildDecisionPrompt({
       text: trimmed,
       projectName: result.project?.name ?? null,
       liveTask: live,
       ...history === undefined ? {} : { history },
+      now: nowAt,
+      remindersEnabled: reminders !== null,
+      reminders: pendingReminders.map((item, index) => ({
+        index: index + 1,
+        when: item.when,
+        text: item.text,
+        repeatLabel: item.repeatLabel,
+      })),
     })
 
     let decision: Decision
@@ -188,6 +251,8 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
       const raw = await decide(prompt, thread.id)
       const parsed = parseDecision(raw, {
         liveTask: live !== null,
+        now: nowAt,
+        remindersEnabled: reminders !== null,
         ...options.maxReplyChars === undefined ? {} : { maxReplyChars: options.maxReplyChars },
         ...options.maxIntentChars === undefined ? {} : { maxIntentChars: options.maxIntentChars },
       })
@@ -207,6 +272,62 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
       // may have closed it between the decision and now.
       if (live === null) return await degrade({ result, text }, thread.id, 'queue-without-task')
       return queue(result, live.id)
+    }
+
+    // Slice AT (J5): 提醒只是"登记一个未来的通知"，不建任务、不执行外部动作。
+    if (decision.action === 'remind') {
+      if (reminders === null) {
+        return { action: 'reply', text: '提醒功能暂不可用。', threadId: thread.id, note: 'reminder-unavailable' }
+      }
+      try {
+        const created = reminders.create({
+          threadId: thread.id,
+          text: decision.text,
+          dueAt: decision.at,
+          repeat: decision.repeat,
+          sourceMsgId: result.inbox.msgId,
+        })
+        return {
+          action: 'reminder-created',
+          reminderId: created.id,
+          text: created.text,
+          dueAt: created.dueAt,
+          repeat: created.repeat,
+          when: created.when,
+          repeatLabel: created.repeatLabel,
+          threadId: thread.id,
+        }
+      } catch (error) {
+        logger?.warn?.(`reminder create failed: ${error instanceof Error ? error.message : String(error)}`)
+        return { action: 'reply', text: '设提醒失败，请稍后再试。', threadId: thread.id, note: 'reminder-failed' }
+      }
+    }
+
+    if (decision.action === 'reminders') {
+      return { action: 'reminder-list', items: [...pendingReminders], threadId: thread.id }
+    }
+
+    if (decision.action === 'cancel_remind') {
+      const target = pendingReminders[decision.index - 1]
+      if (reminders === null || target === undefined) {
+        return {
+          action: 'reply',
+          text: `没有第 ${decision.index} 条待触发的提醒。`,
+          threadId: thread.id,
+          note: 'reminder-missing',
+        }
+      }
+      const cancelled = reminders.cancel(target.id)
+      if (cancelled === null) {
+        return { action: 'reply', text: '这条提醒已不存在或已被取消。', threadId: thread.id, note: 'reminder-gone' }
+      }
+      return {
+        action: 'reminder-cancelled',
+        reminderId: cancelled.id,
+        text: cancelled.text,
+        when: cancelled.when,
+        threadId: thread.id,
+      }
     }
 
     // A second task on the same thread would fight the live owner slot (#9), so
