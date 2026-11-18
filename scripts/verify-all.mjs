@@ -38,6 +38,7 @@ const SUITES = [
   { name: 'preimages', file: 'plugins/governance/scripts/verify-preimages.mjs', ci: true, advisoryWhenRoot: true },
   { name: 'host', file: 'plugins/host/scripts/verify-host.mjs', ci: true },
   { name: 'knowledge', file: 'plugins/knowledge/scripts/verify-knowledge.mjs', ci: true },
+  { name: 'mail', file: 'plugins/mail/scripts/verify-mail.mjs', ci: true },
   { name: 'projects-cli', file: 'plugins/knowledge/scripts/verify-projects-cli.mjs', ci: true },
   { name: 'notify', file: 'plugins/notify/scripts/verify-notify.mjs', ci: true },
   { name: 'orchestrator', file: 'plugins/orchestrator/scripts/verify-orchestrator.mjs', ci: true },

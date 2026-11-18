@@ -1543,3 +1543,35 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 发布 `2026.11.18-9`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）
 - [x] 生产库已有 `reminders` 表与 `schema_migrations(module='reminder', v1)`，日志 `reminders: "on"`
 - [x] 回写 `spec.md` Slice AT、`.trae/specs/add-reminder/*`、`AGENTS.md §4`、`docs/08 J5`、`docs/09 J5`、`docs/15 §四`、`docs/16 §12.36`、`docs/06 §六`
+
+# Slice AU — 邮件读取与搜索（J1，2026-11-18，release `2026.11.18-10`）
+
+> 背景：部署机无 pnpm/npm/corepack，`dsh-email` 无法安装；改为自建只读 IMAP 端口。
+
+## AU1 `@dsh-wfxm/mail` 后端
+
+- [x] `scripts/mail-query.py`：IMAP 只读（`select readonly`）、stdin JSON、search/read、MIME 解码、HTML 去标签、`--self-test`（10 项）
+- [x] `config.ts`：`~/.dsh/integrations/dsh-mail/config.json` + `secretRef`，`DSH_WFXM_MAIL_*` 覆盖
+- [x] `query.ts`：spawn/超时/JSON 解析/错误分类（config/auth/network/timeout/protocol/parse/unavailable）
+
+## AU2 工具与插件
+
+- [x] `mail_search` / `mail_read`（R0，参数校验、正文截断、附件只列清单）
+- [x] `plugin.ts` 形态：`apply` / `name` / `inject` + `cordis.patch.yml`
+
+## AU3 运行接线
+
+- [x] `scripts/install-mail-profile.mjs`（幂等挂 headless profile，已实际执行）
+- [x] `dsh --profile headless --dump-config` 可见 `@dsh-wfxm/mail`
+- [x] `docs/16 §12.37` 配置与安装步骤（含 QQ 授权码获取）
+
+## AU4 验证
+
+- [x] `verify-mail`（18）：配置/参数/错误分类/工具注册/未配置降级/Python 自测/profile 安装幂等
+- [x] `verify-all` 注册 mail 套件；`verify-release` 依赖链接断言改为动态
+- [x] `build` / `--noEmit` / `check-style 179 files` / `verify-all 43 passed`（preimages advisory）
+
+## AU5 发布与回写
+
+- [x] 发布 `2026.11.18-10`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）
+- [x] 回写 `spec.md` Slice AU、`.trae/specs/add-mail-read/*`、`AGENTS.md §4`、`docs/08 J1`、`docs/09 J1`、`docs/12`、`docs/16 §12.37`、`docs/06 §六`

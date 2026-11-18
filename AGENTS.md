@@ -435,6 +435,10 @@
     再发媒体消息），永久失败降级文本；回执超 `DSH_WFXM_SPILL_CHARS`（默认 600，0 关闭）
     写 `<dataDir>/outbox-files/` 并作为附件发送，写入前 `redactedText`；执行器 `[[ATTACH]] <path>`
     （仅 cwd 内、≤3、≤20MB）经 worker `onArtifacts` 由 host 入队 `task.artifact`。
+  - **邮件（Slice AU / J1）**：新增 `@dsh-wfxm/mail`（`mail_search` / `mail_read` 两个 R0 只读工具，
+    挂 headless profile；前台不挂）。后端是 `scripts/mail-query.py`（Python 标准库 `imaplib`），
+    IMAP 只读、密码走 stdin；配置在 `~/.dsh/integrations/dsh-mail/config.json` + `secretRef`。
+    `dsh-email` 因部署机无 pnpm/npm 无法安装，发送（J3）另议。
   - **提醒（Slice AT / J5）**：新增 `@dsh-wfxm/reminder`（`reminders` 表，一次性/每天/每周）；
     前台新增 `remind` / `reminders` / `cancel_remind` 三种结构化动作（时间二次校验，过去即追问）；
     host pump 按 `reminder:<id>:<dueAt>` 幂等入队 `say`，周期推进只跳第一个未来时刻；

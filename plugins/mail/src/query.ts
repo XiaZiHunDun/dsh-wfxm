@@ -1,0 +1,205 @@
+/**
+ * Node → Python 的只读邮件查询（J1）。
+ *
+ * 只做三件事：把请求写成 JSON 从 stdin 交给脚本、收 stdout 的 JSON、
+ * 把失败归类成可读错误。密码只存在于这次 stdin 中。
+ */
+
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import type { MailAccount } from './config.js'
+
+export type MailErrorCode = 'config' | 'auth' | 'network' | 'timeout' | 'protocol' | 'parse' | 'unavailable'
+
+export class MailError extends Error {
+  readonly code: MailErrorCode
+
+  constructor(code: MailErrorCode, message: string) {
+    super(message)
+    this.name = 'MailError'
+    this.code = code
+  }
+}
+
+export interface MailSearchRequest {
+  /** 服务端 TEXT 搜索；含非 ASCII 时改为本地过滤最近 200 封。 */
+  query?: string
+  from?: string
+  subject?: string
+  /** ISO 日期 `YYYY-MM-DD`。 */
+  since?: string
+  before?: string
+  limit?: number
+}
+
+export interface MailMessageSummary {
+  uid: number
+  date: string
+  from: string
+  to: string
+  subject: string
+  sizeBytes: number
+  seen: boolean
+}
+
+export interface MailSearchResult {
+  mailbox: string
+  total: number
+  /** 实际扫描的头部数量（本地过滤时可能大于返回条数）。 */
+  scanned: number
+  localFilter: boolean
+  messages: MailMessageSummary[]
+}
+
+export interface MailReadRequest {
+  uid: number
+  /** 正文最多返回多少字符（默认 4000，上限 20000）。 */
+  maxChars?: number
+}
+
+export interface MailAttachmentInfo {
+  name: string
+  sizeBytes: number
+}
+
+export interface MailReadResult {
+  uid: number
+  date: string
+  from: string
+  to: string
+  subject: string
+  text: string
+  truncated: boolean
+  attachments: MailAttachmentInfo[]
+}
+
+export interface QueryMailOptions {
+  account: MailAccount
+  /** 默认 `python3`（可用 `DSH_WFXM_PYTHON` 覆盖）。 */
+  python?: string
+  scriptPath?: string
+  timeoutMs?: number
+  signal?: AbortSignal
+}
+
+const DEFAULT_SCRIPT = fileURLToPath(new URL('../scripts/mail-query.py', import.meta.url))
+
+function errorCode(value: unknown): MailErrorCode {
+  if (value === 'config' || value === 'auth' || value === 'network'
+    || value === 'timeout' || value === 'protocol' || value === 'parse') {
+    return value
+  }
+  return 'protocol'
+}
+
+function runScript(
+  payload: unknown,
+  options: QueryMailOptions,
+): Promise<Record<string, unknown>> {
+  const python = options.python ?? process.env.DSH_WFXM_PYTHON ?? 'python3'
+  const scriptPath = options.scriptPath ?? DEFAULT_SCRIPT
+  const timeoutMs = options.timeoutMs ?? 20_000
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(python, [scriptPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      signal: options.signal,
+    })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+
+    const finish = (fn: () => void): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      fn()
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish(() => reject(new MailError('timeout', `邮件查询超时（>${timeoutMs}ms）`)))
+    }, timeoutMs)
+
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => { stdout += chunk })
+    child.stderr.on('data', (chunk: string) => { stderr += chunk })
+    child.on('error', (error) => {
+      const code = (error as NodeJS.ErrnoException).code
+      finish(() => reject(new MailError(
+        'unavailable',
+        code === 'ENOENT' ? `找不到 Python 解释器：${python}` : `无法启动邮件查询：${error.message}`,
+      )))
+    })
+    child.on('close', (code) => {
+      const text = stdout.trim()
+      if (text === '') {
+        finish(() => reject(new MailError(
+          'parse',
+          `邮件查询没有输出（退出码 ${code ?? 'null'}）${stderr.trim() === '' ? '' : `：${stderr.trim()}`}`,
+        )))
+        return
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        finish(() => reject(new MailError('parse', `邮件查询输出不是 JSON：${text.slice(0, 200)}`)))
+        return
+      }
+      if (parsed === null || typeof parsed !== 'object') {
+        finish(() => reject(new MailError('parse', '邮件查询输出不是对象')))
+        return
+      }
+      const record = parsed as Record<string, unknown>
+      if (record.ok === false) {
+        const message = typeof record.message === 'string' ? record.message : '邮件查询失败'
+        finish(() => reject(new MailError(errorCode(record.code), message)))
+        return
+      }
+      finish(() => resolve(record))
+    })
+
+    child.stdin.end(JSON.stringify(payload))
+  })
+}
+
+export async function queryMail(
+  request: MailSearchRequest | MailReadRequest,
+  options: QueryMailOptions & { action: 'search' | 'read' },
+): Promise<Record<string, unknown>> {
+  return runScript({ action: options.action, account: options.account, request }, options)
+}
+
+export async function searchMail(
+  request: MailSearchRequest,
+  options: QueryMailOptions,
+): Promise<MailSearchResult> {
+  const result = await queryMail(request, { ...options, action: 'search' })
+  return {
+    mailbox: String(result.mailbox ?? 'INBOX'),
+    total: Number(result.total ?? 0),
+    scanned: Number(result.scanned ?? 0),
+    localFilter: result.localFilter === true,
+    messages: Array.isArray(result.messages) ? result.messages as MailMessageSummary[] : [],
+  }
+}
+
+export async function readMail(
+  request: MailReadRequest,
+  options: QueryMailOptions,
+): Promise<MailReadResult> {
+  const result = await queryMail(request, { ...options, action: 'read' })
+  return {
+    uid: Number(result.uid ?? request.uid),
+    date: String(result.date ?? ''),
+    from: String(result.from ?? ''),
+    to: String(result.to ?? ''),
+    subject: String(result.subject ?? ''),
+    text: String(result.text ?? ''),
+    truncated: result.truncated === true,
+    attachments: Array.isArray(result.attachments)
+      ? result.attachments as MailAttachmentInfo[]
+      : [],
+  }
+}

@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,7 +58,11 @@ function current() {
 check('prepare v1 → 自检八步全过（跑的是 release 自己的代码）', () => {
   const prepared = run(['prepare', '--version', 'v1'])
   assert(prepared.code === 0, prepared.output)
-  assert(prepared.output.includes('deps linked=14'), `deps not hard-linked: ${prepared.output}`)
+  // release.mjs 链接 `node_modules` + 每个带 node_modules 的插件目录；按实际数量断言，
+  // 避免每加一个包就要改常量（Slice AT 踩过一次）。
+  const linkedTrees = 1 + readdirSync(join(repoRoot, 'plugins'))
+    .filter((name) => existsSync(join(repoRoot, 'plugins', name, 'node_modules'))).length
+  assert(prepared.output.includes(`deps linked=${linkedTrees}`), `deps not hard-linked: ${prepared.output}`)
   const verified = run(['verify', '--version', 'v1'])
   assert(verified.code === 0, verified.output)
   assert(verified.output.includes('[startup] 8/8'), verified.output)

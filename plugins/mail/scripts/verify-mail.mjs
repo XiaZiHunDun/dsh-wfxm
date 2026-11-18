@@ -1,0 +1,279 @@
+/**
+ * `@dsh-wfxm/mail`（J1）：配置、参数校验、查询错误分类、工具注册与 Python 自测。
+ *
+ * 运行：node plugins/mail/scripts/verify-mail.mjs
+ */
+
+import { chmodSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+import {
+  MAIL_TOOL_RISK,
+  MailError,
+  isIsoDate,
+  readMailAccount,
+  registerMailTools,
+  searchMail,
+  validateReadArgs,
+  validateSearchArgs,
+} from '../lib/index.js'
+
+let pass = 0
+let fail = 0
+async function check(name, fn) {
+  try {
+    const ok = await fn()
+    if (ok) {
+      pass++
+      console.log(`PASS  ${name}`)
+    } else {
+      fail++
+      console.log(`FAIL  ${name}`)
+    }
+  } catch (error) {
+    fail++
+    console.log(`FAIL  ${name} — ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+function rejects(fn, code) {
+  try {
+    fn()
+    return false
+  } catch (error) {
+    return error instanceof MailError && (code === undefined || error.code === code)
+  }
+}
+
+const dir = mkdtempSync(join(tmpdir(), 'dsh-mail-'))
+const credentialsPath = join(dir, 'credentials.yaml')
+writeFileSync(credentialsPath, 'refs:\n  mail/qq: super-secret\n')
+const configPath = join(dir, 'config.json')
+writeFileSync(configPath, JSON.stringify({
+  account: { host: 'imap.qq.com', port: 993, secure: true, user: 'me@qq.com', secretRef: 'mail/qq' },
+}))
+
+await check('env account wins and defaults the port', () => {
+  const result = readMailAccount({
+    env: { DSH_WFXM_MAIL_HOST: 'imap.example.com', DSH_WFXM_MAIL_USER: 'u@example.com', DSH_WFXM_MAIL_PASSWORD: 'p' },
+  })
+  return result.ok && result.source === 'env' && result.account.port === 993 && result.account.password === 'p'
+})
+
+await check('file + secretRef resolves the password', () => {
+  const result = readMailAccount({ configPath, credentialsPath, env: {} })
+  return result.ok && result.source === 'file' && result.account.password === 'super-secret'
+    && result.account.host === 'imap.qq.com'
+})
+
+await check('missing config is a readable config error', () => {
+  const result = readMailAccount({ configPath: join(dir, 'missing.json'), env: {} })
+  return !result.ok && result.code === 'config' && result.message.includes('未配置邮箱')
+})
+
+await check('missing secretRef target is a config error', () => {
+  const bad = join(dir, 'bad.json')
+  writeFileSync(bad, JSON.stringify({ account: { host: 'h', user: 'u', secretRef: 'mail/none' } }))
+  const result = readMailAccount({ configPath: bad, credentialsPath, env: {} })
+  return !result.ok && result.code === 'config' && result.message.includes('not found')
+})
+
+await check('invalid json and missing fields are config errors', () => {
+  const invalid = join(dir, 'invalid.json')
+  writeFileSync(invalid, '{not json')
+  const broken = readMailAccount({ configPath: invalid, env: {} })
+  const empty = join(dir, 'empty.json')
+  writeFileSync(empty, JSON.stringify({ account: { user: 'u', password: 'p' } }))
+  const noHost = readMailAccount({ configPath: empty, env: {} })
+  return !broken.ok && broken.code === 'config'
+    && !noHost.ok && noHost.message.includes('account.host')
+})
+
+await check('search args validate dates and limits', () => {
+  const ok = validateSearchArgs({ query: '账单', from: 'a@b.c', since: '2026-11-01', before: '2026-11-18', limit: 10 })
+  return ok.limit === 10 && ok.since === '2026-11-01' && ok.query === '账单'
+    && rejects(() => validateSearchArgs({ since: '2026-13-01' }))
+    && rejects(() => validateSearchArgs({ since: '2026-02-30' }))
+    && rejects(() => validateSearchArgs({ limit: 0 }))
+    && rejects(() => validateSearchArgs({ limit: 51 }))
+    && rejects(() => validateSearchArgs({ limit: 1.5 }))
+    && rejects(() => validateSearchArgs({ from: 42 }))
+})
+
+await check('read args validate uid and maxChars', () => {
+  const ok = validateReadArgs({ uid: 12, maxChars: 2000 })
+  return ok.uid === 12 && ok.maxChars === 2000
+    && rejects(() => validateReadArgs({ uid: 0 }))
+    && rejects(() => validateReadArgs({ uid: -1 }))
+    && validateReadArgs({ uid: '12' }).uid === 12
+    && rejects(() => validateReadArgs({ uid: 1, maxChars: 20_001 }))
+})
+
+await check('iso date helper is strict', () => {
+  return isIsoDate('2026-11-18') && !isIsoDate('2026-1-1') && !isIsoDate('18-11-2026')
+})
+
+// ---- 查询：用 node 充当"解释器"，脚本从 stdin 读 JSON -------------------------------
+const fakeScript = join(dir, 'fake.mjs')
+writeFileSync(fakeScript, `
+let input = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => { input += chunk })
+process.stdin.on('end', () => {
+  const payload = JSON.parse(input)
+  if (payload.request.query === 'auth') {
+    console.log(JSON.stringify({ ok: false, code: 'auth', message: 'login failed' }))
+    return
+  }
+  if (payload.request.query === 'garbage') {
+    console.log('not json')
+    return
+  }
+  if (payload.request.query === 'slow') {
+    setTimeout(() => console.log(JSON.stringify({ ok: true, mailbox: 'INBOX', total: 0, scanned: 0, localFilter: false, messages: [] })), 2000)
+    return
+  }
+  console.log(JSON.stringify({
+    ok: true,
+    mailbox: 'INBOX',
+    total: Number(payload.request.limit ?? 1),
+    scanned: 1,
+    localFilter: false,
+    messages: [{ uid: 7, date: 'Tue, 18 Nov 2026 10:00:00 +0800', from: 'a@b.c', to: 'me@qq.com', subject: '你好', sizeBytes: 10, seen: false }],
+    echoPassword: payload.account.password,
+  }))
+})
+`)
+
+const account = { host: 'imap.qq.com', port: 993, secure: true, user: 'me@qq.com', password: 'secret-in-stdin' }
+const queryOptions = { account, python: process.execPath, scriptPath: fakeScript, timeoutMs: 2000 }
+
+await check('query passes the password through stdin and parses output', async () => {
+  const result = await searchMail({ limit: 3 }, queryOptions)
+  return result.total === 3 && result.messages[0].uid === 7 && result.messages[0].subject === '你好'
+})
+
+await check('auth errors stay classifiable', async () => {
+  try {
+    await searchMail({ query: 'auth' }, queryOptions)
+    return false
+  } catch (error) {
+    return error instanceof MailError && error.code === 'auth' && error.message.includes('login failed')
+  }
+})
+
+await check('non-JSON output is a parse error', async () => {
+  try {
+    await searchMail({ query: 'garbage' }, queryOptions)
+    return false
+  } catch (error) {
+    return error instanceof MailError && error.code === 'parse'
+  }
+})
+
+await check('timeouts are reported as timeout', async () => {
+  try {
+    await searchMail({ query: 'slow' }, { ...queryOptions, timeoutMs: 100 })
+    return false
+  } catch (error) {
+    return error instanceof MailError && error.code === 'timeout'
+  }
+})
+
+await check('a missing interpreter is unavailable', async () => {
+  try {
+    await searchMail({}, { ...queryOptions, python: join(dir, 'no-such-python') })
+    return false
+  } catch (error) {
+    return error instanceof MailError && error.code === 'unavailable'
+  }
+})
+
+// ---- 工具注册 -------------------------------------------------------------------
+function fakeContext() {
+  const captured = []
+  return {
+    tools: { register(tool) { captured.push(tool) } },
+    logger: { info() {} },
+    captured,
+  }
+}
+
+await check('registers exactly two read-only tools', () => {
+  const ctx = fakeContext()
+  registerMailTools(ctx)
+  const names = ctx.captured.map((tool) => tool.name).sort()
+  return names.length === 2 && names[0] === 'mail_read' && names[1] === 'mail_search'
+    && ctx.captured.every((tool) => String(tool.description).toLowerCase().includes('read-only'))
+    && MAIL_TOOL_RISK.mail_search === 'R0' && MAIL_TOOL_RISK.mail_read === 'R0'
+})
+
+await check('tools surface a readable error when mail is not configured', async () => {
+  const ctx = fakeContext()
+  registerMailTools(ctx, { config: () => ({ ok: false, code: 'config', message: '未配置邮箱' }) })
+  const tool = ctx.captured.find((item) => item.name === 'mail_search')
+  try {
+    await tool.execute({ limit: 1 })
+    return false
+  } catch (error) {
+    return error instanceof MailError && error.code === 'config' && error.message.includes('未配置邮箱')
+  }
+})
+
+await check('tools return structured data when configured', async () => {
+  const ctx = fakeContext()
+  registerMailTools(ctx, {
+    config: () => ({ ok: true, source: 'env', account }),
+    search: async () => ({ mailbox: 'INBOX', total: 1, scanned: 1, localFilter: false, messages: [] }),
+    read: async () => ({ uid: 9, date: '', from: '', to: '', subject: 's', text: 'body', truncated: false, attachments: [] }),
+  })
+  const search = ctx.captured.find((item) => item.name === 'mail_search')
+  const read = ctx.captured.find((item) => item.name === 'mail_read')
+  const searched = await search.execute({ limit: 2 })
+  const readResult = await read.execute({ uid: 9 })
+  return searched.total === 1 && readResult.uid === 9 && readResult.text === 'body'
+})
+
+// ---- Python 自测 ---------------------------------------------------------------
+await check('python backend self-test passes', () => {
+  const script = fileURLToPath(new URL('../scripts/mail-query.py', import.meta.url))
+  const result = spawnSync('python3', [script], { input: '{"action":"self-test"}', encoding: 'utf8' })
+  if (result.status !== 0) return false
+  const parsed = JSON.parse(result.stdout)
+  return parsed.ok === true && parsed.checks >= 8
+})
+
+// ---- profile 安装脚本 ----------------------------------------------------------
+await check('install script is idempotent and links the package', async () => {
+  const profileDir = join(dir, 'profile')
+  mkdirSync(profileDir, { recursive: true })
+  writeFileSync(join(profileDir, 'package.json'), JSON.stringify({
+    name: 'test-profile',
+    private: true,
+    dependencies: {},
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'] } },
+  }, null, 2))
+
+  const run = () => spawnSync(process.execPath, [
+    fileURLToPath(new URL('../../../scripts/install-mail-profile.mjs', import.meta.url)),
+    '--profile-dir', profileDir,
+  ], { encoding: 'utf8' })
+
+  const first = run()
+  const second = run()
+  const pkg = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'))
+  const firstJson = JSON.parse(first.stdout)
+  const secondJson = JSON.parse(second.stdout)
+  return first.status === 0 && second.status === 0
+    && firstJson.changed === true && secondJson.changed === false
+    && pkg.dependencies['@dsh-wfxm/mail'].startsWith('link:')
+    && pkg.dsh.profile.bundles.includes('@dsh-wfxm/mail')
+    && existsSync(join(profileDir, 'node_modules/@dsh-wfxm/mail'))
+})
+
+rmSync(dir, { recursive: true, force: true })
+
+console.log(`\n${pass} passed, ${fail} failed`)
+if (fail > 0) process.exitCode = 1

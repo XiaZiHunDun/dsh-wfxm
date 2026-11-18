@@ -2424,3 +2424,50 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 - 发布 `2026.11.18-9`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`），
   生产库已建 `reminders` 表与 `schema_migrations(module='reminder', v1)`。
 - 真机项：设一句提醒 → 到点收到消息，登记 `docs/06 §六`。
+
+## Slice AU Spec — 邮件读取与搜索（J1，2026-11-18，release `2026.11.18-10`）
+
+### 1. 问题（已核对环境）
+
+- 部署机只有 `node` 与 `python3`，没有 npm/pnpm/corepack；`docs/12` 原选的 `dsh-email@0.20.3`
+  无法安装，也没有邮箱凭据。
+- 仓库内没有邮件代码；headless profile（任务执行器）只挂了 governance / svcops。
+- 不提供工具时，模型只能通过 shell 访问邮箱，违背生活域「不碰 shell」与工具面治理。
+
+### 2. 机制
+
+- 新增 `@dsh-wfxm/mail`（`plugins/mail`）：
+  - 后端 `scripts/mail-query.py`（Python 3 标准库 `imaplib` + `email`），`select('INBOX', readonly=True)`；
+    参数经 **stdin** 传入（密码不进 argv），结果 JSON 从 stdout 返回。
+  - Node 侧 `readMailAccount`（`~/.dsh/integrations/dsh-mail/config.json` + `secretRef` → 凭据库；
+    可用 `DSH_WFXM_MAIL_*` 覆盖）与 `searchMail/readMail`（spawn、超时、错误分类）。
+  - 两个 R0 只有工具：`mail_search`（query/from/subject/since/before/limit）
+    与 `mail_read`（uid/maxChars）；正文优先 text/plain、回退 HTML 去标签，附件只列清单。
+  - 中文关键词不走服务端 SEARCH（各家 IMAP 支持不一），改为扫描最近 200 封头部本地过滤，
+    结果标注 `scanned` / `localFilter`。
+- 接线：`scripts/install-mail-profile.mjs` 幂等挂到 headless profile
+  （`dependencies` + `dsh.profile.bundles` + `node_modules` 链接）；前台 sdk profile 不挂。
+- 失败：未配置 → `config`；认证 → `auth`；网络 → `network`；超时 → `timeout`；其余 → `protocol/parse`，
+  工具层返回可读错误，不静默。
+
+### 3. 边界
+
+- 只读 INBOX、单账号；不发送、不删除、不标记已读、不移动、不下载附件。
+- 不支持多账号、Exchange/Graph；附件解析（J9）与发送（J3）不在本切片。
+
+### 4. 验证
+
+- `verify-mail`（18）：配置解析/缺失、参数校验、stdin 传参、auth/parse/timeout/unavailable 分类、
+  工具注册与未配置降级、Python 后端自测（10 项）、profile 安装脚本幂等。
+- 全量 `43 passed · 0 failed · 1 advisory`（preimages 为 root 下既有）；`check-style 179 files`。
+- 真机（待 owner 提供 QQ 授权码）：`mail_search` 列最近邮件、`mail_read` 读一封。
+
+### 5. 实施记录（2026-11-18，release `2026.11.18-10`）
+
+- 新增 `plugins/mail`（`config.ts` / `query.ts` / `tools.ts` / `scripts/mail-query.py` / `cordis.patch.yml`）；
+  `scripts/install-mail-profile.mjs` 已把 `@dsh-wfxm/mail` 幂等挂进 `~/.dsh/profiles/headless`，
+  `dsh --profile headless --dump-config` 可见该 bundle。
+- 验证：`verify-mail 18`（含 Python `--self-test` 10 项）；`verify-all` 注册 mail 套件；
+  `verify-release` 的依赖链接断言改为按实际插件数动态计算。
+- 发布 `2026.11.18-10`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）。
+- 文档：`docs/16 §12.37` 写明授权码获取与配置步骤；真机项登记 `docs/06 §六`。

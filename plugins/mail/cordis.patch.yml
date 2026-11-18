@@ -1,0 +1,5 @@
+# dsh-wfxm mail bundle layer (J1: read-only mail search/read).
+# Inserted into a profile by `dsh plugin --profile <name> add ./plugins/mail`.
+- insert:
+    - id: dsh-wfxm-mail
+      name: '@dsh-wfxm/mail'
