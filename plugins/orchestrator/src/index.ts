@@ -76,6 +76,8 @@ export type {
   ResidentTurn,
   SdkDecisionRunner,
   SdkDecisionRunnerOptions,
+  ThreadSessionHarness,
+  ThreadSessionLike,
 } from './sdk-runner.js'
 export {
   DEFAULT_SDK_PROFILE,
@@ -83,4 +85,5 @@ export {
   createDshSdkTurn,
   createSdkDecisionRunner,
   defaultSdkPatchPath,
+  runOnThreadSession,
 } from './sdk-runner.js'

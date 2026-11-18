@@ -18,6 +18,11 @@
  *   or transport failure *discards* the child (and the poisoned session) and
  *   the next turn starts a clean one. The failure is still thrown, so the
  *   foreground degrades to the rule path with a visible reason (AR13).
+ * - **Slice AQ restart continuity**: dsh persists sessions in the harness home,
+ *   so a thread used before a restart cannot be opened with `session(id)` — the
+ *   runtime rejects the first prompt with `session "…" already exists`. That
+ *   one collision is recovered with `resumeSession(id)` and the same prompt is
+ *   retried; every other failure still discards the runtime.
  */
 
 import { tmpdir } from 'node:os'
@@ -78,9 +83,59 @@ export function defaultSdkPatchPath(): string {
   return fileURLToPath(new URL('../assets/frontdesk.sdk.patch.yml', import.meta.url))
 }
 
-/** The slice of `HarnessSession` this module uses, kept structural on purpose. */
-interface HarnessSessionLike {
+/** The slice of `HarnessSession` the resident turn drives. */
+export interface ThreadSessionLike {
   run(input: string): Promise<{ finalResponse: string }>
+}
+
+/** The slice of `DeepSeekHarness` needed for one session per thread. */
+export interface ThreadSessionHarness {
+  session(sessionId?: string): ThreadSessionLike
+  resumeSession(sessionId: string): Promise<ThreadSessionLike>
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Slice AQ: one session per thread, surviving a runtime restart.
+ *
+ * dsh persists sessions in its harness home, so after a restart `session(id)`
+ * opens a fresh handle whose first `run` is rejected with
+ * `session "…" already exists`. The persisted conversation is continued with
+ * `resumeSession(id)`; an already-acquired handle is reused as-is.
+ */
+export async function runOnThreadSession(
+  harness: ThreadSessionHarness,
+  sessions: Map<string, ThreadSessionLike>,
+  key: string,
+  prompt: string,
+): Promise<string> {
+  const cached = sessions.get(key)
+  if (cached !== undefined) return (await cached.run(prompt)).finalResponse
+
+  const created = harness.session(key === '' ? undefined : key)
+  try {
+    const result = await created.run(prompt)
+    sessions.set(key, created)
+    return result.finalResponse
+  } catch (error) {
+    // Only the persisted-session collision is recoverable; every other error
+    // must reach the decision runner so it can discard the poisoned runtime.
+    if (key === '' || !/session "[^"]*" already exists/i.test(errorText(error))) throw error
+    let restored: ThreadSessionLike
+    try {
+      restored = await harness.resumeSession(key)
+    } catch (resumeError) {
+      throw new Error(
+        `session "${key}" already exists and resume failed: ${errorText(resumeError)}`,
+      )
+    }
+    const result = await restored.run(prompt)
+    sessions.set(key, restored)
+    return result.finalResponse
+  }
 }
 
 export function createDshSdkTurn(options: DshSdkTurnOptions = {}): ResidentTurn {
@@ -90,7 +145,7 @@ export function createDshSdkTurn(options: DshSdkTurnOptions = {}): ResidentTurn 
   let harness: DeepSeekHarness | null = null
   // One session per thread id: the runtime is shared (warm), the conversation
   // is not. A chat must never see another chat's turns.
-  const sessions = new Map<string, HarnessSessionLike>()
+  const sessions = new Map<string, ThreadSessionLike>()
 
   return {
     async start() {
@@ -120,14 +175,7 @@ export function createDshSdkTurn(options: DshSdkTurnOptions = {}): ResidentTurn 
 
     async ask(prompt, sessionKey) {
       if (harness === null) throw new Error('front-desk SDK runtime is not started')
-      const key = sessionKey ?? ''
-      let session = sessions.get(key)
-      if (session === undefined) {
-        session = harness.session(key === '' ? undefined : key) as unknown as HarnessSessionLike
-        sessions.set(key, session)
-      }
-      const result = await session.run(prompt)
-      return result.finalResponse
+      return runOnThreadSession(harness, sessions, sessionKey ?? '', prompt)
     },
 
     async close() {

@@ -58,6 +58,7 @@ const {
   matchQuickRequest,
   parseDecision,
   parseQuickRequest,
+  runOnThreadSession,
 } = await import('../lib/index.js')
 const { createRuleForeground, createWfxmHost } = await import('@dsh-wfxm/host')
 
@@ -925,6 +926,60 @@ await check('concurrent turns are serialised on the one resident runtime', async
   const results = await Promise.all([decide('one'), decide('two')])
   await decide.close()
   return results.join(',') === 'a,b' && turn.maxConcurrent === 1 && turn.starts === 1
+})
+
+await check('a persisted thread session is resumed instead of failing after a restart', async () => {
+  const calls = []
+  const harness = {
+    session(id) {
+      calls.push(`session:${id}`)
+      return {
+        run: async () => {
+          throw new Error(`session "${id}" already exists`)
+        },
+      }
+    },
+    async resumeSession(id) {
+      calls.push(`resume:${id}`)
+      return { run: async (prompt) => ({ finalResponse: `resumed:${prompt}` }) }
+    },
+  }
+  const sessions = new Map()
+  const first = await runOnThreadSession(harness, sessions, 'thread-old', '第一条')
+  const second = await runOnThreadSession(harness, sessions, 'thread-old', '第二条')
+  return first === 'resumed:第一条'
+    && second === 'resumed:第二条'
+    && calls.join(',') === 'session:thread-old,resume:thread-old'
+})
+
+await check('a fresh thread creates its session and other failures are not resumed', async () => {
+  const calls = []
+  const harness = {
+    session(id) {
+      calls.push(`session:${id}`)
+      return {
+        run: async () => {
+          if (id === 'thread-bad') throw new Error('transport lost')
+          return { finalResponse: `ok:${id}` }
+        },
+      }
+    },
+    async resumeSession(id) {
+      calls.push(`resume:${id}`)
+      return { run: async () => ({ finalResponse: 'nope' }) }
+    },
+  }
+  const sessions = new Map()
+  const fresh = await runOnThreadSession(harness, sessions, 'thread-new', 'hi')
+  let propagated = false
+  try {
+    await runOnThreadSession(harness, sessions, 'thread-bad', 'hi')
+  } catch (error) {
+    propagated = String(error).includes('transport lost')
+  }
+  return fresh === 'ok:thread-new'
+    && propagated
+    && calls.filter((entry) => entry.startsWith('resume:')).length === 0
 })
 
 await check('a timeout discards the runtime; the next turn boots a clean one', async () => {

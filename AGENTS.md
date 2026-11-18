@@ -422,6 +422,8 @@
   - **任务执行上下文（Slice AP）**：⑤ `recentThreadResults(taskId, 2)` 取同线程 `succeeded`
     回执（排除自身），worker 组装最多 2 条 / 每条 300 字的 `threadContext` 交给执行器，
     executor 拼在 `intent` 之后同 stdin 送入；只读 ⑤ 自己的表，读取失败不阻塞执行。
+  - **重启会话续接（Slice AQ）**：`runOnThreadSession` 在 `session "<threadId>" already exists`
+    时 `resumeSession` 并重试一次；其他错误不恢复，仍丢弃运行时并降级（AR13）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

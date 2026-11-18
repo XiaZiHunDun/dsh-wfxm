@@ -2186,3 +2186,15 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 - 边界：只读 ⑤ 自己的 `task_threads` / `tasks` / `receipts`，不读 ①；只看线程，不跨线程；
   只取 `succeeded`；上下文只读、不回写、不改写 `intent`；读取失败只上报，不阻塞执行。
 - 验证：`verify-tasks 104`、`verify-executor 21`；全量 41 套件通过。
+
+## Slice AQ Spec — 重启后的前台 SDK 会话续接（2026-11-18，release `2026.11.18-6`）
+
+- 现象：AO 按 thread 复用 SDK 会话；服务重启后，老线程的消息报
+  `session "<threadId>" already exists`，决策降级到规则（日志 `orchestrator-fallback`），
+  线程历史与指代能力静默失效，但任务仍能执行。
+- 根因：dsh 持久化会话；`harness.session(id)` 只是句柄，首次 `prompt` 被拒；
+  续接持久会话必须 `resumeSession(id)`。
+- 规则：`runOnThreadSession` 命中该冲突时 `resumeSession(threadId)` 后重试同一 prompt 一次，
+  并缓存恢复的句柄；其他错误（超时/传输）不恢复，仍丢弃运行时并降级。
+- 边界：只恢复 `already exists` 这一种；空 thread 不恢复；不改变既有降级语义（AR13）。
+- 验证：`verify-orchestrator 54`；全量 41 套件通过；生产重启回归无 `front:warn`。
