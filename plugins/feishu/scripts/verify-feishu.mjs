@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createGatewayStore, ingestInbound, createOutboxDispatcher } from '@dsh-wfxm/gateway'
 import {
   FEISHU_TEXT_SEGMENT_LIMIT,
@@ -21,6 +21,10 @@ import {
   normalizeFeishuMessageEvent,
   outboundText,
   resolveLarkDomain,
+  safeAttachmentName,
+  stageAttachments,
+  feishuFileType,
+  isMediaPayload,
   resolveSecretRef,
   segmentText,
   toCardActionResponse,
@@ -982,6 +986,288 @@ await check('transport + dispatcher: a structural rejection fails the row withou
   return report.failed === 1
     && row.status === 'failed'
     && row.attempts === 1 // structural TransportError honored: no backoff retries
+})
+
+// -- Slice AS: inbound attachments (A8) ---------------------------------------------------
+
+const imageEvent = (overrides = {}) => {
+  const event = makeTextEvent()
+  event.event.message.message_type = 'image'
+  event.event.message.content = JSON.stringify({ image_key: 'img_1' })
+  return event
+}
+
+await check('AS in 1: image messages expose attachment metadata and keep raw', () => {
+  const normalized = normalizeFeishuMessageEvent(imageEvent())
+  const item = normalized?.content.attachments?.[0]
+  return normalized !== null
+    && normalized.content.text === undefined
+    && item.kind === 'image'
+    && item.key === 'img_1'
+    && normalized.content.raw.image_key === 'img_1'
+})
+
+await check('AS in 2: file/audio/media carry name, size, duration and kind', () => {
+  const file = imageEvent()
+  file.event.message.message_type = 'file'
+  file.event.message.content = JSON.stringify({ file_key: 'fk_1', file_name: '报告 v1.pdf', file_size: '2048' })
+  const audio = imageEvent()
+  audio.event.message.message_type = 'audio'
+  audio.event.message.content = JSON.stringify({ file_key: 'fk_2', duration: 3000 })
+  const media = imageEvent()
+  media.event.message.message_type = 'media'
+  media.event.message.content = JSON.stringify({ file_key: 'fk_3', file_name: 'clip.mp4', duration: 8000 })
+  const a = normalizeFeishuMessageEvent(file)?.content.attachments?.[0]
+  const b = normalizeFeishuMessageEvent(audio)?.content.attachments?.[0]
+  const c = normalizeFeishuMessageEvent(media)?.content.attachments?.[0]
+  return a.kind === 'file' && a.name === '报告 v1.pdf' && a.sizeBytes === 2048
+    && b.kind === 'audio' && b.durationMs === 3000 && b.name === null
+    && c.kind === 'video' && c.name === 'clip.mp4' && c.durationMs === 8000
+})
+
+await check('AS in 3: rich post yields title + line text and inline images in order', () => {
+  const post = imageEvent()
+  post.event.message.message_type = 'post'
+  post.event.message.content = JSON.stringify({
+    title: '周报',
+    content: [
+      [{ tag: 'text', text: '看这张图：' }, { tag: 'img', image_key: 'img_a' }],
+      [{ tag: 'text', text: '第二行' }],
+    ],
+  })
+  const normalized = normalizeFeishuMessageEvent(post)
+  const attachments = normalized.content.attachments
+  return normalized.content.text === '周报\n看这张图：\n第二行'
+    && attachments.length === 1
+    && attachments[0].key === 'img_a'
+    && attachments[0].kind === 'image'
+})
+
+const fakeResource = (behavior = {}) => {
+  const calls = []
+  return {
+    calls,
+    async get(input) {
+      calls.push(input)
+      if (behavior.error !== undefined) throw behavior.error
+      return {
+        async writeFile(path) {
+          mkdirSync(dirname(path), { recursive: true })
+          writeFileSync(path, 'IMG')
+        },
+      }
+    },
+  }
+}
+
+await check('AS in 4: staging downloads to <dir>/<msgId>/<n>-<name> and appends paths', async () => {
+  const resource = fakeResource()
+  const out = await stageAttachments({
+    content: {
+      text: '帮我看看',
+      messageType: 'image',
+      externalMsgId: 'om_img1',
+      raw: { image_key: 'img_1' },
+      attachments: [{ kind: 'image', key: 'img_1', name: 'shot 1.png', sizeBytes: null, durationMs: null }],
+    },
+    externalMsgId: 'om_img1',
+    options: { dir: join(dir, 'attachments'), resource },
+  })
+  const item = out.attachments[0]
+  return resource.calls.length === 1
+    && resource.calls[0].path.message_id === 'om_img1'
+    && resource.calls[0].params.type === 'image'
+    && item.status === 'staged'
+    && item.path === join(dir, 'attachments', 'om_img1', '01-shot 1.png')
+    && existsSync(item.path)
+    && out.text.startsWith('帮我看看\n')
+    && out.text.includes('[图片附件] shot 1.png')
+    && out.text.includes(`本地路径：${item.path}`)
+})
+
+await check('AS in 5: a failed download is marked, never drops the caption or siblings', async () => {
+  const warnings = []
+  const ok = await stageAttachments({
+    content: {
+      text: '两个文件',
+      messageType: 'file',
+      externalMsgId: 'om_f1',
+      raw: {},
+      attachments: [
+        { kind: 'file', key: 'fk_bad', name: 'a.txt', sizeBytes: 1, durationMs: null },
+        { kind: 'file', key: 'fk_ok', name: 'b.txt', sizeBytes: 2, durationMs: null },
+      ],
+    },
+    externalMsgId: 'om_f1',
+    options: {
+      dir: join(dir, 'attachments-fail'),
+      resource: {
+        async get(input) {
+          if (input.path.file_key === 'fk_bad') throw new Error('boom')
+          return { writeFile: async (path) => writeFileSync(path, 'B') }
+        },
+      },
+    },
+    logger: { warn: (message) => warnings.push(message) },
+  })
+  return ok.attachments[0].status === 'failed'
+    && ok.attachments[1].status === 'staged'
+    && ok.text.startsWith('两个文件\n')
+    && ok.text.includes('fk_bad 下载失败')
+    && ok.text.includes('[文件附件] b.txt')
+    && warnings.length === 1
+})
+
+await check('AS in 6: safe names strip traversal/controls and fall back per kind', () => {
+  return safeAttachmentName('../../etc/passwd', 'file', 0) === 'passwd'
+    && safeAttachmentName('a\u0000b.txt', 'file', 1) === 'ab.txt'
+    && safeAttachmentName('', 'image', 0) === 'image-1.png'
+    && safeAttachmentName('voice', 'audio', 1) === 'voice.opus'
+    && safeAttachmentName('x'.repeat(120) + '.txt', 'file', 0).length <= 84
+})
+
+await check('AS in 7: the channel stages before the sink so text carries the path', async () => {
+  const lark = fakeLarkModule()
+  const received = []
+  const resource = fakeResource()
+  const channel = createFeishuChannel({
+    appId: 'cli_a1',
+    appSecret: 's',
+    attachments: { dir: join(dir, 'attachments-channel'), resource },
+    onMessage: (message) => received.push(message),
+    lark,
+  })
+  await channel.start()
+  await lark.state.handlers['im.message.receive_v1'](imageEvent())
+  await channel.stop()
+  if (received.length !== 1) return false
+  const content = received[0].content
+  return content.attachments[0].status === 'staged'
+    && content.text.includes('[图片附件]')
+    && content.text.includes(`本地路径：${content.attachments[0].path}`)
+})
+
+// -- Slice AS: outbound attachments (A4) --------------------------------------------------
+
+const mediaClient = (behavior = {}) => {
+  const calls = []
+  return {
+    calls,
+    im: {
+      v1: {
+        message: {
+          create: async (input) => {
+            calls.push({ method: 'create', input })
+            return { code: 0, msg: 'success', data: { message_id: `om_${input.data.msg_type}` } }
+          },
+          reply: async (input) => {
+            calls.push({ method: 'reply', input })
+            return { code: 0, msg: 'success', data: { message_id: `om_reply_${input.data.msg_type}` } }
+          },
+        },
+        image: {
+          create: async (input) => {
+            calls.push({ method: 'image.create', input })
+            if (behavior.imageError !== undefined) throw behavior.imageError
+            return behavior.imageResponse ?? { image_key: 'img_up' }
+          },
+        },
+        file: {
+          create: async (input) => {
+            calls.push({ method: 'file.create', input })
+            if (behavior.fileError !== undefined) throw behavior.fileError
+            return behavior.fileResponse ?? { file_key: 'fk_up' }
+          },
+        },
+      },
+    },
+  }
+}
+
+const attachFile = (name, body = 'BODY') => {
+  const root = join(dir, 'outbound')
+  mkdirSync(root, { recursive: true })
+  const path = join(root, name)
+  writeFileSync(path, body)
+  return path
+}
+
+await check('AS out 1: a file payload uploads then sends msg_type file, after the caption', async () => {
+  const client = mediaClient()
+  const transport = createFeishuTransport({ client })
+  const path = attachFile('report.md', '# 报告')
+  const ack = await transport.send(delivery({
+    payload: { kind: 'file', filePath: path, fileName: 'report.md', text: '完整回执', chatId: 'oc_x' },
+  }))
+  const upload = client.calls.find((call) => call.method === 'file.create')
+  const send = client.calls.find((call) => call.method === 'create' && call.input.data.msg_type === 'file')
+  // Upload happens first (it posts nothing), so the chat shows caption then file.
+  return client.calls.map((call) => call.method).join(',') === 'file.create,create,create'
+    && upload.input.data.file_type === 'stream'
+    && upload.input.data.file_name === 'report.md'
+    && client.calls[1].input.data.msg_type === 'text'
+    && JSON.parse(send.input.data.content).file_key === 'fk_up'
+    && ack.externalMsgId === 'om_file' // the attachment message, not the caption
+    && feishuFileType('a.PDF') === 'pdf'
+    && feishuFileType('a.zip') === 'stream'
+})
+
+await check('AS out 2: an image payload uploads with image_type message and sends msg_type image', async () => {
+  const client = mediaClient()
+  const transport = createFeishuTransport({ client })
+  const path = attachFile('shot.png')
+  const ack = await transport.send(delivery({
+    payload: { kind: 'image', filePath: path, text: '截图', chatId: 'oc_x' },
+  }))
+  const upload = client.calls.find((call) => call.method === 'image.create')
+  const send = client.calls.find((call) => call.method === 'create' && call.input.data.msg_type === 'image')
+  return upload.input.data.image_type === 'message'
+    && send.input.data.receive_id === 'oc_x'
+    && send.input.params.receive_id_type === 'chat_id'
+    && JSON.parse(send.input.data.content).image_key === 'img_up'
+    && ack.externalMsgId === 'om_image'
+    && isMediaPayload({ kind: 'image', filePath: path })
+    && !isMediaPayload({ kind: 'image' })
+})
+
+await check('AS out 3: a permanent upload failure degrades to text; retryable errors throw', async () => {
+  const rejected = mediaClient({ fileError: { code: 99991672, msg: 'no im:resource scope' } })
+  const transportA = createFeishuTransport({ client: rejected, logger: { info() {}, warn() {}, error() {} } })
+  const path = attachFile('log.txt', 'x'.repeat(10))
+  const ack = await transportA.send(delivery({
+    replyToMsgId: 'om_anchor',
+    payload: { kind: 'file', filePath: path, fileName: 'log.txt', text: '完整内容' },
+  }))
+
+  const rateLimited = mediaClient({ fileError: { code: 99991400, msg: 'trigger frequency control' } })
+  const transportB = createFeishuTransport({ client: rateLimited })
+  let code = null
+  try {
+    await transportB.send(delivery({
+      replyToMsgId: 'om_anchor',
+      payload: { kind: 'file', filePath: path, text: 'x' },
+    }))
+  } catch (error) {
+    code = error.code
+  }
+  const fallbackText = rejected.calls
+    .filter((call) => call.method === 'reply')
+    .map((call) => JSON.parse(call.input.data.content).text)
+    .join('|')
+  return fallbackText.includes('附件发送失败') && fallbackText.includes('完整内容')
+    && ack.externalMsgId === 'om_reply_text'
+    && rateLimited.calls.every((call) => call.method !== 'reply')
+    && code === 'rate-limited'
+})
+
+await check('AS out 4: a missing attachment file is rejected without sending anything', async () => {
+  const client = mediaClient()
+  const transport = createFeishuTransport({ client })
+  await assert.rejects(
+    () => transport.send(delivery({ replyToMsgId: 'om_a', payload: { kind: 'file', filePath: join(dir, 'nope.md') } })),
+    (error) => error.code === 'rejected' && /not found/.test(error.message),
+  )
+  return client.calls.length === 0
 })
 
 store.close()

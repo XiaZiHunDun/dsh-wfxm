@@ -4,7 +4,7 @@
  * Behaviour is selected with STUB_MODE; the prompt arrives on stdin and every
  * branch emits the same NDJSON event shapes the real binary does.
  */
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 
 const mode = process.env.STUB_MODE ?? 'ok'
 const emit = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`)
@@ -31,6 +31,18 @@ process.stdin.on('end', () => {
         text: `task=${process.env.DSH_WFXM_TASK_ID ?? ''} cp=${process.env.DSH_WFXM_CHECKPOINT_ID ?? ''} attempt=${process.env.DSH_WFXM_ATTEMPT ?? ''} approved=${process.env.DSH_WFXM_APPROVED_LEVEL ?? 'none'}`,
       })
       break
+    case 'attach': {
+      // Slice AS: produced files + the marker lines the executor must strip.
+      const names = (process.env.STUB_ATTACH ?? 'report.txt').split(',')
+      for (const name of names) writeFileSync(name, `artifact ${name}\n`)
+      if (process.env.STUB_ATTACH_DIR === '1') mkdirSync('sub', { recursive: true })
+      if (process.env.STUB_ATTACH_BIG === '1') {
+        writeFileSync('big.bin', Buffer.alloc(20 * 1024 * 1024 + 1))
+      }
+      emit({ type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } })
+      emit({ type: 'final', text: process.env.STUB_ATTACH_FINAL ?? names.map((name) => `[[ATTACH]] ${name}`).join('\n') })
+      break
+    }
     case 'need-input':
       writeFileSync(process.env.STUB_OUTFILE, `stub read: ${input.trim()}\n`)
       emit({ type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } })

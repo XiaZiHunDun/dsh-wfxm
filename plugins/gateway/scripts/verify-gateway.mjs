@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import DatabaseConstructor from 'better-sqlite3'
@@ -2347,6 +2347,110 @@ await check('receiptIdOf only claims its own topic', () => {
   return receiptRelay.receiptIdOf({ topic: 'task.receipt', payload: { receiptId: 'rc1' } }) === 'rc1'
     && receiptRelay.receiptIdOf({ topic: 'say', payload: { receiptId: 'rc1' } }) === null
     && receiptRelay.receiptIdOf({ topic: 'task.receipt', payload: { text: 'no id' } }) === null
+})
+
+// ---- Slice AS: over-long receipts spill to a file attachment (A4) -----------
+
+const spillDir = mkdtempSync(join(tmpdir(), 'spill-'))
+const spillPath = join(dir, 'spill.sqlite')
+const spillStore = createGatewayStore(spillPath)
+const spillThread = spillStore.resolveThread({
+  channelId: 'feishu',
+  chatId: 'chat_s',
+  rootMsgId: 'root_s',
+})
+const longSummary = `${'日志行 '.repeat(220)}结束`
+const shortSummary = '一句话回执'
+const spillReceipts = [
+  { id: 'rc_long', taskId: 't_long', round: 1, summary: longSummary, evidenceLocator: null, threadId: spillThread.id, createdAt: '2026-11-18T00:00:00.000Z' },
+  { id: 'rc_short', taskId: 't_short', round: 1, summary: shortSummary, evidenceLocator: null, threadId: spillThread.id, createdAt: '2026-11-18T00:00:01.000Z' },
+]
+const spillCalls = []
+const spillPort = {
+  pendingReceipts(limit) {
+    return spillReceipts.slice(0, limit ?? 50)
+  },
+  markReceiptDelivered() {
+    return {}
+  },
+}
+const spillRelay = createReceiptRelay({
+  store: spillStore,
+  receipts: spillPort,
+  spill: {
+    write({ name, content }) {
+      spillCalls.push({ name, content })
+      const path = join(spillDir, name)
+      writeFileSync(path, content)
+      return { path, name }
+    },
+  },
+  spillThresholdChars: 600,
+})
+
+await check('AS 1: a receipt over the threshold becomes a file payload; short ones stay text', () => {
+  spillRelay.pump()
+  const rows = spillStore.listOutbox()
+  const long = rows.find((row) => row.payload.receiptId === 'rc_long')
+  const short = rows.find((row) => row.payload.receiptId === 'rc_short')
+  return spillCalls.length === 1
+    && spillCalls[0].name === 'receipt-rc_long.md'
+    && spillCalls[0].content === longSummary
+    && existsSync(join(spillDir, spillCalls[0].name))
+    && long.payload.kind === 'file'
+    && long.payload.filePath === join(spillDir, 'receipt-rc_long.md')
+    && long.payload.summary === longSummary
+    && long.payload.text.includes('完整回执')
+    && long.payload.text.includes('见附件 receipt-rc_long.md')
+    && spillStore.findOutboxByDedupe('task-receipt:rc_long')?.id === long.id
+    && short.payload.kind === undefined
+    && short.payload.text === undefined
+    && spillRelay.receiptIdOf({ topic: 'task.receipt', payload: long.payload }) === 'rc_long'
+})
+
+await check('AS 2: a spill failure or a zero threshold degrades to inline text (no lost receipt)', () => {
+  const pathA = join(dir, 'spill-fail.sqlite')
+  const storeA = createGatewayStore(pathA)
+  const threadA = storeA.resolveThread({ channelId: 'feishu', chatId: 'c', rootMsgId: 'r' })
+  const one = {
+    pendingReceipts: () => [{
+      id: 'rc_x', taskId: 't', round: 1, summary: longSummary,
+      evidenceLocator: null, threadId: threadA.id, createdAt: '2026-11-18T00:00:00.000Z',
+    }],
+    markReceiptDelivered: () => ({}),
+  }
+  const throwing = createReceiptRelay({
+    store: storeA,
+    receipts: one,
+    spill: { write() { throw new Error('disk full') } },
+    spillThresholdChars: 10,
+  })
+  throwing.pump()
+  const fellBack = storeA.listOutbox()[0]
+
+  const pathB = join(dir, 'spill-off.sqlite')
+  const storeB = createGatewayStore(pathB)
+  const threadB = storeB.resolveThread({ channelId: 'feishu', chatId: 'c', rootMsgId: 'r' })
+  const off = createReceiptRelay({
+    store: storeB,
+    receipts: {
+      pendingReceipts: () => [{
+        id: 'rc_y', taskId: 't', round: 1, summary: longSummary,
+        evidenceLocator: null, threadId: threadB.id, createdAt: '2026-11-18T00:00:00.000Z',
+      }],
+      markReceiptDelivered: () => ({}),
+    },
+    spill: { write: () => ({ path: '/never', name: 'never.md' }) },
+    spillThresholdChars: 0,
+  })
+  off.pump()
+  const disabled = storeB.listOutbox()[0]
+  storeA.close()
+  storeB.close()
+  return fellBack.payload.kind === undefined
+    && fellBack.payload.summary === longSummary
+    && disabled.payload.kind === undefined
+    && disabled.payload.summary === longSummary
 })
 
 await check('the dispatcher settles the receipt with the channel message id', async () => {

@@ -9,6 +9,7 @@
  * `start()` loudly when the first connect never becomes ready (AR13).
  */
 
+import { stageAttachments, type AttachmentStagingOptions } from './attachment.js'
 import {
   normalizeFeishuCardActionEvent,
   normalizeFeishuMessageEvent,
@@ -97,6 +98,11 @@ export interface FeishuChannelOptions {
   readonly onCardAction?: (
     action: NormalizedCardAction,
   ) => void | CardActionResult | Promise<void | CardActionResult>
+  /**
+   * Slice AS (A8): download inbound attachments into `dir` and append their
+   * local paths to the message text. Omit to keep metadata-only behaviour.
+   */
+  readonly attachments?: AttachmentStagingOptions | null
   readonly logger?: FeishuChannelLogger
   /** Injectable SDK module; defaults to `import('@larksuiteoapi/node-sdk')`. */
   readonly lark?: FeishuWsModule
@@ -142,8 +148,27 @@ export function createFeishuChannel(options: FeishuChannelOptions): FeishuChanne
       })
       return
     }
+    // Slice AS: stage downloads before the sink sees the message, so the text
+    // already carries local paths. A staging failure is loud but not fatal.
+    let inbound = normalized
+    if (options.attachments !== undefined && options.attachments !== null) {
+      try {
+        const content = await stageAttachments({
+          content: normalized.content,
+          externalMsgId: normalized.externalMsgId,
+          options: options.attachments,
+          logger,
+        })
+        inbound = { ...normalized, content }
+      } catch (error) {
+        logger?.warn('feishu attachment staging failed', {
+          msgId: normalized.msgId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
     try {
-      await options.onMessage(normalized)
+      await options.onMessage(inbound)
     } catch (error) {
       // A sink failure must never kill the connection or go silent (AR13);
       // ① has already persisted the row before it can throw (inbox-first).

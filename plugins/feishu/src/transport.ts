@@ -13,6 +13,9 @@
  * failure — the row can never become deliverable by retrying.
  */
 
+import { createReadStream, existsSync } from 'node:fs'
+import { basename, extname } from 'node:path'
+
 import { resolveLarkDomain } from './channel.js'
 import {
   buildApprovalCard,
@@ -89,8 +92,38 @@ export interface FeishuMessageApi {
   }): Promise<unknown>
 }
 
+/** `im.v1.image.create` — uploads a picture and returns its `image_key`. */
+export interface FeishuImageApi {
+  create(input: {
+    data: { image_type: 'message'; image: unknown }
+  }): Promise<unknown>
+}
+
+/** `im.v1.file.create` — uploads a file and returns its `file_key`. */
+export interface FeishuFileApi {
+  create(input: {
+    data: { file_type: string; file_name: string; file: unknown }
+  }): Promise<unknown>
+}
+
+/** `im.v1.messageResource.get` — downloads an inbound image/file. */
+export interface FeishuMessageResourceApi {
+  get(input: {
+    path: { message_id: string; file_key: string }
+    params: { type: 'image' | 'file' }
+  }): Promise<{ writeFile(path: string): Promise<void> }>
+}
+
 export interface FeishuClientLike {
-  readonly im: { readonly v1: { readonly message: FeishuMessageApi } }
+  readonly im: {
+    readonly v1: {
+      readonly message: FeishuMessageApi
+      /** Slice AS: optional so older fakes/tests keep compiling. */
+      readonly image?: FeishuImageApi
+      readonly file?: FeishuFileApi
+      readonly messageResource?: FeishuMessageResourceApi
+    }
+  }
 }
 
 // -- error classification -----------------------------------------------------------------
@@ -216,6 +249,44 @@ export function outboundText(payload: Json): string | null {
   return null
 }
 
+/**
+ * Slice AS (A4): a protocol-neutral attachment payload. `text` is the caption
+ * sent first (and the fallback when the upload fails permanently).
+ */
+export interface MediaPayload {
+  readonly kind: 'file' | 'image'
+  /** Local path on the host; never rendered into chat. */
+  readonly filePath: string
+  readonly fileName?: string
+  /** Caption / summary sent before the attachment. */
+  readonly text?: string
+}
+
+export function isMediaPayload(payload: Json): payload is Json & MediaPayload {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return false
+  const record = payload as Record<string, Json>
+  return (record.kind === 'file' || record.kind === 'image')
+    && typeof record.filePath === 'string'
+    && record.filePath !== ''
+}
+
+/** Feishu `file_type` by extension; unknown types upload as `stream`. */
+const FEISHU_FILE_TYPES: Record<string, string> = {
+  '.pdf': 'pdf',
+  '.doc': 'doc',
+  '.docx': 'doc',
+  '.xls': 'xls',
+  '.xlsx': 'xls',
+  '.ppt': 'ppt',
+  '.pptx': 'ppt',
+  '.mp4': 'mp4',
+  '.opus': 'opus',
+}
+
+export function feishuFileType(fileName: string): string {
+  return FEISHU_FILE_TYPES[extname(fileName).toLowerCase()] ?? 'stream'
+}
+
 export function createFeishuTransport(options: FeishuTransportOptions): TransportShape {
   const { client } = options
   const maxSegmentChars = options.maxSegmentChars ?? FEISHU_TEXT_SEGMENT_LIMIT
@@ -312,10 +383,103 @@ export function createFeishuTransport(options: FeishuTransportOptions): Transpor
     }
   }
 
+  /**
+   * Upload one attachment and return the message content (`{image_key}` /
+   * `{file_key}`). Uploading does not post a chat message, so the caption is
+   * still sent afterwards and appears above the attachment.
+   */
+  const uploadAttachment = async (payload: MediaPayload): Promise<{ msgType: string; content: string }> => {
+    if (!existsSync(payload.filePath)) {
+      throw new FeishuTransportError('rejected', `attachment not found: ${payload.filePath}`)
+    }
+    const fileName = payload.fileName !== undefined && payload.fileName !== ''
+      ? payload.fileName
+      : basename(payload.filePath)
+    try {
+      if (payload.kind === 'image') {
+        const image = client.im.v1.image
+        if (image === undefined) {
+          throw new FeishuTransportError('rejected', 'feishu image upload is unavailable in this client')
+        }
+        const response = await image.create({
+          data: { image_type: 'message', image: createReadStream(payload.filePath) },
+        })
+        assertApiOk(response)
+        const body = response as { image_key?: unknown; data?: { image_key?: unknown } } | null
+        const key = body?.image_key ?? body?.data?.image_key
+        if (typeof key !== 'string' || key === '') {
+          throw new FeishuTransportError('unavailable', 'feishu image upload returned no image_key')
+        }
+        return { msgType: 'image', content: JSON.stringify({ image_key: key }) }
+      }
+      const file = client.im.v1.file
+      if (file === undefined) {
+        throw new FeishuTransportError('rejected', 'feishu file upload is unavailable in this client')
+      }
+      const response = await file.create({
+        data: {
+          file_type: feishuFileType(fileName),
+          file_name: fileName,
+          file: createReadStream(payload.filePath),
+        },
+      })
+      assertApiOk(response)
+      const body = response as { file_key?: unknown; data?: { file_key?: unknown } } | null
+      const key = body?.file_key ?? body?.data?.file_key
+      if (typeof key !== 'string' || key === '') {
+        throw new FeishuTransportError('unavailable', 'feishu file upload returned no file_key')
+      }
+      return { msgType: 'file', content: JSON.stringify({ file_key: key }) }
+    } catch (error) {
+      if (error instanceof FeishuTransportError) throw error
+      const classified = classifyFeishuError(error)
+      throw new FeishuTransportError(classified.code, classified.detail)
+    }
+  }
+
   return {
     transport: 'feishu',
     async send(delivery) {
       const payload = delivery.payload
+
+      // Slice AS (A4): a file/image attachment. Upload first (invisible in the
+      // chat), then the caption, then the media message; a permanent upload
+      // failure still delivers the caption as text (a lost receipt is worse
+      // than a missing attachment).
+      if (isMediaPayload(payload)) {
+        const address = await addressOf(delivery)
+        const caption = typeof payload.text === 'string' ? payload.text.trim() : ''
+        let uploaded: { msgType: string; content: string }
+        try {
+          uploaded = await uploadAttachment(payload)
+        } catch (error) {
+          const permanent = error instanceof FeishuTransportError
+            && (error.code === 'too-large' || error.code === 'rejected')
+          if (!permanent || caption === '') throw error
+          options.logger?.warn('feishu attachment upload failed; falling back to text', {
+            delivery: delivery.id,
+            kind: payload.kind,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          const segments = segmentText(`（附件发送失败，内容如下）\n${caption}`, maxSegmentChars)
+          let firstMessageId: string | null = null
+          for (let index = 0; index < segments.length; index += 1) {
+            const uuid = index === 0 ? delivery.id : `${delivery.id}:${index}`
+            const messageId = await sendSegment(address, segments[index]!, uuid)
+            firstMessageId ??= messageId
+          }
+          return { externalMsgId: firstMessageId }
+        }
+        if (caption !== '') {
+          const segments = segmentText(caption, maxSegmentChars)
+          for (let index = 0; index < segments.length; index += 1) {
+            // Distinct uuids keep the caption apart from the attachment message.
+            await sendSegment(address, segments[index]!, `${delivery.id}:caption:${index}`)
+          }
+        }
+        const messageId = await sendMessage(address, uploaded.msgType, uploaded.content, delivery.id)
+        return { externalMsgId: messageId }
+      }
 
       // Approval card: the adapter renders the channel-native card; ① only
       // supplied the neutral payload (docs/14 §五).

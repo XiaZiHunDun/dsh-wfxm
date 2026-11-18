@@ -16,6 +16,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -236,6 +237,99 @@ await check('the asking attempt aborts its checkpoint and the prompt states the 
     && checkpoints[0].status === 'aborted'
     && prompt.includes('把报告写到指定目录')
     && prompt.includes('[[NEED_INPUT]]')
+})
+
+// ---- Slice AS: produced files leave through [[ATTACH]] -----------------------
+
+// Separate store: these tasks run through the executor directly, so they must
+// not sit queued in the shared store and be claimed by later worker cases.
+const attachStore = createTaskStore(join(dir, 'attach.sqlite'))
+const attachRoot = join(dir, 'attach-workspace')
+mkdirSync(attachRoot, { recursive: true })
+const attachExec = createDshExecutor({
+  dshBin: stubBin,
+  env: {
+    STUB_MODE: 'attach',
+    STUB_ATTACH: 'report.txt',
+    STUB_ATTACH_FINAL: '结果如下\n[[ATTACH]] report.txt\n[[ATTACH]] /etc/passwd\n[[ATTACH]] missing.txt',
+  },
+  defaultWorkdir: attachRoot,
+  timeoutMs: 2_000,
+  heartbeatMs: 50,
+  checkpoints: attachStore,
+})
+const attachTask1 = attachStore.createTask({ intent: '生成报告', riskLevel: 'R1' })
+const attachOutcome = await attachExec(
+  { id: attachTask1.id, intent: attachTask1.intent },
+  { attempt: 1, heartbeat: () => true },
+)
+
+await check('AS attach 1: a produced file is attached; the marker lines leave the summary', () => {
+  return attachOutcome.status === 'succeeded'
+    && attachOutcome.attachments?.length === 1
+    && attachOutcome.attachments[0].name === 'report.txt'
+    && attachOutcome.attachments[0].path === join(attachRoot, 'report.txt')
+    && attachOutcome.summary.startsWith('结果如下')
+    && !attachOutcome.summary.includes('[[ATTACH]]')
+    && attachOutcome.summary.includes('不在工作区内')
+    && attachOutcome.summary.includes('文件不存在')
+})
+
+const attachRoot2 = join(dir, 'attach-workspace-2')
+mkdirSync(attachRoot2, { recursive: true })
+const attachExec2 = createDshExecutor({
+  dshBin: stubBin,
+  env: {
+    STUB_MODE: 'attach',
+    STUB_ATTACH: 'a.txt,b.txt,c.txt,d.txt',
+    STUB_ATTACH_DIR: '1',
+    STUB_ATTACH_BIG: '1',
+    STUB_ATTACH_FINAL: [
+      '[[ATTACH]] a.txt',
+      '[[ATTACH]] sub',
+      '[[ATTACH]] big.bin',
+      '[[ATTACH]] d.txt',
+    ].join('\n'),
+  },
+  defaultWorkdir: attachRoot2,
+  timeoutMs: 5_000,
+  heartbeatMs: 50,
+  checkpoints: attachStore,
+})
+const attachTask2 = attachStore.createTask({ intent: '生成多个产物', riskLevel: 'R1' })
+const attachOutcome2 = await attachExec2(
+  { id: attachTask2.id, intent: attachTask2.intent },
+  { attempt: 1, heartbeat: () => true },
+)
+
+await check('AS attach 2: directories, >20MB files and the 4th marker are ignored with reasons', () => {
+  return attachOutcome2.status === 'succeeded'
+    && attachOutcome2.attachments?.length === 1
+    && attachOutcome2.attachments[0].name === 'a.txt'
+    && attachOutcome2.summary.includes('不是文件')
+    && attachOutcome2.summary.includes('字节上限')
+    && attachOutcome2.summary.includes('条上限')
+})
+
+const attachHookRoot = join(dir, 'attach-workspace-3')
+mkdirSync(attachHookRoot, { recursive: true })
+const hookSeen = []
+const attachWorker = makeWorker(
+  { STUB_MODE: 'attach', STUB_ATTACH: 'artifact.log' },
+  { defaultWorkdir: attachHookRoot },
+  { onArtifacts: (input) => hookSeen.push(input) },
+)
+const attachTask = makeTask({ intent: '生成一个日志附件' })
+const attachReport = await attachWorker.runOnce()
+
+await check('AS attach 3: the worker only reports artifacts after a successful settle', () => {
+  const receipt = store.listReceipts(attachTask.id)[0]
+  return attachReport.outcome === 'succeeded'
+    && hookSeen.length === 1
+    && hookSeen[0].taskId === attachTask.id
+    && hookSeen[0].attachments[0].name === 'artifact.log'
+    // The only final text was the marker, so the receipt carries no body.
+    && receipt.summary === '(no output)'
 })
 
 // ---- failure classification ---------------------------------------------------

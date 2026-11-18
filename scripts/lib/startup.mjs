@@ -146,6 +146,11 @@ export function parseServeConfig(env = process.env) {
     dbPath: resolve(readString(env, 'DSH_WFXM_DB', join(dataDir, 'ops.sqlite'))),
     workdir: resolve(readString(env, 'DSH_WFXM_WORKDIR', join(dataDir, 'workspace'))),
     snapshotDir: resolve(readString(env, 'DSH_WFXM_SNAPSHOT_DIR', join(dataDir, 'snapshots'))),
+    // Slice AS (A8/A4): inbound attachments and over-long receipts both land
+    // under the data directory, never inside the workspace or git.
+    attachmentDir: resolve(readString(env, 'DSH_WFXM_ATTACHMENT_DIR', join(dataDir, 'attachments'))),
+    outboxFilesDir: resolve(readString(env, 'DSH_WFXM_OUTBOX_FILES', join(dataDir, 'outbox-files'))),
+    spillChars: readInt(env, 'DSH_WFXM_SPILL_CHARS', 600, problems, [0, 100_000]),
     readinessPath: resolve(readString(env, 'DSH_WFXM_READINESS', join(dataDir, 'readiness'))),
     lockPath: resolve(readString(env, 'DSH_WFXM_LOCK', join(dataDir, 'serve.lock'))),
     channel: readEnum(env, 'DSH_WFXM_CHANNEL', 'feishu', ['feishu', 'loopback'], problems),

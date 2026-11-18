@@ -1,9 +1,23 @@
-export type { Json, NormalizeOptions, NormalizedCardAction, NormalizedInbound } from './normalize.js'
+export type {
+  InboundAttachment,
+  InboundAttachmentKind,
+  Json,
+  NormalizeOptions,
+  NormalizedCardAction,
+  NormalizedInbound,
+} from './normalize.js'
 export {
   normalizeFeishuCardActionEvent,
   normalizeFeishuMessageEvent,
   parseFeishuContent,
 } from './normalize.js'
+export type {
+  AttachmentLogger,
+  AttachmentStagingOptions,
+  FeishuResourceApi,
+  StagedAttachment,
+} from './attachment.js'
+export { safeAttachmentName, stageAttachments } from './attachment.js'
 export type {
   ApprovalCardPayload,
   ApprovalConfirmPayload,
@@ -25,9 +39,13 @@ export { FEISHU_TEXT_SEGMENT_LIMIT, segmentText } from './segment.js'
 export type {
   DeliveryShape,
   FeishuClientLike,
+  FeishuFileApi,
+  FeishuImageApi,
   FeishuMessageApi,
+  FeishuMessageResourceApi,
   FeishuTransportLogger,
   FeishuTransportOptions,
+  MediaPayload,
   TransportErrorCode,
   TransportShape,
 } from './transport.js'
@@ -36,6 +54,8 @@ export {
   classifyFeishuError,
   createFeishuTransport,
   createLarkClient,
+  feishuFileType,
+  isMediaPayload,
   outboundText,
 } from './transport.js'
 export type {

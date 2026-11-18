@@ -428,6 +428,13 @@
     `aborted`）→ ⑤ `parkForInput` 落 `waiting_input` + `task.input_requested`（问题在事件里，
     不建表）→ host `pump()` 向 live 线程追问一次（按事件 seq 去重）→ 用户回复经 `steerTask`
     追加 intent 并回 `queued`（`attempt=0`），worker 下一轮继续；不写终态、不写回执。
+  - **富媒体输入输出（Slice AS）**：入站 `image`/`file`/`audio`/`media`/`post` 归一化为
+    `content.attachments`（保留 `raw`），渠道用 `messageResource.get` 落盘到
+    `<dataDir>/attachments/<msgId>/`，正文后追加本地路径（语音注明未启用转写）；
+    单附件失败不丢消息。出站 transport 支持 `kind:'file'|'image'`（先上传素材、再发说明、
+    再发媒体消息），永久失败降级文本；回执超 `DSH_WFXM_SPILL_CHARS`（默认 600，0 关闭）
+    写 `<dataDir>/outbox-files/` 并作为附件发送，写入前 `redactedText`；执行器 `[[ATTACH]] <path>`
+    （仅 cwd 内、≤3、≤20MB）经 worker `onArtifacts` 由 host 入队 `task.artifact`。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

@@ -2262,3 +2262,111 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
   `build --noEmit` 与 `check-style 167 files` 全绿。
 - 发布 `prepare/verify 8/8 → switch → restart`，服务 `active`、`NRestarts=0`；
   飞书真机项登记 `docs/06 §六`（需 owner 发一条缺信息任务后回复）。
+
+## Slice AS Spec — 富媒体输出与多模态输入（A4 + A8，2026-11-18，release `2026.11.18-8`）
+
+## 1. 问题（已核对代码）
+
+- **入站只有文本**：`plugins/feishu/src/normalize.ts` 把非文本消息存成
+  `{ messageType, externalMsgId, raw }`，`content.text` 为空；前台只认 `text`，
+  规则前台回「暂时只支持文本消息」，图片/文件/语音整条消息等于被丢弃。
+- **出站只有文本与卡片**：`plugins/feishu/src/transport.ts` 只发送 `text` /
+  `interactive`；`outbox` 载荷没有富媒体类型，`file`/`image` 上传能力（`im.v1.file.create` /
+  `im.v1.image.create`）从未接线。回执超过一屏仍然整段刷屏（docs/10 D2 要求 ~600 字转附件）。
+- **执行产物出不来**：执行器只回一段 `summary`，任务在工作区生成的图片/日志/文件
+  没有任何出站路径（A4 的「图片、文件能作为附件打开」不成立）。
+
+## 2. 机制
+
+### 2.1 入站（A8）
+
+- `normalize.ts` 增加**附件元数据**（仍不下载、纯函数）：
+  `content.attachments: [{ kind:'image'|'file'|'audio'|'video', key, name, sizeBytes, durationMs }]`。
+  覆盖 `image`（`image_key`）、`file`（`file_key`/`file_name`/`file_size`）、
+  `audio`（`file_key`/`duration`）、`media`（`file_key`/`file_name`/`duration`）、
+  `post`（标题+正文文本，内嵌 `img` 元素按顺序收集）。`raw` 字段保留，旧行为不回归。
+- `channel.ts` 增加可选 `attachments: { dir, resource }`：收到带附件的消息时，
+  用 `im.v1.messageResource.get({ path:{ message_id, file_key }, params:{ type } })`
+  下载到 `<dir>/<msgId>/<序号>-<安全文件名>`。`type`：图片 `image`，其余 `file`。
+  - 文件名只取 basename、过滤控制字符/路径分隔符、截断 80 字符，缺失时按 kind 生成。
+  - 单个附件失败**不丢整条消息**（AR13）：该附件标 `status:'failed'` 并在文本里写
+    「下载失败，请重新发送」，其余附件与正文照常入站。
+- 入站文本补一行**附件说明**（追加在用户正文之后，正文永远在前）：
+  - 图片：`[图片附件] <name>，本地路径：<path>（可用 read_image 查看）`
+  - 文件：`[文件附件] <name>（<size> 字节），本地路径：<path>`
+  - 语音/视频：`[语音附件]/[视频附件] … 本地路径：<path>`；语音额外注明
+    「本机未启用语音转写，请补充文字说明要办的事」。
+  这样 `defaultTriage`、去重、规则前台、决策 prompt、`applySupplement` 全部沿用文本路径。
+- 前台 prompt（`plugins/orchestrator/src/prompt.ts`）增加一条硬规则：
+  正文里出现「本地路径」时必须**原样保留**进 `intent`；只发附件时 `intent` 写明
+  「查看/处理附件 `<path>`」。否则决策模型总结时会丢掉路径，任务拿不到文件。
+- **语音转写不在本切片**：本机无 ASR，`docs/12` 把 `experimental/speech-to-text`
+  标为实验性待验收；语音按附件落盘并明确提示，转写单独切片。
+
+### 2.2 出站（A4）
+
+- `transport.ts` 新增两种协议中立载荷（与既有 `approval_*` 同级）：
+  - `{ kind:'file', filePath, fileName?, text? }` → `im.v1.file.create`
+    （`file_type` 按扩展名映射 pdf/doc/xls/ppt/mp4/opus，其余 `stream`）→
+    `msg_type:'file'`，`content={file_key}`。
+  - `{ kind:'image', filePath, text? }` → `im.v1.image.create`（`image_type:'message'`）→
+    `msg_type:'image'`，`content={image_key}`。
+  - `text` 非空时先按既有分段逻辑发一条文本（作说明），再发附件；回执的 `externalMsgId`
+    取**附件消息**的 id（锚点落在这条消息上）。
+  - 永久失败（`too-large` / `rejected`，例如缺 `im:resource` 权限）且有 `text` 时降级为
+    文本发送（前缀「（附件发送失败，内容如下）」），不让回执整条丢失；`unavailable`
+    等可重试错误照旧抛出交给 outbox 重试。
+- **回执外溢**：`gateway/receipt-relay.ts` 增加可选 `spill` 端口与阈值
+  （`spillThresholdChars`，0=关闭），超阈值时把回执正文写成文件，载荷变为
+  `{ kind:'file', filePath, fileName, text:<摘要+“完整内容见附件”>, summary, … }`。
+  `receiptId`/去重键/`settle` 语义不变；未注入 `spill` 的调用方行为完全不变。
+  host 用 `dataDir/outbox-files` 实现 `SpillPort`，写入前过 `redactText`（H7）。
+- **执行产物**：执行器识别最终文本里的 `[[ATTACH]] <path>`（≤3 条，续行同样式），
+  返回 `ExecSuccess.attachments`。安全边界：路径必须落在本次 attempt 的 `cwd` 内
+  （`realpath` 前缀比对）、文件存在且 ≤20MB；越界/缺失只记一条「附件忽略：原因」，
+  不静默、不影响任务成功。⑤ worker 通过新增可选钩子 `onArtifacts` 上报，
+  host 按任务 live 线程入队 `task.artifact`（图片扩展名走 `kind:'image'`，其余 `file`），
+  去重键 `task-artifact:<taskId>:<path>`。
+
+## 3. 边界
+
+- 只改飞书渠道与既有模块的载荷/提示；不新增表、不改 ⑤ 的 `tasks`/`receipts` schema。
+- 附件落盘目录与 outbox 附件目录都在 `dataDir` 下（`attachments/`、`outbox-files/`），
+  不进 git、不进上下文全文；`inbox.content` 只存元数据与本地路径。
+- 不信任渠道内容：附件正文/图片内容仍是不可信输入，按信息处理；不因附件放宽审批。
+- 不做语音转写、不做 PDF 解析（J9）、不做富文本卡片内嵌图片（只做 `post` 取文本+图）。
+- 非飞书 transport 不认识 `file`/`image` 载荷时退化到 `text`（`outboundText` 已具备）。
+
+## 4. 验证
+
+- `verify-feishu`：`image`/`file`/`audio`/`post` 归一化；channel 下载落盘（路径/文件名/
+  文本说明）与单附件失败不丢消息；transport 图片/文件上传与 `msg_type`、说明文本先发、
+  永久失败降级、无地址拒绝。
+- `verify-gateway`：回执超阈值外溢为 `file` 载荷（文件存在、内容为回执）、未超阈值保持
+  `text`、`spill` 未注入行为不变、去重键与 `receiptIdOf` 不变。
+- `verify-host`：`spill` 接线（长回执生成附件载荷、短回执不变）；worker `onArtifacts`
+  钩子把附件入队到任务 live 线程且只入队一次（图片用 `image`）。
+- `verify-executor`：`[[ATTACH]]` 解析、越界/缺失/超限被忽略、标记行不进 `summary`、
+  正常任务无附件时行为不变。
+- `verify-orchestrator`：决策 prompt 含附件路径保留规则。
+- 全量：`build`、`--noEmit`、`check-style`、`verify-all`。
+- 生产：发布 `2026.11.18-8`；真机验收「发图/发文件 → 任务读到」「长回执 → 附件」
+  登记 `docs/06 §六`（需 `im:resource` 权限）。
+
+## 5. 实施记录（2026-11-18，release `2026.11.18-8`）
+
+- 入站：`normalize.ts` 产出 `content.attachments`（保留 `raw`，`post` 取文本+图）；
+  新增 `attachment.ts`（安全文件名、`messageResource.get` 落盘、正文追加本地路径、单附件失败
+  不丢消息）；`channel.ts` 在 sink 之前 staging；`serve.mjs` 注入 `client.im.v1.messageResource`
+  与 `config.attachmentDir`；storage/端口自检创建并校验 `attachments/`、`outbox-files/`。
+- 前台：决策 prompt 增第 8/9 条（本地路径原样进 intent；只发附件时写「查看/处理附件 <path>」）。
+- 出站：transport 支持 `kind:'file'|'image'`（上传→说明→媒体消息；永久失败降级文本）；
+  回执超阈值由 ① `spill` 端口写成 `receipt-<id>.md`（host 写入前 `redactedText`），
+  载荷转 `file`；执行器 `[[ATTACH]]`（cwd 内、≤3、≤20MB）→ worker `onArtifacts` →
+  host 入队 `task.artifact`。
+- 验证：`verify-feishu 60`、`verify-gateway 121`、`verify-host 44`、`verify-executor 26`、
+  `verify-orchestrator 55`；全量 41 套件通过（preimages 为 root 下既有 advisory）；
+  `build --noEmit`、`check-style 168 files` 全绿。
+- 发布 `prepare/verify 8/8 → switch → restart`，服务 `active`、`NRestarts=0`；
+  飞书真机三项（发图/发文件、长回执附件、`[[ATTACH]]` 产物）登记 `docs/06 §六`。
+- 边界：语音转写（ASR）未做，语音按附件落盘并提示补文字；PDF 解析仍属 J9。

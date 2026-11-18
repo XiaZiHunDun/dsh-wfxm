@@ -160,6 +160,8 @@ async function main() {
         mkdirSync(config.dataDir, { recursive: true })
         mkdirSync(config.workdir, { recursive: true })
         mkdirSync(config.snapshotDir, { recursive: true })
+        mkdirSync(config.attachmentDir, { recursive: true })
+        mkdirSync(config.outboxFilesDir, { recursive: true })
         const approvals = createApprovalStore(config.dbPath)
         try {
           stores = {
@@ -301,6 +303,11 @@ async function main() {
             })
           },
           pumpIntervalMs: config.pumpIntervalMs,
+          // Slice AS (A4): receipts over `spillChars` become Markdown files in
+          // `outbox-files/`; 0 disables spilling.
+          spill: config.spillChars === 0
+            ? null
+            : { dir: config.outboxFilesDir, thresholdChars: config.spillChars },
           // Slice R: time-only progress notices; `progress: null` disables them.
           progress: config.taskProgress
             ? {
@@ -319,6 +326,7 @@ async function main() {
         log('modules', {
           foreground: config.foreground,
           runner: config.foreground === 'rule' ? null : config.decideRunner,
+          spill: config.spillChars === 0 ? 'off' : config.spillChars,
           progress: config.taskProgress
             ? {
                 milestonesMin: config.taskMilestonesMin,
@@ -350,6 +358,8 @@ async function main() {
         try {
           accessSync(config.workdir, constants.W_OK)
           accessSync(config.snapshotDir, constants.W_OK)
+          accessSync(config.attachmentDir, constants.W_OK)
+          accessSync(config.outboxFilesDir, constants.W_OK)
         } catch (error) {
           throw new Error(`data directories not writable: ${error instanceof Error ? error.message : String(error)}`)
         }
@@ -413,6 +423,9 @@ async function main() {
           ...credentials.domain === null ? {} : { domain: credentials.domain },
           onMessage,
           onCardAction,
+          // Slice AS (A8): images/files/voice land under the data directory and
+          // their paths are appended to the message text.
+          attachments: { dir: config.attachmentDir, resource: client.im.v1.messageResource },
           logger: {
             info: (message, meta) => log('channel', meta === undefined ? message : { message, ...meta }),
             warn: (message, meta) => log('channel:warn', meta === undefined ? message : { message, ...meta }),

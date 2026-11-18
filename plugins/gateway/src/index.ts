@@ -158,10 +158,11 @@ export type {
   ReceiptRelay,
   ReceiptRelayOptions,
   ReceiptRelayReport,
+  SpillPort,
   TaskReceipt,
   TaskReceiptPort,
 } from './receipt-relay.js'
-export { RECEIPT_TOPIC, createReceiptRelay } from './receipt-relay.js'
+export { RECEIPT_TOPIC, SPILL_EXCERPT_CHARS, createReceiptRelay } from './receipt-relay.js'
 export type {
   RunningTaskSnapshot,
   TaskProgressPort,

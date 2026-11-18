@@ -1448,3 +1448,54 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `build` / `--noEmit` / `check-style` / `verify-all`（41 套件）全绿
 - [x] 发布 `2026.11.18-7`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）；飞书真机项已登记 `docs/06 §六` 待 owner 触发
 - [x] 回写 `spec.md` Slice AR、`AGENTS.md §4`、`docs/11` 生命周期说明、`docs/16 §12.34`
+
+# Slice AS — 富媒体输出与多模态输入（A4 + A8，2026-11-18）
+
+> 目标：图片/文件/语音能作为指令进来，长回执与执行产物能作为附件出去；
+> 不新增表、不改 ⑤ 的 schema。
+
+## AS1 入站归一化（附件元数据）
+
+- [x] `plugins/feishu/src/normalize.ts`：`content.attachments`（image/file/audio/video 元数据），`raw` 保留
+- [x] `post` 取标题+正文文本并按顺序收集内嵌 `img`
+- [x] 解析失败/非附件消息行为不变（既有 5 条归一化用例不回归）
+
+## AS2 入站落盘与文本说明
+
+- [x] `plugins/feishu/src/channel.ts`：`attachments: { dir, resource }`，`messageResource.get` 写盘
+- [x] 安全文件名（basename、去控制符、80 字上限），目录 `<dir>/<msgId>/`
+- [x] 文本追加附件说明（图片/文件/语音/视频），正文在前
+- [x] 单附件失败不丢消息；失败只记 warn，不进正文
+- [x] `scripts/lib/startup.mjs` + `scripts/serve.mjs`：`DSH_WFXM_ATTACHMENT_DIR`（默认 `<dataDir>/attachments`），storage 步建目录
+
+## AS3 前台保留附件路径
+
+- [x] `plugins/orchestrator/src/prompt.ts`：正文含「本地路径」时必须原样写进 `intent`
+- [x] 只发附件时 `intent` 写明「查看/处理附件 `<path>`」
+- [x] 规则前台/`applySupplement` 沿用文本路径（回归确认）
+
+## AS4 出站富媒体
+
+- [x] `plugins/feishu/src/transport.ts`：`kind:'file'` / `kind:'image'` 载荷（上传→发消息）
+- [x] `text` 先发说明，回执 id 取附件消息；永久失败降级文本
+- [x] `plugins/gateway/src/receipt-relay.ts`：`spill` 端口 + 阈值（0=关闭），超阈值转 `file` 载荷
+- [x] `plugins/host/src/host.ts`：`SpillPort`（`<dataDir>/outbox-files`，写入前脱敏）+ 选项
+- [x] `scripts/lib/startup.mjs` + `scripts/serve.mjs`：`DSH_WFXM_SPILL_CHARS`（默认 600）、`DSH_WFXM_OUTBOX_FILES`
+
+## AS5 执行产物出站
+
+- [x] `plugins/executor/src/executor.ts`：`[[ATTACH]] <path>`（≤3、cwd 内、≤20MB），`ExecSuccess.attachments`
+- [x] 越界/缺失/超限「附件忽略：原因」写进 summary，不影响成功
+- [x] `plugins/tasks/src/worker.ts`：`onArtifacts` 可选钩子（失败不影响 settle）
+- [x] `plugins/host/src/host.ts`：按 live 线程入队 `task.artifact`（图片→`image`，其余 `file`，去重键 `task-artifact:<taskId>:<path>`）
+
+## AS6 验证、发布与回写
+
+- [x] `verify-feishu`：归一化 4 类 + 落盘/失败 + transport 上传/降级/无地址（60）
+- [x] `verify-gateway`：外溢长/短/未注入 + 去重与 `receiptIdOf` 不变（121）
+- [x] `verify-host`：spill 接线 + `onArtifacts` 入队且只一次（44）
+- [x] `verify-executor`：标记解析/三类忽略/标记不进 summary（26）
+- [x] `verify-orchestrator`：prompt 附件规则（55）
+- [x] `build` / `--noEmit` / `check-style` / `verify-all` 全绿
+- [x] 发布 `2026.11.18-8`（`prepare/verify → switch → restart`，`active`、`NRestarts=0`）
+- [x] 回写 `spec.md` Slice AS、`AGENTS.md §4`、`docs/14 §五`、`docs/16 §12.35`、`docs/06 §六`

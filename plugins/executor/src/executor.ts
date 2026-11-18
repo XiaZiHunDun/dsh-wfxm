@@ -31,6 +31,8 @@
  */
 
 import { spawn } from 'node:child_process'
+import { realpathSync, statSync } from 'node:fs'
+import { basename, isAbsolute, resolve, sep } from 'node:path'
 
 /** Structural twin of ⑤'s `FailureKind` (AR32: this module imports no ⑤ code). */
 export type FailureKind =
@@ -41,10 +43,19 @@ export type FailureKind =
   | 'conflict'
   | 'unknown'
 
+/** Slice AS (A4): a file the task produced, staged inside its workspace. */
+export interface ExecAttachment {
+  /** Absolute, real path (symlinks resolved) inside the attempt's cwd. */
+  path: string
+  name: string
+}
+
 export interface ExecSuccess {
   status: 'succeeded'
   summary: string
   evidenceLocator?: string | null
+  /** Produced by `[[ATTACH]] <path>` lines; never outside the workspace. */
+  attachments?: ExecAttachment[]
 }
 
 export interface ExecFailure {
@@ -133,6 +144,64 @@ export const NEED_INPUT_MARKER = '[[NEED_INPUT]]'
 const NEED_INPUT_INSTRUCTION = '【执行约定】如果缺少继续执行所必需的信息（目标路径/地址、账号、要修改的具体对象等），'
   + '不要猜测、不要执行任何写操作，只输出一行：'
   + `${NEED_INPUT_MARKER} 你的问题。收到补充信息后会重新执行本任务。`
+
+/**
+ * Slice AS (A4): the child marks files it produced with `[[ATTACH]] <path>`.
+ * The workspace is the security boundary — a task may never exfiltrate a file
+ * from elsewhere on the host (the server is "全域" only for reading tools).
+ */
+export const ATTACH_MARKER = '[[ATTACH]]'
+export const MAX_ATTACHMENTS = 3
+export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+
+function parseAttachments(
+  text: string,
+  cwd: string,
+): { text: string; attachments: ExecAttachment[]; ignored: string[] } {
+  const attachments: ExecAttachment[] = []
+  const ignored: string[] = []
+  const kept: string[] = []
+  // Compare against the real workspace root; cwd itself may be a symlink.
+  let root: string
+  try {
+    root = realpathSync(cwd)
+  } catch {
+    root = resolve(cwd)
+  }
+  for (const line of text.split('\n')) {
+    const match = /^\s*\[\[ATTACH\]\]\s+(.+?)\s*$/.exec(line)
+    if (match === null) {
+      kept.push(line)
+      continue
+    }
+    const raw = match[1]!
+    if (attachments.length + ignored.length >= MAX_ATTACHMENTS) {
+      ignored.push(`${raw}（超过 ${MAX_ATTACHMENTS} 条上限）`)
+      continue
+    }
+    try {
+      const candidate = isAbsolute(raw) ? raw : resolve(root, raw)
+      const real = realpathSync(candidate)
+      if (real !== root && !real.startsWith(`${root}${sep}`)) {
+        ignored.push(`${raw}（不在工作区内）`)
+        continue
+      }
+      const stat = statSync(real)
+      if (!stat.isFile()) {
+        ignored.push(`${raw}（不是文件）`)
+        continue
+      }
+      if (stat.size > MAX_ATTACHMENT_BYTES) {
+        ignored.push(`${raw}（超过 ${MAX_ATTACHMENT_BYTES} 字节上限）`)
+        continue
+      }
+      attachments.push({ path: real, name: basename(real) })
+    } catch {
+      ignored.push(`${raw}（文件不存在）`)
+    }
+  }
+  return { text: kept.join('\n').trim(), attachments, ignored }
+}
 
 /** `null` unless the final text carried the marker; the rest is the question. */
 function parseNeedsInput(text: string): string | null {
@@ -442,10 +511,21 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
           }
         }
         closeCheckpoint('committed')
+        // Slice AS: strip the marker lines from the receipt and attach the
+        // files that survived the workspace/size checks. Rejected entries stay
+        // visible in the summary instead of disappearing silently.
+        const parsed = text === null ? null : parseAttachments(text, cwd)
+        const body = parsed === null || parsed.text === '' ? '(no output)' : parsed.text
+        const notes = parsed !== null && parsed.ignored.length > 0
+          ? `\n附件忽略：${parsed.ignored.join('；')}`
+          : ''
         resolve({
           status: 'succeeded',
-          summary: truncate(text === null || text.trim() === '' ? '(no output)' : text.trim(), maxSummary),
+          summary: truncate(`${body}${notes}`, maxSummary),
           evidenceLocator,
+          ...parsed === null || parsed.attachments.length === 0
+            ? {}
+            : { attachments: parsed.attachments },
         })
       })
     })

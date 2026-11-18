@@ -13,6 +13,9 @@
  * - **lifecycle**: worker loop + outbox pump, started and stopped together.
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { extname, join } from 'node:path'
+
 import {
   RECEIPT_TOPIC,
   createGatewayStore,
@@ -20,6 +23,7 @@ import {
   createReceiptRelay,
   createTaskProgressRelay,
   ingestInbound,
+  redactedText,
   type DispatchReport,
   type GatewayStore,
   type IngestInboundInput,
@@ -32,6 +36,7 @@ import {
   type ReceiptRelayReport,
   type RouteAction,
   type RunningTaskSnapshot,
+  type SpillPort,
   type TaskProgressReport,
 } from '@dsh-wfxm/gateway'
 import type { ApprovalLevel, ApprovalStore, GrantStore } from '@dsh-wfxm/governance'
@@ -112,6 +117,14 @@ export interface HostDispatcherOptions {
   limit?: number
 }
 
+/** Slice AS: produced files ride their own topic into the task's thread. */
+export const TASK_ARTIFACT_TOPIC = 'task.artifact'
+/** Slice AS: receipts longer than this become a Markdown attachment. */
+export const DEFAULT_SPILL_CHARS = 600
+
+/** Delivered as `msg_type: image`; everything else goes as a file. */
+const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
+
 /** Outbox topics the host owns for the approval loop (docs/14 §六). */
 export const APPROVAL_CARD_TOPIC = 'approval.card'
 export const APPROVAL_UPDATE_TOPIC = 'approval.update'
@@ -163,6 +176,11 @@ export interface WfxmHostOptions {
   rollback?: CheckpointRollbackPort | null
   worker?: HostWorkerOptions
   dispatcher?: HostDispatcherOptions
+  /**
+   * Slice AS (A4): write over-long receipts into `dir` and deliver them as a
+   * file. Absent/null keeps inline text only.
+   */
+  spill?: { dir: string; thresholdChars?: number } | null
   /** Slice R: long-task notices; `null` disables them, absent uses defaults. */
   progress?: HostProgressOptions | null
   /** Outbox pump cadence in `start()`; defaults to 1s. */
@@ -233,7 +251,27 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     ?? options.foregroundFactory?.({ gateway, tasks })
     ?? createRuleForeground({ tasks })
 
-  const receiptRelay = createReceiptRelay({ store: gateway, receipts: ports.receipts })
+  // Slice AS: spill to `<dir>/receipt-<id>.md`, redacted before it hits disk
+  // (H7 — receipts may quote logs, and the file is meant to be opened/shared).
+  const spillOptions = options.spill ?? null
+  const spillPort: SpillPort | null = spillOptions === null
+    ? null
+    : {
+        write({ name, content }) {
+          mkdirSync(spillOptions.dir, { recursive: true })
+          const safe = name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120)
+          const path = join(spillOptions.dir, safe)
+          writeFileSync(path, redactedText(content), { encoding: 'utf8', mode: 0o640 })
+          return { path, name: safe }
+        },
+      }
+
+  const receiptRelay = createReceiptRelay({
+    store: gateway,
+    receipts: ports.receipts,
+    spill: spillPort,
+    spillThresholdChars: spillOptions?.thresholdChars ?? DEFAULT_SPILL_CHARS,
+  })
 
   // #10: a delivered receipt becomes an anchor, so replying to the bot's
   // message resolves back to this task instead of starting a new one.
@@ -290,6 +328,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     ...workerOptions.resourceTtlSec === undefined ? {} : { resourceTtlSec: workerOptions.resourceTtlSec },
     ...workerOptions.resourceRetryMs === undefined ? {} : { resourceRetryMs: workerOptions.resourceRetryMs },
     ...workerOptions.verify === undefined ? {} : { verify: workerOptions.verify },
+    onArtifacts: sendArtifacts,
     onError: (error) => logger?.warn?.(`worker error: ${messageOf(error)}`),
   })
 
@@ -330,6 +369,53 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         },
       },
     })
+
+  /**
+   * The thread a task's output should land on: `default_owner` first, then the
+   * newest anchor, skipping threads ① cannot address.
+   */
+  function liveThreadId(taskId: string): string | null {
+    return tasks
+      .listTaskThreads({ taskId, liveOnly: true })
+      .slice()
+      .sort((a, b) => (a.relation === b.relation
+        ? b.createdAt.localeCompare(a.createdAt)
+        : a.relation === 'default_owner' ? -1 : 1))
+      .map((thread) => thread.threadId)
+      .find((id) => gateway.getThread(id) !== null) ?? null
+  }
+
+  /**
+   * Slice AS (A4): deliver files the attempt produced. The dedupe key is the
+   * real path, so a retried settle or a crash-restart cannot queue a file
+   * twice; no addressable thread means the file stays on disk (never guessed).
+   */
+  function sendArtifacts(input: {
+    taskId: string
+    attachments: readonly { path: string; name: string }[]
+  }): void {
+    const task = tasks.getTask(input.taskId)
+    if (task === null) return
+    const threadId = liveThreadId(task.id)
+    if (threadId === null) return
+    const ref = task.taskRef ?? task.id.slice(0, 8)
+    for (const file of input.attachments) {
+      const dedupeKey = `task-artifact:${task.id}:${file.path}`
+      if (gateway.findOutboxByDedupe(dedupeKey) !== null) continue
+      gateway.enqueueOutbox({
+        topic: TASK_ARTIFACT_TOPIC,
+        payload: {
+          kind: IMAGE_EXTENSIONS.has(extname(file.name).toLowerCase()) ? 'image' : 'file',
+          filePath: file.path,
+          fileName: file.name,
+          text: `任务 ${ref} 的附件：${file.name}`,
+        },
+        taskId: task.id,
+        threadId,
+        dedupeKey,
+      })
+    }
+  }
 
   let pumpTimer: ReturnType<typeof setInterval> | null = null
   let pumping = false
@@ -415,14 +501,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       if (last === null || last.type !== 'task.input_requested') continue
       const question = payloadString(last.payload ?? null, 'question')
       if (question === null) continue
-      const threadId = tasks
-        .listTaskThreads({ taskId: task.id, liveOnly: true })
-        .slice()
-        .sort((a, b) => (a.relation === b.relation
-          ? b.createdAt.localeCompare(a.createdAt)
-          : a.relation === 'default_owner' ? -1 : 1))
-        .map((thread) => thread.threadId)
-        .find((id) => gateway.getThread(id) !== null) ?? null
+      const threadId = liveThreadId(task.id)
       // No addressable thread: never guess a chat; the owner can still answer
       // from the thread that created the task once it has one.
       if (threadId === null) continue

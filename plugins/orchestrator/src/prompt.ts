@@ -76,5 +76,9 @@ export function buildDecisionPrompt(context: DecisionContextInput): string {
     '5. risk 只有 R0（纯只读查询）和 R1（默认）；不要输出 R2 或 R3。',
     '6. text / intent 用用户的语言，简短、可直接展示给用户。',
     '7. 指代（「它」「刚才那个」「那个服务」）优先从「最近对话」解析；仍不清楚就问，不要猜。',
+    // Slice AS (A8): attachment lines carry local paths; dropping them in the
+    // summary would leave the executor without the file.
+    '8. 消息里带「本地路径：<path>」的附件行时，intent 必须原样保留这些路径（含文件名），不要改写、不要省略。',
+    '9. 只有附件、没有文字要求时，intent 写「查看/处理附件 <path>」，不要猜测用户意图。',
   ].join('\n')
 }

@@ -135,6 +135,7 @@ export {
   runWithTaskContext,
 } from './context.js'
 export type {
+  ExecAttachment,
   ExecFailure,
   ExecHooks,
   ExecNeedsInput,

@@ -236,6 +236,15 @@ await check('the prompt carries recent history in order and tells the model to r
     && prompt.includes('指代')
 })
 
+await check('the prompt requires attachment local paths to survive into the intent', () => {
+  const prompt = buildDecisionPrompt({
+    text: '看图\n[图片附件] shot.png，本地路径：/var/lib/dsh-wfxm/attachments/om_1/01-shot.png（可用 read_image 查看）',
+  })
+  return prompt.includes('本地路径')
+    && prompt.includes('原样保留')
+    && prompt.includes('查看/处理附件')
+})
+
 await check('a decision turn is scoped to the thread id, never a shared session', async () => {
   const keys = []
   const { host } = makeHost({

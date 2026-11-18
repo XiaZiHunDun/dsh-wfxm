@@ -15,6 +15,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -1299,6 +1300,86 @@ await check('a waiting_input task is asked once, and the reply requeues it', asy
     && resumed.status === 'queued'
     && resumed.intent.includes('/tmp/report')
     && outbound.some((text) => typeof text === 'string' && text.includes('已按补充指令重新开始'))
+})
+
+// ---- Slice AS：长回执外溢与执行产物出站 ------------------------------------------------
+
+const spillDir = join(dir, 'outbox-files')
+
+await check('AS 1: a receipt over the spill threshold is written to a file and sent as kind=file', async () => {
+  const summary = `部署日志 ${'x'.repeat(120)}`
+  const { host, transport } = makeHost({
+    executor: () => ({ status: 'succeeded', summary }),
+    options: { spill: { dir: spillDir, thresholdChars: 50 } },
+  })
+  await pair(host)
+  const { result } = await say(host, '给我一份长回执')
+  await host.runWorkerOnce()
+  await host.pump()
+  const row = host.stores.gateway
+    .listOutbox()
+    .find((item) => item.topic === 'task.receipt' && item.taskId === result.foreground.taskId)
+  const payload = row.payload
+  const delivered = transport.sent.find((item) => item.topic === 'task.receipt')
+  const path = join(spillDir, `receipt-${payload.receiptId}.md`)
+  host.close()
+  return payload.kind === 'file'
+    && payload.filePath === path
+    && existsSync(path)
+    && readFileSync(path, 'utf8') === summary
+    && payload.text.includes('见附件')
+    && payload.summary === summary
+    && delivered !== undefined
+})
+
+await check('AS 2: short receipts stay inline and no file is written', async () => {
+  const { host } = makeHost({
+    executor: () => ({ status: 'succeeded', summary: '短回执' }),
+    options: { spill: { dir: join(dir, 'outbox-files-short'), thresholdChars: 50 } },
+  })
+  await pair(host)
+  await say(host, '短一点')
+  await host.runWorkerOnce()
+  await host.pump()
+  const rows = host.stores.gateway.listOutbox().filter((item) => item.topic === 'task.receipt')
+  host.close()
+  return rows.length === 1
+    && rows[0].payload.kind === undefined
+    && !existsSync(join(dir, 'outbox-files-short', `receipt-${rows[0].payload.receiptId}.md`))
+})
+
+await check('AS 3: produced files are queued to the task thread once, images as kind=image', async () => {
+  const artifacts = join(dir, 'artifacts')
+  mkdirSync(artifacts, { recursive: true })
+  const imagePath = join(artifacts, 'shot.png')
+  const logPath = join(artifacts, 'run.log')
+  writeFileSync(imagePath, 'IMG')
+  writeFileSync(logPath, 'LOG')
+  const { host } = makeHost({
+    executor: () => ({
+      status: 'succeeded',
+      summary: '产物见附件',
+      attachments: [
+        { path: imagePath, name: 'shot.png' },
+        { path: logPath, name: 'run.log' },
+      ],
+    }),
+  })
+  await pair(host)
+  const { result } = await say(host, '截图给我')
+  await host.runWorkerOnce()
+  await host.pump()
+  const first = host.stores.gateway.listOutbox().filter((item) => item.topic === 'task.artifact')
+  await host.pump()
+  const second = host.stores.gateway.listOutbox().filter((item) => item.topic === 'task.artifact')
+  const threadId = second[0]?.threadId ?? null
+  host.close()
+  return first.length === 2
+    && second.length === 2
+    && second[0].taskId === result.foreground.taskId
+    && threadId !== null
+    && second.find((item) => item.payload.fileName === 'shot.png')?.payload.kind === 'image'
+    && second.find((item) => item.payload.fileName === 'run.log')?.payload.kind === 'file'
 })
 
 // ---- AR32 / AR33：组合根里不许出现表名、SQL 或渠道协议名 ------------------------------

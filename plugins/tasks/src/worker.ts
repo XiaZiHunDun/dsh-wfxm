@@ -22,10 +22,17 @@ export type FailureKind =
   | 'conflict'
   | 'unknown'
 
+/** Slice AS (A4): a produced file the host should deliver as an attachment. */
+export interface ExecAttachment {
+  path: string
+  name: string
+}
+
 export interface ExecSuccess {
   status: 'succeeded'
   summary: string
   evidenceLocator?: string | null
+  attachments?: ExecAttachment[]
 }
 
 export interface ExecFailure {
@@ -114,6 +121,11 @@ export interface TaskWorkerOptions {
   resourceTtlSec?: number
   /** Delay before a resource-blocked task is retried. */
   resourceRetryMs?: number
+  /**
+   * Slice AS (A4): called with files the attempt produced, after the Verifier
+   * accepted the result. A delivery failure never changes the task outcome.
+   */
+  onArtifacts?: (input: { taskId: string; attachments: readonly ExecAttachment[] }) => void
   now?: () => Date
   onError?: (error: unknown) => void
 }
@@ -250,6 +262,15 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
           summary: outcome.summary,
           ...outcome.evidenceLocator === undefined ? {} : { evidenceLocator: outcome.evidenceLocator },
         })
+        // Slice AS: the Verifier's verdict is what gates delivery, so artifacts
+        // are reported only after `completeTask` succeeded.
+        if (outcome.attachments !== undefined && outcome.attachments.length > 0) {
+          try {
+            options.onArtifacts?.({ taskId: task.id, attachments: outcome.attachments })
+          } catch (error) {
+            options.onError?.(error)
+          }
+        }
         return {
           taskId: task.id,
           outcome: 'succeeded',
