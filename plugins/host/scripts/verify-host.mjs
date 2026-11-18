@@ -1254,6 +1254,21 @@ await check('a supplement steers the running task and acks the restart', async (
     && outbound.some((text) => text.includes('已按补充指令重新开始'))
 })
 
+await check('an identical repeat does not steer the live task', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const first = await say(host, '第一步')
+  const taskId = first.result.foreground.taskId
+  const before = host.stores.tasks.getTask(taskId)
+  const second = await say(host, '第一步')
+  const after = host.stores.tasks.getTask(taskId)
+  const outbound = host.stores.gateway.listOutbox().map((item) => item.payload.text)
+  host.close()
+  return second.result.result.duplicate === true
+    && after.intent === before.intent
+    && !outbound.some((text) => text.includes('已按补充指令重新开始'))
+})
+
 // ---- AR32 / AR33：组合根里不许出现表名、SQL 或渠道协议名 ------------------------------
 
 await check('plugins/host/src contains no SQL, table names or channel protocol nouns', () => {

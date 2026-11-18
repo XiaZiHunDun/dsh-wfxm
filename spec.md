@@ -2164,4 +2164,14 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 
 ## 4. 验证
 
-`verify-gateway 118`、`verify-tasks 102`、`verify-orchestrator 52`、`verify-host 39`；全量 41 套件通过。
+`verify-gateway 119`、`verify-tasks 102`、`verify-orchestrator 52`、`verify-host 41`；全量 41 套件通过。
+
+## Slice AO.1 Spec — 消息去重（2026-11-18，release `2026.11.18-4`）
+
+- 现象：重发同文本的纯消息（新 `msg_id`）被当成补充指令，打断运行中的任务。
+- 规则：① 在 `acceptInbound` 后、triage 前，同一线程内与紧邻上一条用户消息文本相同且
+  ≤ `DSH_WFXM_DUPLICATE_WINDOW_SECONDS`（默认 60，0 关闭）→ `duplicate=true`、inbox `done`、
+  `route_decision(action=ignore)`，不建任务/不投递/不打断/不回执。
+- 范围：仅 `kind='message'`；control 与卡片动作永不去重；按 `inboundText` 归一（空白/脱敏）。
+- 配置：`DSH_WFXM_DUPLICATE_WINDOW_SECONDS`（0–3600，默认 60）。
+- 验证：`verify-gateway 119`、`verify-host 41`；AR37 场景显式关闭去重。

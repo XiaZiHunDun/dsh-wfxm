@@ -162,6 +162,8 @@ export interface WfxmHostOptions {
   progress?: HostProgressOptions | null
   /** Outbox pump cadence in `start()`; defaults to 1s. */
   pumpIntervalMs?: number
+  /** Slice AO.1: identical-message dedupe window; `0` disables, defaults to 60s. */
+  duplicateWindowMs?: number
   now?: () => Date
   logger?: {
     info?: (message: string) => void
@@ -461,6 +463,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         project: ports.project,
         approval: approvals === null ? null : ports.approvalAnswer,
         approvalDetails: approvals === null ? null : ports.approvalDetail,
+        ...options.duplicateWindowMs === undefined
+          ? {}
+          : { duplicateWindowMs: options.duplicateWindowMs },
       },
       input,
     )

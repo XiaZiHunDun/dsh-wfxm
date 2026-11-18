@@ -40,6 +40,7 @@ import {
   type ProjectLookupPort,
   type ProjectResolution,
 } from './project-resolver.js'
+import { inboundText } from './text.js'
 
 export type TriageIntent = 'approval_answer' | 'control' | 'event' | 'chat' | 'command'
 
@@ -162,6 +163,13 @@ export interface IngestDeps {
   approval?: ApprovalAnswerPort | null
   /** Host-composed read onto ③/⑤ for the read-only "details" button. */
   approvalDetails?: ApprovalDetailPort | null
+  /**
+   * Slice AO.1: identical plain-text messages in one thread inside this window
+   * are treated as duplicates (default 60s, `0` disables). Guards against a
+   * client retry/double-send being mistaken for a supplement and aborting the
+   * live attempt.
+   */
+  duplicateWindowMs?: number
 }
 
 export interface IngestResult {
@@ -444,6 +452,30 @@ export function resolveFollowUp(
 
 const ORCHESTRATOR: RouteTarget = { kind: 'orchestrator', sessionKind: 'orchestrator' }
 
+const DEFAULT_DUPLICATE_WINDOW_MS = 60_000
+
+/**
+ * True when this message repeats the immediately previous user message in the
+ * same thread inside the window. The current row is already stored, so history
+ * ends with it; compare the last two user turns.
+ */
+function repeatsPrevious(
+  store: GatewayStore,
+  threadId: string | null,
+  text: string | null,
+  now: Date,
+  windowMs: number,
+): boolean {
+  if (threadId === null || text === null || text === '' || windowMs <= 0) return false
+  const users = store.threadHistory(threadId, 6).filter((turn) => turn.role === 'user')
+  if (users.length < 2) return false
+  const last = users[users.length - 1]
+  const previous = users[users.length - 2]
+  if (last.text !== text || previous.text !== text) return false
+  const delta = now.getTime() - Date.parse(previous.at)
+  return Number.isFinite(delta) && delta >= 0 && delta <= windowMs
+}
+
 function lastDecision(store: GatewayStore, triggerId: string): RouteDecision | null {
   const decisions = store.listRouteDecisions({ triggerId })
   return decisions.length === 0 ? null : decisions[decisions.length - 1]
@@ -570,6 +602,32 @@ export async function ingestInbound(
   if (stored.duplicate) return duplicateResult(store, stored.inbox)
   const inbox = stored.inbox
   const threadId = thread?.id ?? null
+
+  // Slice AO.1: a client retry (new msg id, same text) must not be mistaken for
+  // a supplement — that would abort a healthy running attempt. Only plain
+  // messages can be duplicates; controls and card actions are always handled.
+  const duplicateWindowMs = deps.duplicateWindowMs ?? DEFAULT_DUPLICATE_WINDOW_MS
+  const messageText = (input.kind ?? 'message') === 'message' ? inboundText(input.content) : null
+  if (repeatsPrevious(store, threadId, messageText, now, duplicateWindowMs)) {
+    const disposition = store.appendRouteDecision({
+      triggerId: inbox.id,
+      action: 'ignore',
+      reason: `duplicate content within ${Math.round(duplicateWindowMs / 1000)}s`,
+      threadId,
+    })
+    return {
+      inbox: store.updateInboxStatus(inbox.id, 'done'),
+      duplicate: true,
+      actor: resolved.actor,
+      thread,
+      intent: null,
+      target: { kind: 'none' },
+      bypassReason: 'duplicate',
+      disposition,
+      followUp: null,
+      error: null,
+    }
+  }
 
   let intent: TriageIntent
   try {

@@ -234,14 +234,14 @@ async function main() {
           dbPath: config.dbPath,
           executor,
           transport: forwardedTransport,
+          duplicateWindowMs: config.duplicateWindowSeconds * 1000,
           snapshot: snapshotPort,
           project: projectPort,
           rollback: createPreimageRollbackPort(stores.snapshot),
           approvals: stores.approvals,
           grants: stores.grants,
           worker: {
-            resourceLocks: config.resourceLocks,
-            verify: {
+            resourceLocks: config.resourceLocks,            verify: {
               cwd: config.workdir,
               // R3 服务起停模板断言 `service_active` 的只读探针。适配器只认
               // 托管前缀；非托管 unit / 探测失败一律 'unknown' → 断言 skipped

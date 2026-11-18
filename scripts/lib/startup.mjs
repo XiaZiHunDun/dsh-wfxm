@@ -167,6 +167,9 @@ export function parseServeConfig(env = process.env) {
     taskProgress: readFlag(env, 'DSH_WFXM_TASK_PROGRESS', true),
     taskMilestonesMin: readMinuteList(env, 'DSH_WFXM_TASK_MILESTONES', [2, 10], problems),
     taskStallMinutes: readInt(env, 'DSH_WFXM_TASK_STALL_MINUTES', 15, problems, [0, 1440]),
+    // Slice AO.1: identical plain-text message in one thread inside this window
+    // is ignored instead of being steered into the live task. `0` disables.
+    duplicateWindowSeconds: readInt(env, 'DSH_WFXM_DUPLICATE_WINDOW_SECONDS', 60, problems, [0, 3600]),
     // B3 v2: pause a stalled task and kill its child. Default on; `0`/`false`
     // leaves the v1 behaviour (notify only).
     watchdogPause: readFlag(env, 'DSH_WFXM_WATCHDOG_PAUSE', true),

@@ -986,7 +986,7 @@ await check('a classifier may override triage, and a throwing classifier fails c
       channelId: 'cli_ing',
       msgId: 'evt_policy_down',
       externalUserId: 'open_ing',
-      content: { text: 'hi' },
+      content: { text: 'hi (classifier down)' },
       chatId: 'chat_ing',
     },
   )
@@ -1197,7 +1197,7 @@ await check('a finished task is attached but never enqueued before a Grant re-ch
     channelId: 'cli_anc',
     msgId: 'evt_relay_wake',
     externalUserId: 'open_anc',
-    content: { text: '再跑一次' },
+    content: { text: '再跑一次（第二次）' },
     chatId: 'chat_three',
   })
   return result.relay.skipped === 'finished-needs-grant'
@@ -1932,7 +1932,7 @@ await check('锚点继承真实 project_id + nameOf 查真实 ⑥ 名字', async
     channelId: 'cli_anc',
     msgId: 'evt_proj_anchor_real',
     externalUserId: 'open_anc',
-    content: { text: '这条给 beta' },
+    content: { text: '这条还是给 beta 吧' },
     chatId: 'chat_two',
     replyToMsgId: 'm_two_b',
   })
@@ -2738,6 +2738,44 @@ await check('threadHistory keeps only this thread’s messages and delivered rep
       && entries[1].text === 'demo 服务运行中'
   } finally {
     historyStore.close()
+  }
+})
+
+// ---- Slice AO.1: duplicate plain-text messages are ignored -------------------
+
+await check('an identical message in one thread inside the window is ignored', async () => {
+  const dedupeStore = createGatewayStore(join(dir, 'dedupe.sqlite'))
+  try {
+    const owner = dedupeStore.createActor({ kind: 'owner', displayName: 'Owner' })
+    dedupeStore.bindChannel({ actorId: owner.id, channelId: 'cli_dup', externalUserId: 'open_dup' })
+    const base = { channelId: 'cli_dup', externalUserId: 'open_dup', chatId: 'chat_dup' }
+    const first = await ingestInbound({ store: dedupeStore }, {
+      ...base, msgId: 'dup_1', content: { text: '检查磁盘' },
+    })
+    const second = await ingestInbound({ store: dedupeStore }, {
+      ...base, msgId: 'dup_2', content: { text: '检查磁盘  ' },
+    })
+    const other = await ingestInbound({ store: dedupeStore }, {
+      ...base, msgId: 'dup_3', content: { text: '检查内存' },
+    })
+    // Age both copies past the default 60s window; the same text is then new.
+    const raw = new DatabaseConstructor(join(dir, 'dedupe.sqlite'))
+    raw.prepare("UPDATE inbox SET received_at = ? WHERE msg_id IN ('dup_1', 'dup_2')")
+      .run(new Date(Date.now() - 120_000).toISOString())
+    raw.close()
+    const third = await ingestInbound({ store: dedupeStore }, {
+      ...base, msgId: 'dup_4', content: { text: '检查磁盘' },
+    })
+    const stored = dedupeStore.getInbox(second.inbox.id)
+    return first.duplicate === false
+      && second.duplicate === true
+      && second.target.kind === 'none'
+      && second.disposition?.action === 'ignore'
+      && stored.status === 'done'
+      && other.duplicate === false
+      && third.duplicate === false
+  } finally {
+    dedupeStore.close()
   }
 })
 

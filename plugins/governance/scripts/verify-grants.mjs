@@ -323,6 +323,9 @@ const e2eGrant = e2eGrants.create({
 const relayCalls = []
 const e2ePorts = {
   store: e2eGateway,
+  // AR37 replays the same reply text on purpose; dedupe is covered by
+  // verify-gateway, so keep this scenario independent of the window.
+  duplicateWindowMs: 0,
   relay: {
     attach(input) {
       relayCalls.push({ op: 'attach', ...input })

@@ -416,6 +416,9 @@
     决策 prompt 带最近 8 轮，SDK 按 `threadId` 开独立 session；补充指令走 `tasks.steerTask`——
     running/paused 打断重跑（intent 追加、attempt 归零、清租约，host 调 `worker.cancel()`），queued 合并，
     waiting_* 记录；输入 `delivered`，claim 时 `read`。终态任务仍走 AR37 复验。
+  - **消息去重（AO.1）**：① 在 triage 前比较同线程紧邻上一条用户消息，文本相同且
+    ≤ `DSH_WFXM_DUPLICATE_WINDOW_SECONDS`（默认 60，0 关闭）即忽略——不建任务、不投递、
+    不打断、不回执；仅 `kind='message'`，control/卡片动作永不去重。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →
