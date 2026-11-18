@@ -964,6 +964,75 @@ await check('a structured rollback command bypasses the model and carries the st
     && bare.executed === true
 })
 
+await check('H4: a bare 全局停止 halts without a task anchor', async () => {
+  const calls = []
+  const port = {
+    halt() {
+      calls.push('halt')
+      return { halted: true }
+    },
+    resume() {
+      calls.push('resume')
+      return { halted: false }
+    },
+    status() {
+      return { halted: true }
+    },
+  }
+  const stopped = await ingestInbound({ store: ingestStore, global: port }, {
+    channelId: 'cli_ing',
+    msgId: 'evt_halt_cn',
+    externalUserId: 'open_ing',
+    kind: 'control',
+    content: { text: '全局停止' },
+    chatId: 'chat_ing',
+  })
+  const resumed = await ingestInbound({ store: ingestStore, global: port }, {
+    channelId: 'cli_ing',
+    msgId: 'evt_resume_all_en',
+    externalUserId: 'open_ing',
+    kind: 'control',
+    content: { text: 'resume all' },
+    chatId: 'chat_ing',
+  })
+  return stopped.target.command === 'halt'
+    && stopped.global?.executed === true
+    && stopped.global?.halted === true
+    && stopped.disposition.action === 'stop'
+    && resumed.target.command === 'resume_all'
+    && resumed.global?.halted === false
+    && calls.join(',') === 'halt,resume'
+})
+
+await check('H4: halt without a host port is a loud failure, never a fake stop', async () => {
+  const result = await ingestInbound({ store: ingestStore }, {
+    channelId: 'cli_ing',
+    msgId: 'evt_halt_noport',
+    externalUserId: 'open_ing',
+    kind: 'control',
+    content: { text: 'halt' },
+    chatId: 'chat_ing',
+  })
+  return result.error === 'control-unavailable'
+    && result.global?.executed === false
+    && result.inbox.status === 'failed'
+})
+
+await check('H4: 全局状态 reports the halt state without touching a task', async () => {
+  const port = { halt: () => ({ halted: true }), resume: () => ({ halted: false }), status: () => ({ halted: true }) }
+  const result = await ingestInbound({ store: ingestStore, global: port }, {
+    channelId: 'cli_ing',
+    msgId: 'evt_status_all',
+    externalUserId: 'open_ing',
+    kind: 'control',
+    content: { text: '全局状态' },
+    chatId: 'chat_ing',
+  })
+  return result.target.command === 'status_all'
+    && result.global?.halted === true
+    && result.error === null
+})
+
 await check('a classifier may override triage, and a throwing classifier fails closed', async () => {
   const overridden = await ingestInbound(
     { store: ingestStore, classify: () => 'event' },

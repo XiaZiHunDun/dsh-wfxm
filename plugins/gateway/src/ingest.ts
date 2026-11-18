@@ -30,7 +30,14 @@ import {
   type ApprovalDetailPort,
 } from './approval.js'
 import { relayToTask, type TaskRelayPort, type TaskRelayReport } from './task-relay.js'
-import { controlTask, type TaskControlPort, type TaskControlReport } from './task-control.js'
+import {
+  controlGlobally,
+  controlTask,
+  type GlobalControlPort,
+  type GlobalControlReport,
+  type TaskControlPort,
+  type TaskControlReport,
+} from './task-control.js'
 import { wakeTask, type GrantCheckPort, type TaskWakePort, type WakeReport } from './wake.js'
 import {
   listProjectChoices,
@@ -53,7 +60,39 @@ export const TRIAGE_INTENTS: readonly TriageIntent[] = [
 ]
 
 /** Structured control commands that bypass the model (11 §5.3). */
-export const CONTROL_COMMANDS: readonly string[] = ['stop', 'pause', 'resume', 'rollback', 'status']
+export const CONTROL_COMMANDS: readonly string[] = [
+  'stop',
+  'pause',
+  'resume',
+  'rollback',
+  'status',
+  'halt',
+  'resume_all',
+  'status_all',
+]
+
+/**
+ * H4: global stop never animates a task, so it may be sent bare (no task ref).
+ * `status_all` exists so "全局状态" is distinguishable from an anchored status.
+ */
+const GLOBAL_ALIASES: Record<string, 'halt' | 'resume_all' | 'status_all'> = {
+  halt: 'halt',
+  'stop all': 'halt',
+  'stop-all': 'halt',
+  resume_all: 'resume_all',
+  'resume-all': 'resume_all',
+  'resume all': 'resume_all',
+  status_all: 'status_all',
+  'status all': 'status_all',
+  'status-all': 'status_all',
+  全局停止: 'halt',
+  全部停止: 'halt',
+  停止全部: 'halt',
+  全局恢复: 'resume_all',
+  全部恢复: 'resume_all',
+  恢复全部: 'resume_all',
+  全局状态: 'status_all',
+}
 
 /**
  * Owner-facing aliases for a bare chat command. Chinese is the product language,
@@ -153,6 +192,8 @@ export interface IngestDeps {
   relay?: TaskRelayPort | null
   /** Host-composed control onto ⑤'s `task_control`; absent means routing only. */
   control?: TaskControlPort | null
+  /** H4: host-composed global stop (no task anchor); absent means unavailable. */
+  global?: GlobalControlPort | null
   /** Host-composed re-check onto ③'s `verify` (AR37); absent = never wake. */
   grantCheck?: GrantCheckPort | null
   /** Host-composed wake onto ⑤'s `wakeTask` (AR37); absent = never wake. */
@@ -186,6 +227,8 @@ export interface IngestResult {
   relay?: TaskRelayReport | null
   /** Present for a structured control command (stop / pause / resume / status). */
   control?: TaskControlReport | null
+  /** Present for H4 global halt / resume / status. */
+  global?: GlobalControlReport | null
   /** Present when a finished task was considered for a wake (AR37). */
   wake?: WakeReport | null
   /** Which project this turn was bound to, and how (11 §5.3.1). */
@@ -232,6 +275,11 @@ function controlCommand(content: Json): string | null {
   // 停止 still goes to the model instead of stopping something by accident.
   const text = content.text
   if (typeof text === 'string') {
+    // H4: global stop/resume/status is a whole-message phrase, never a prefix,
+    // so "停止一下手头的事" still goes to the model.
+    const trimmed = text.trim()
+    const global = GLOBAL_ALIASES[trimmed] ?? GLOBAL_ALIASES[trimmed.toLowerCase()]
+    if (global !== undefined) return global
     // English may stand alone (`stop`); Chinese must carry a ref, because words
     // like 继续 are ordinary chat ("继续") and must not hijack the conversation.
     const english = /^\s*(stop|pause|resume|rollback|status)(?:\s+[A-Za-z0-9_-]{4,})?\s*$/i.exec(text)
@@ -879,6 +927,50 @@ export async function ingestInbound(
   // 2. Structured control command: stop / pause / resume / rollback / status.
   if (intent === 'control') {
     const command = controlCommand(input.content) ?? 'status'
+
+    // H4: global halt / resume / status carries no task anchor. A missing port
+    // is an error for halt/resume (never claim success we cannot enforce);
+    // `status_all` is read-only, so it reports "unavailable" instead of failing.
+    if (command === 'halt' || command === 'resume_all' || command === 'status_all') {
+      let global: GlobalControlReport
+      try {
+        global = controlGlobally(
+          deps.global ?? null,
+          command === 'status_all' ? 'status' : command,
+        )
+      } catch {
+        global = { executed: false, halted: null, skipped: 'no-port' }
+      }
+      const failed = !global.executed && command !== 'status_all'
+      const reason = failed
+        ? `global control ${command} could not reach the host; inbox marked failed`
+        : `global control ${command}: ${global.halted === true
+          ? 'halted'
+          : global.halted === false ? 'running' : 'unavailable'}`
+      const disposition = store.appendRouteDecision({
+        triggerId: inbox.id,
+        action: command === 'halt' ? 'stop' : 'ack',
+        reason,
+        threadId,
+      })
+      return {
+        inbox: failed
+          ? store.updateInboxStatus(inbox.id, 'failed', 'control-unavailable')
+          : store.updateInboxStatus(inbox.id, 'triaged'),
+        duplicate: false,
+        actor: resolved.actor,
+        thread,
+        intent,
+        target: { kind: 'control', command },
+        bypassReason: 'control',
+        disposition,
+        followUp: null,
+        control: null,
+        global,
+        error: failed ? 'control-unavailable' : null,
+      }
+    }
+
     const followUp = thread === null
       ? null
       : resolveFollowUp(store, {

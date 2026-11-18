@@ -2,6 +2,8 @@
 # 路径边界 + shell 危险命令拦截；kill switch 通过创建 config/KILL 生效。
 version: 1
 killSwitchFile: KILL
+# E3 项目级授权：按 project_id 的工具白名单（相对本文件）；缺失 = 不限制。
+projectToolsFile: project-tools.json
 
 # 只允许在这些根下写入（绝对路径）；相对路径由宿主沙箱按会话 workspace 约束。
 # `/var/lib/dsh-wfxm/workspace` 是执行器的默认工作区：R2 文件写入任务需要它能落盘，

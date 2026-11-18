@@ -101,6 +101,8 @@ export type WorkerSkipReason
     | 'resource-conflict'
     | 'cancelled'
     | 'paused'
+    /** H4: the host's global stop is on; no new task may be claimed. */
+    | 'halted'
 
 export interface TaskRunReport {
   taskId: string | null

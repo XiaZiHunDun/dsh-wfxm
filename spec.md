@@ -2519,3 +2519,45 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
   `recoverChanges()` 再 `worker.recover()`，日志 `recovery:changes`、`modules.changes='on'`。
 - 发布 `2026.11.18-11`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）。
 - 文档：`docs/11 §5.4`、`docs/15 §模块 ⑦`、`docs/16 §12.38`、`docs/06 §六`、`AGENTS.md §4`、根 `tasks.md`。
+
+## Slice AW–AY Spec — 检索自检 / 项目级授权 / IM 全局停止（2026-11-18，release `2026.11.18-12`）
+
+### 1. 问题
+
+- **J6**：`web_search` / `web_fetch` 在文档标 ✅，但没有部署级证据证明 headless profile 真装了插件与 provider。
+- **E3**：项目只有上下文隔离，任务子进程仍可调用任意工具，缺能力隔离。
+- **H4**：IM 的 `stop/pause/resume` 都要求锚定任务，没有一键全停，也没有跨重启保持的停止状态。
+
+### 2. 机制
+
+- **AW**：`scripts/verify-search.mjs` 固定断言 headless profile 挂载 `dsh-web-search-deepseek` /
+  `dsh-web-fetch-http` 与 `searchProvider`/`fetchProvider`/`searchTimeoutMs`；`--live` 才跑真实查询。
+- **AX**：`config/project-tools.json` 按 `project_id` 列工具白名单（`exec_*` 通配）；
+  执行器注入 `DSH_WFXM_PROJECT_ID`；③ `pre-execute` 命中白名单外工具 `deny(rule='project-tool')`。
+  文件缺失 = 不限制，格式错误 = fail-closed。
+- **AY**：IM `halt` / `resume_all` / `status_all`（中英别名）无锚点执行；`config/KILL` 为状态载体；
+  `halt` 中止运行中尝试置 `paused`、停新任务领取与提醒投递，`queued` 保持排队；
+  `resume_all` 删文件恢复；停止期间控制命令与 outbox 仍工作。
+
+### 3. 边界
+
+- E3 只覆盖带 projectId 的 worker 会话；chat/web 无 projectId 不受影响。
+- H4 不 `systemctl stop`、不撤销 Grant、不自动重跑暂停任务；被暂停任务需人工「继续」。
+- J6 只做验证，不改网页内容的信任模型，也不把抓取内容写入长期记忆。
+
+### 4. 验证
+
+- `verify-search 3`（+live 1，opt-in）；`verify-project-tools 8`；`verify-executor +1`；
+  `verify-gateway +3`；`verify-host +3`；`verify-serve +1`。
+- 全量 `46 passed · 0 failed · 1 advisory`（preimages）；发布 `2026.11.18-12`。
+
+### 5. 实施记录（2026-11-18，release `2026.11.18-12`）
+
+- AW：新增 `scripts/verify-search.mjs`，注册 `verify-all`。
+- AX：`policy.yaml` 增 `projectToolsFile`；新增 `config/project-tools.json`；governance
+  `loadPolicy` 加载白名单、`evaluate(..., projectId)` 判 `project-tool`；executor 注入项目 id；
+  新增 `verify-project-tools.mjs`。
+- AY：gateway 新增全局控制命令与 `GlobalControlPort`；host 新增 `haltFile`/`isHalted`/
+  `halt`/`resume`、`skipped='halted'`、提醒跳过与停止期对话拦截；serve 传 `haltFile` 并记录 `halt`。
+- 文档：`docs/09` E3/H4/J6、`docs/11 §5.2/§5.3`、`docs/16 §12.39/§12.40`、`docs/06 §六`、
+  `AGENTS.md §4`、根 `tasks.md`。

@@ -1611,3 +1611,32 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 发布 `2026.11.18-11`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）
 - [x] 回写 `spec.md` Slice AV、`.trae/specs/add-change-lifecycle/*`、`AGENTS.md §4`、
       `docs/11 §5.4`、`docs/15 §模块 ⑦`、`docs/16 §12.38`、`docs/06 §六`
+
+# Slice AW–AY — 检索自检 / 项目级授权 / IM 全局停止（2026-11-18，release `2026.11.18-12`）
+
+## AW J6 部署级检索自检
+
+- [x] `scripts/verify-search.mjs`：dump-config 断言搜索/抓取插件与 provider；`--live` 可选真机
+- [x] 注册 `verify-all`
+- [x] 文档：`docs/09 J6`、`docs/06 §六`
+
+## AX E3 项目级授权
+
+- [x] `config/project-tools.json` + `policy.yaml` 的 `projectToolsFile`
+- [x] governance 加载白名单与 `evaluate(..., projectId)` → `deny(project-tool)`
+- [x] `tools/pre-execute` 读 `DSH_WFXM_PROJECT_ID`；executor spawn 注入
+- [x] `verify-project-tools`（8）/ `verify-executor`（+1）
+- [x] 文档：`docs/11 §5.2`、`docs/16 §12.39`、`AGENTS.md`、`docs/09 E3`
+
+## AY H4 IM 全局停止
+
+- [x] gateway：`halt` / `resume_all` / `status_all`、中英别名、无锚点、`GlobalControlPort`
+- [x] host：`haltFile`、`halt/resume/isHalted`、`skipped='halted'`、提醒跳过、停止期对话拦截
+- [x] serve：传 `haltFile`、启动日志 `halt`
+- [x] `verify-gateway`（+3）/ `verify-host`（+3）/ `verify-serve`（+1）
+- [x] 文档：`docs/11 §5.3`、`docs/16 §12.40`、`AGENTS.md`、`docs/09 H4`
+
+## 发布
+
+- [x] `build` / `--noEmit` / `check-style` / `verify-all 46 passed`
+- [x] 发布 `2026.11.18-12`、重启、勾选 checklist、提交推送

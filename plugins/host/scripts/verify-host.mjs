@@ -1598,6 +1598,94 @@ await check('AV 6: serve restores half-applied work before the worker re-queues 
   return changesAt !== -1 && workerAt !== -1 && changesAt < workerAt
 })
 
+// ---- H4: IM 全局停止 ----------------------------------------------------------
+
+await check('H4 1: 全局停止 writes the kill file, parks running work and blocks new turns', async () => {
+  hostSeq += 1
+  const dbPath = join(dir, `host-${hostSeq}.sqlite`)
+  const haltFile = join(dir, `halt-${hostSeq}`)
+  const reminders = createReminderStore(dbPath)
+  const { host, transport } = makeHost({ dbPath, options: { haltFile, reminders } })
+  await pair(host)
+
+  const running = host.stores.tasks.createTask({ intent: '长任务', riskLevel: 'R1' })
+  host.stores.tasks.transition(running.id, { to: 'running' })
+  const thread = (await say(host, '在吗')).result.result.thread
+  const due = reminders.create({
+    threadId: thread.id,
+    text: '到期提醒',
+    dueAt: new Date('2026-11-10T09:00:00.000Z').toISOString(),
+    repeat: 'none',
+  })
+
+  const ack = await say(host, '全局停止')
+  const gate = await host.runWorkerOnce()
+  const before = host.stores.tasks.listTasks().length
+  const blocked = await say(host, '帮我重启一下服务')
+  const after = host.stores.tasks.listTasks().length
+  const pump = await host.pump()
+  const stillPending = reminders
+    .listDue(new Date('2026-11-10T10:00:00.000Z'))
+    .some((item) => item.id === due.id)
+  const ackSent = transport.sent.some((delivery) => delivery.payload?.text?.includes('已全局停止'))
+
+  const ok = existsSync(haltFile)
+    && host.isHalted()
+    && host.stores.tasks.getTask(running.id).status === 'paused'
+    && gate.skipped === 'halted'
+    && after === before
+    && pump.reminders === 0
+    && stillPending
+    && ackSent
+    && ack.result.result.global?.halted === true
+    && blocked.result.foreground === null
+  host.close()
+  reminders.close()
+  return ok
+})
+
+await check('H4 2: 全局恢复 releases the stop but never re-runs paused work', async () => {
+  hostSeq += 1
+  const dbPath = join(dir, `host-${hostSeq}.sqlite`)
+  const haltFile = join(dir, `halt-${hostSeq}`)
+  const { host } = makeHost({ dbPath, options: { haltFile } })
+  await pair(host)
+
+  const running = host.stores.tasks.createTask({ intent: '被停的任务', riskLevel: 'R1' })
+  host.stores.tasks.transition(running.id, { to: 'running' })
+  await say(host, '全局停止')
+  const resumed = await say(host, '全局恢复')
+  const queued = host.stores.tasks.createTask({ intent: '恢复后的新任务', riskLevel: 'R1' })
+  const report = await host.runWorkerOnce()
+
+  const ok = !existsSync(haltFile)
+    && !host.isHalted()
+    && resumed.result.result.global?.halted === false
+    && host.stores.tasks.getTask(running.id).status === 'paused'
+    && report.taskId === queued.id
+    && report.outcome === 'succeeded'
+  host.close()
+  return ok
+})
+
+await check('H4 3: a restart keeps the stop state and does not claim queued work', async () => {
+  hostSeq += 1
+  const dbPath = join(dir, `host-${hostSeq}.sqlite`)
+  const haltFile = join(dir, `halt-${hostSeq}`)
+  writeFileSync(haltFile, 'persisted\n')
+  const { host } = makeHost({ dbPath, options: { haltFile } })
+  const queued = host.stores.tasks.createTask({ intent: '重启后仍排队', riskLevel: 'R1' })
+  host.start()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  const report = await host.runWorkerOnce()
+  const ok = host.isHalted()
+    && host.stores.tasks.getTask(queued.id).status === 'queued'
+    && report.skipped === 'halted'
+  host.stop()
+  host.close()
+  return ok
+})
+
 rmSync(dir, { recursive: true, force: true })
 
 console.log(`\nhost: ${pass} passed, ${fail} failed`)

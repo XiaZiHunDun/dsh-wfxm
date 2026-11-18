@@ -449,6 +449,15 @@
     `begin` 失败即拒绝执行（`change-record-failed`）。host 启动先 `recoverChanges()`（已成功只补账，
     其余按快照/前镜像回滚，失败留痕不重试）再 `worker.recover()`。**不注册** `svc_*` 写工具，
     `kind='service'` 只留表结构（见 [11 §5.4](docs/11-架构锚定.md)、[16 §12.38](docs/16-部署与运行.md)）。
+  - **检索自检（Slice AW / J6）**：`scripts/verify-search.mjs` 断言 headless profile 实际挂载
+    `dsh-web-search-deepseek` / `dsh-web-fetch-http` 与 provider/超时；`--live` 才跑真实查询，
+    默认不进 CI。文档见 [09 J6](docs/09-能力对照与实现路径.md)。
+  - **项目级授权（Slice AX / E3）**：`config/project-tools.json` 按 `project_id` 列工具白名单
+    （`exec_*` 通配）；执行器注入 `DSH_WFXM_PROJECT_ID`，③ 的 `pre-execute` 拒绝白名单外工具
+    （`rule='project-tool'`）。文件缺失=不限制，格式错误=fail-closed（[11 §5.2](docs/11-架构锚定.md)、[16 §12.39](docs/16-部署与运行.md)）。
+  - **IM 全局停止（Slice AY / H4）**：IM 发 `全局停止`/`halt` 写 `config/KILL`（工具调用即拒）、
+    中止运行中尝试置 `paused`、停新任务与提醒；`全局恢复` 解除，跨重启保持。
+    停止期间控制命令与 outbox 仍工作；不撤销 Grant、不自动重跑（[11 §5.3](docs/11-架构锚定.md)、[16 §12.40](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

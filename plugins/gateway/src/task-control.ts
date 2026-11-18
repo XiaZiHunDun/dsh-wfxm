@@ -51,6 +51,33 @@ const ACTION_BY_COMMAND: Record<string, TaskControlAction> = {
   rollback: 'rollback',
 }
 
+/**
+ * H4 global stop (doc 08 §H). Kept separate from `TaskControlPort`: a halt has
+ * no task anchor and must work even when nothing is running.
+ */
+export interface GlobalControlPort {
+  halt(): { halted: boolean }
+  resume(): { halted: boolean }
+  status(): { halted: boolean }
+}
+
+export interface GlobalControlReport {
+  executed: boolean
+  halted: boolean | null
+  skipped: 'no-port' | null
+}
+
+export function controlGlobally(
+  port: GlobalControlPort | null,
+  command: 'halt' | 'resume_all' | 'status',
+): GlobalControlReport {
+  if (port === null) return { executed: false, halted: null, skipped: 'no-port' }
+  const result = command === 'halt'
+    ? port.halt()
+    : command === 'resume_all' ? port.resume() : port.status()
+  return { executed: true, halted: result.halted, skipped: null }
+}
+
 export function controlTask(
   port: TaskControlPort | null,
   input: TaskControlInput,

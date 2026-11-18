@@ -108,12 +108,14 @@ export type {
 export { TransportError, isTransportError } from './port.js'
 export type {
   ControlSkipReason,
+  GlobalControlPort,
+  GlobalControlReport,
   TaskControlAction,
   TaskControlInput,
   TaskControlPort,
   TaskControlReport,
 } from './task-control.js'
-export { controlTask } from './task-control.js'
+export { controlGlobally, controlTask } from './task-control.js'
 export {
   listProjectChoices,
   parseProjectCommand,

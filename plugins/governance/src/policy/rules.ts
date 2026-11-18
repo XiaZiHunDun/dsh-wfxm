@@ -46,13 +46,39 @@ function rmTargetsOutside(command: string, roots: readonly string[]): boolean {
 }
 
 /**
- * Evaluate one tool call. Unknown tools are allowed: gating is deliberately
- * narrow (path boundary + shell denylist) rather than a full allowlist, so
+ * E3 capability isolation: `exec_*` / `mail_*` style suffix wildcards, plus `*`.
+ */
+function matchesTool(pattern: string, toolName: string): boolean {
+  if (pattern === '*') return true
+  if (pattern.endsWith('*')) return toolName.startsWith(pattern.slice(0, -1))
+  return pattern === toolName
+}
+
+/**
+ * Evaluate one tool call. Unknown tools are allowed unless the session carries
+ * a project id with an E3 allowlist: gating is deliberately narrow (project
+ * allowlist + path boundary + shell denylist) rather than a full allowlist, so
  * adding a host tool does not require touching the policy.
  */
-export function evaluate(policy: Policy, toolName: string, args: unknown): PolicyVerdict {
+export function evaluate(
+  policy: Policy,
+  toolName: string,
+  args: unknown,
+  projectId?: string | null,
+): PolicyVerdict {
   if (existsSync(policy.killSwitchPath)) {
     return { verdict: 'deny', rule: 'kill-switch', reason: '全局 kill switch 已启用' }
+  }
+
+  if (policy.projectTools !== null && projectId !== undefined && projectId !== null && projectId !== '') {
+    const allowed = policy.projectTools.projects[projectId] ?? policy.projectTools.default
+    if (allowed !== null && !allowed.some((pattern) => matchesTool(pattern, toolName))) {
+      return {
+        verdict: 'deny',
+        rule: 'project-tool',
+        reason: `工具 ${toolName} 不在项目 ${projectId} 的允许清单内`,
+      }
+    }
   }
 
   if (WRITE_TOOLS.has(toolName) || READ_TOOLS.has(toolName)) {

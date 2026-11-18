@@ -129,6 +129,13 @@ await check('--check 八步全过，readiness 与锁被清理', async () => {
 
 // ---- 2. 迁移真的落库 ---------------------------------------------------------------
 
+await check('H4：serve 把全局停止文件传给 host 并在恢复步记录状态', async () => {
+  const source = readFileSync(service, 'utf8')
+  return source.includes('haltFile:')
+    && source.includes('DSH_WFXM_HALT_FILE')
+    && source.includes("log('halt'")
+})
+
 await check('storage 步把各模块迁移写进 ops.sqlite（integrity ok）', async () => {
   const dataDir = tempDir('schema')
   const run = runServe(['--check'], envFor(dataDir))

@@ -326,6 +326,10 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         DSH_WFXM_ATTEMPT: String(hooks.attempt),
       }
       if (checkpointId !== null) env.DSH_WFXM_CHECKPOINT_ID = checkpointId
+      // E3: ③'s project allowlist reads this in the child (no ambient project).
+      if (typeof task.projectId === 'string' && task.projectId !== '') {
+        env.DSH_WFXM_PROJECT_ID = task.projectId
+      }
       // ③ gate hand-off: R2/R3 tasks only reach `exec` after the owner approved
       // the plan, so the child may answer tool-level approvals for that task.
       if (task.riskLevel === 'R2' || task.riskLevel === 'R3') {

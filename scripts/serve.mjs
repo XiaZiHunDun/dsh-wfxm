@@ -260,6 +260,10 @@ async function main() {
             if (snapshot === null) throw new Error(`snapshot ${snapshotId} not found`)
             restoreWorkspace({ root: config.workdir, locator: snapshot.locator })
           },
+          // H4: same file governance treats as its kill switch; the file (not
+          // memory) is the source of truth so a restart keeps the stop state.
+          haltFile: process.env.DSH_WFXM_HALT_FILE
+            ?? fileURLToPath(new URL('../config/KILL', import.meta.url)),
           worker: {
             resourceLocks: config.resourceLocks,            verify: {
               cwd: config.workdir,
@@ -402,6 +406,7 @@ async function main() {
         // 反过来的话，重试会踩在尚未回滚的改动上（docs/11 §5.4）。
         const settled = await host.recoverChanges()
         log('recovery:changes', settled)
+        log('halt', { halted: host.isHalted() })
         const recovered = host.worker.recover()
         log('recovery', { requeued: recovered.requeued.length, failed: recovered.failed.length })
       },

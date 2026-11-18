@@ -28,7 +28,7 @@ process.stdin.on('end', () => {
       emit({ type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } })
       emit({
         type: 'final',
-        text: `task=${process.env.DSH_WFXM_TASK_ID ?? ''} cp=${process.env.DSH_WFXM_CHECKPOINT_ID ?? ''} attempt=${process.env.DSH_WFXM_ATTEMPT ?? ''} approved=${process.env.DSH_WFXM_APPROVED_LEVEL ?? 'none'}`,
+        text: `task=${process.env.DSH_WFXM_TASK_ID ?? ''} cp=${process.env.DSH_WFXM_CHECKPOINT_ID ?? ''} attempt=${process.env.DSH_WFXM_ATTEMPT ?? ''} project=${process.env.DSH_WFXM_PROJECT_ID ?? 'none'} approved=${process.env.DSH_WFXM_APPROVED_LEVEL ?? 'none'}`,
       })
       break
     case 'attach': {

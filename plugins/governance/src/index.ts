@@ -26,6 +26,10 @@ export const name = 'dsh-wfxm-governance'
  * 卡片只是视图（AR10）；决策与 nonce 一次性消费都在这里。
  */
 export { createApprovalStore } from './approval/store.js'
+export { loadPolicy, policyPath } from './policy/config.js'
+export type { Policy, ProjectToolPolicy } from './policy/config.js'
+export { evaluate } from './policy/rules.js'
+export type { PolicyVerdict } from './policy/rules.js'
 export type {
   AnswerApprovalInput,
   AnswerCode,
@@ -216,7 +220,10 @@ export function apply(ctx: ContextLike): void {
   }
 
   ctx.on('tools/pre-execute', async (exec: ToolCallLike, next: () => Promise<unknown>) => {
-    const result = evaluate(policy, exec.name, exec.arguments)
+    // E3: the executor stamps the task's project; sessions without one are
+    // unaffected (chat / web keep the pre-E3 behaviour).
+    const projectId = process.env.DSH_WFXM_PROJECT_ID?.trim() || undefined
+    const result = evaluate(policy, exec.name, exec.arguments, projectId)
     decisions.record({
       correlationId: exec.callId,
       ruleId: result.rule,

@@ -164,6 +164,15 @@ await check('DSH_WFXM_TASK_ID / CHECKPOINT_ID / ATTEMPT reach the child env', ()
     && summary.includes('attempt=1')
 })
 
+// Slice AX (E3): the project id crosses the process boundary; ③ reads it.
+const projectTask = store.createTask({ intent: 'echo the project', riskLevel: 'R1', projectId: 'proj-av' })
+const projectReport = await makeWorker({ STUB_MODE: 'env-echo' }).runOnce()
+
+await check('DSH_WFXM_PROJECT_ID reaches the child when the task has a project', () => {
+  const summary = store.listReceipts(projectTask.id)[0]?.summary ?? ''
+  return projectReport.outcome === 'succeeded' && summary.includes('project=proj-av')
+})
+
 // ---- Slice AP: same-thread context -----------------------------------------
 
 await check('thread context is appended after the intent on stdin', async () => {

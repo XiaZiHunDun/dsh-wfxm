@@ -13,8 +13,8 @@
  * - **lifecycle**: worker loop + outbox pump, started and stopped together.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { extname, join } from 'node:path'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, extname, join } from 'node:path'
 
 import {
   RECEIPT_TOPIC,
@@ -193,6 +193,11 @@ export interface WfxmHostOptions {
    * human (the rollback is marked failed, never silently skipped).
    */
   restoreWorkspace?: WorkspaceRestorePort | null
+  /**
+   * H4: file whose existence means "global stop is on" (governance's kill
+   * switch by default). Absent disables the IM halt/resume commands.
+   */
+  haltFile?: string | null
   project?: ProjectLookupPort | null
   rollback?: CheckpointRollbackPort | null
   worker?: HostWorkerOptions
@@ -230,6 +235,8 @@ export interface WfxmHost {
    * so a retry never starts on top of a half-applied workspace.
    */
   recoverChanges(): Promise<{ kept: number; rolledBack: number; failed: number }>
+  /** H4: true while the global stop file exists (survives restarts). */
+  isHalted(): boolean
   pump(): Promise<HostPumpReport>
   runWorkerOnce(): Promise<TaskRunReport>
   start(): void
@@ -267,6 +274,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   const reminders = options.reminders ?? null
   const changes = options.changes ?? null
   const restoreWorkspace = options.restoreWorkspace ?? null
+  const haltFile = options.haltFile ?? null
 
   const ports = createHostPorts({
     tasks,
@@ -453,8 +461,11 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
 
   let pumpTimer: ReturnType<typeof setInterval> | null = null
   let pumping = false
+  /** H4: whether the worker timer was started, so resume can restart it. */
+  let workerStarted = false
 
   function stop(): void {
+    workerStarted = false
     worker.stop()
     if (pumpTimer !== null) clearInterval(pumpTimer)
     pumpTimer = null
@@ -554,6 +565,47 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   }
 
   /**
+   * H4 global stop. The file is the single source of truth (governance's
+   * kill switch), so the state survives restarts and child sessions. Halt parks
+   * live attempts (`paused`, not `cancelled`) and leaves queued rows queued:
+   * resume must never replay work that already happened.
+   */
+  function isHalted(): boolean {
+    return haltFile !== null && existsSync(haltFile)
+  }
+
+  function haltAll(): { halted: boolean } {
+    if (haltFile === null) throw new Error('global stop is not configured')
+    mkdirSync(dirname(haltFile), { recursive: true })
+    writeFileSync(haltFile, `${now().toISOString()}\n`, { encoding: 'utf8', mode: 0o640 })
+    // Stop claiming new work in this process too; the file gate alone would
+    // only take effect after a restart.
+    worker.stop()
+    for (const task of tasks.listTasks({ status: 'running', limit: 100 })) {
+      try {
+        worker.cancel(task.id)
+        tasks.transition(task.id, {
+          to: 'paused',
+          reason: 'halt:global',
+          summary: '全局停止：当前尝试已中止',
+        })
+      } catch (error) {
+        logger?.warn?.(`halt: task ${task.id} could not be paused: ${messageOf(error)}`)
+      }
+    }
+    logger?.info?.('global stop enabled')
+    return { halted: true }
+  }
+
+  function resumeAll(): { halted: boolean } {
+    if (haltFile === null) throw new Error('global stop is not configured')
+    rmSync(haltFile, { force: true })
+    if (workerStarted && !isHalted()) worker.start({ intervalMs: workerOptions.intervalMs ?? 1_000 })
+    logger?.info?.('global stop released')
+    return { halted: false }
+  }
+
+  /**
    * Slice AT (J5): 到点提醒进 outbox。先入队（幂等键固定）再推进状态：
    * 入队成功而状态写入失败时，下一轮命中去重键，不会重复发；反之（先改状态）
    * 一旦崩溃就永久丢提醒。
@@ -562,6 +614,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
    */
   function fireDueReminders(): number {
     if (reminders === null) return 0
+    // H4: due reminders stay pending; a resume fires them (still-due rows are
+    // returned by `listDue`), so stopping never loses a reminder.
+    if (isHalted()) return 0
     const at = now()
     let fired = 0
     for (const item of reminders.listDue(at, 50)) {
@@ -653,6 +708,11 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         store: gateway,
         relay: ports.relay,
         control: ports.control,
+        global: {
+          halt: haltAll,
+          resume: resumeAll,
+          status: () => ({ halted: isHalted() }),
+        },
         grantCheck: ports.grantCheck,
         wake: ports.wake,
         project: ports.project,
@@ -737,6 +797,26 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       })
     }
 
+    // H4: every global control needs an explicit acknowledgement — silence
+    // would look like the command was lost.
+    if (result.global !== null && result.global !== undefined) {
+      const halted = result.global.halted
+      const text = result.global.executed
+        ? halted === true
+          ? '已全局停止：新任务与提醒暂停，运行中的尝试已中止并置为暂停。发送「全局恢复」后继续。'
+          : halted === false
+            ? '已全局恢复：新任务与提醒继续；被暂停的任务需要单独回复「继续 <任务号>」。'
+            : '全局状态不可用。'
+        : '全局停止不可用：主机未配置停止开关。'
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text },
+        threadId: result.thread?.id ?? null,
+        replyToMsgId: result.inbox.replyToMsgId ?? null,
+        dedupeKey: `global-control:${result.inbox.id}`,
+      })
+    }
+
     // A reply target must be a real channel message id; the dedup key (event id)
     // is not addressable and is rejected downstream (99992354). The channel
     // carries its message id in content (docs/14 §三).
@@ -760,6 +840,25 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
           replyToMsgId,
         })
       }
+      return { result, foreground: null, error: null }
+    }
+
+    // H4: while stopped, ordinary turns never reach the model and never create
+    // tasks. Control commands were settled by ① above, so recovery still works.
+    if (isHalted()) {
+      gateway.updateInboxStatus(result.inbox.id, 'triaged')
+      gateway.appendRouteDecision({
+        triggerId: result.inbox.id,
+        action: 'ignore',
+        reason: 'halted: global stop is on',
+        threadId: result.thread?.id ?? null,
+      })
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text: '已全局停止，暂不处理新请求。发送「全局恢复」后继续。' },
+        threadId: result.thread?.id ?? null,
+        replyToMsgId,
+      })
       return { result, foreground: null, error: null }
     }
 
@@ -1006,12 +1105,25 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     ingest,
     requestApproval,
     recoverChanges,
+    isHalted,
     pump,
 
-    runWorkerOnce: () => worker.runOnce(),
+    runWorkerOnce: () => isHalted()
+      ? Promise.resolve({
+        taskId: null,
+        outcome: 'skipped' as const,
+        failure: null,
+        skipped: 'halted' as const,
+        attempt: null,
+        wakeAt: null,
+      })
+      : worker.runOnce(),
 
     start() {
-      worker.start({ intervalMs: workerOptions.intervalMs ?? 1_000 })
+      workerStarted = true
+      // A restart while the halt file exists stays stopped; the pump still
+      // runs so the owner can receive `全局恢复`.
+      if (!isHalted()) worker.start({ intervalMs: workerOptions.intervalMs ?? 1_000 })
       if (pumpTimer !== null) return
       const intervalMs = options.pumpIntervalMs ?? 1_000
       pumpTimer = setInterval(() => {
