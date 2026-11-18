@@ -8,7 +8,7 @@
  */
 
 import { runWithTaskContext } from './context.js'
-import type { Task } from './model.js'
+import type { Task, ThreadResult } from './model.js'
 import { DEFAULT_RESOURCE_TTL_SEC, declaredResources } from './resource-locks.js'
 import type { AcquireResourceLocksResult, TaskStore } from './store.js'
 import { completeTask, type VerifyContext } from './verify.js'
@@ -45,7 +45,15 @@ export interface ExecHooks {
   signal?: AbortSignal
 }
 
-export type TaskExecutor = (task: Task, hooks: ExecHooks) => Promise<ExecOutcome> | ExecOutcome
+/**
+ * The claimed row plus context the executor may use but never writes back.
+ * Slice AP: `threadContext` carries earlier results from the same thread.
+ */
+export interface ExecutableTask extends Task {
+  threadContext: string | null
+}
+
+export type TaskExecutor = (task: ExecutableTask, hooks: ExecHooks) => Promise<ExecOutcome> | ExecOutcome
 
 /** ⑦ 运维域 provides snapshots; a failure refuses execution (13 §3.4). */
 export interface SnapshotPort {
@@ -104,6 +112,30 @@ export const DEFAULT_HEARTBEAT_MS = 15_000
 export const DEFAULT_RESOURCE_RETRY_MS = 5_000
 /** 13 §3.3 指数退避；attempt 超出表长时取最后一档。 */
 export const DEFAULT_BACKOFF_MS: readonly number[] = [1_000, 5_000, 30_000]
+
+/** Slice AP: how many earlier results ride along, and how long each may be. */
+export const THREAD_CONTEXT_LIMIT = 2
+export const THREAD_CONTEXT_SUMMARY_CHARS = 300
+
+/**
+ * Slice AP: render the thread's earlier results as a prompt appendix. The
+ * context is a hint, not a transcript — summaries are clipped and whitespace
+ * is collapsed so a noisy receipt cannot crowd out the actual intent.
+ */
+function buildThreadContext(results: readonly ThreadResult[]): string | null {
+  if (results.length === 0) return null
+  const lines = results.map((result, index) => {
+    const summary = result.summary.replace(/\s+/g, ' ').trim()
+    const clipped = summary.length <= THREAD_CONTEXT_SUMMARY_CHARS
+      ? summary
+      : `${summary.slice(0, THREAD_CONTEXT_SUMMARY_CHARS)}…`
+    return `${index + 1}. [${result.taskRef ?? result.taskId}] ${result.finishedAt} ${clipped}`
+  })
+  return [
+    '同线程此前已完成的任务（仅供参考，不要重复执行这些工作）：',
+    ...lines,
+  ].join('\n')
+}
 
 /** Non-retryable kinds go straight to a human-visible terminal (13 §3.3). */
 export const RETRYABLE_FAILURES: readonly FailureKind[] = ['transient']
@@ -402,6 +434,15 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     beat.unref?.()
 
     let outcome: ExecOutcome
+    // Slice AP: a follow-up task only gets its own intent, so hand the executor
+    // what the same thread already finished. Reading this is non-essential —
+    // a failure here must not block the actual work.
+    let threadContext: string | null = null
+    try {
+      threadContext = buildThreadContext(store.recentThreadResults(task.id, THREAD_CONTEXT_LIMIT))
+    } catch (error) {
+      options.onError?.(error)
+    }
     const controller = new AbortController()
     activeAttempts.set(task.id, controller)
     try {
@@ -409,7 +450,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
       // inherits this task id, so ④ can stamp pre-images (13 §3.4).
       outcome = await runWithTaskContext(
         { taskId: task.id, projectId: task.projectId, attempt: task.attempt, checkpointId: null },
-        () => execute(task, {
+        () => execute({ ...task, threadContext }, {
           attempt: task.attempt,
           heartbeat: keepAlive,
           signal: controller.signal,

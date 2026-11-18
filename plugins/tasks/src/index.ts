@@ -19,6 +19,7 @@ export type {
   TaskThreadRelation,
   ThreadOccupancy,
   ThreadReleaseReason,
+  ThreadResult,
 } from './model.js'
 export {
   ALLOWED_MERGE_TRANSITIONS,

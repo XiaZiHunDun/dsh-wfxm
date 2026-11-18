@@ -2175,3 +2175,14 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 - 范围：仅 `kind='message'`；control 与卡片动作永不去重；按 `inboundText` 归一（空白/脱敏）。
 - 配置：`DSH_WFXM_DUPLICATE_WINDOW_SECONDS`（0–3600，默认 60）。
 - 验证：`verify-gateway 119`、`verify-host 41`；AR37 场景显式关闭去重。
+
+## Slice AP Spec — 任务执行上下文：同线程已有结果（2026-11-18，release `2026.11.18-5`）
+
+- 现象：AO 之后补充指令能进 `intent`，但执行器只看得到 `intent`；同一线程上一轮做过什么
+  （写过的文件、跑过的命令）不可见，「在上面再改」只能重做。
+- 规则：⑤ 在 worker 启动执行前，用 `recentThreadResults(taskId, 2)` 取同线程其他「成功」任务
+  最新 2 条回执（摘要截断 300 字、折叠空白），以 `threadContext` 传给执行器；执行器把它拼在
+  `intent` 之后、同一 stdin 送入。
+- 边界：只读 ⑤ 自己的 `task_threads` / `tasks` / `receipts`，不读 ①；只看线程，不跨线程；
+  只取 `succeeded`；上下文只读、不回写、不改写 `intent`；读取失败只上报，不阻塞执行。
+- 验证：`verify-tasks 104`、`verify-executor 21`；全量 41 套件通过。

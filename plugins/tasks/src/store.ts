@@ -38,6 +38,7 @@ import {
   type TaskThreadRelation,
   type ThreadOccupancy,
   type ThreadReleaseReason,
+  type ThreadResult,
 } from './model.js'
 import type { PreparedAssertion } from './assertions.js'
 import { MAX_RESOURCE_TTL_SEC, declaredResources, normalizeResourceKeys } from './resource-locks.js'
@@ -453,6 +454,14 @@ export interface TaskStore {
   occupancy(threadId: string): ThreadOccupancy
   listTaskThreads(filter?: { taskId?: string; threadId?: string; liveOnly?: boolean }): TaskThread[]
 
+  /**
+   * Slice AP: receipts of earlier succeeded tasks on the same thread(s) as
+   * `taskId`, newest first. Stays inside ⑤ (no ① tables); the worker turns the
+   * rows into the executor's context so follow-up work does not repeat what
+   * the thread already completed.
+   */
+  recentThreadResults(taskId: string, limit?: number): ThreadResult[]
+
   /** `TaskInputApi` — writes `task_inputs`. */
   enqueueInput(input: EnqueueInputInput): TaskInput
   pendingInputs(taskId: string): TaskInput[]
@@ -709,6 +718,14 @@ interface ReceiptRow {
 
 interface PendingReceiptRow extends ReceiptRow {
   thread_id: string | null
+}
+
+/** Slice AP: one finished task of the same thread, joined with its receipt. */
+interface ThreadResultRow {
+  task_id: string
+  task_ref: string | null
+  finished_at: string
+  summary: string
 }
 
 interface TaskThreadRow {
@@ -1980,6 +1997,39 @@ export function createTaskStore(dbPath: string): TaskStore {
       return filter?.liveOnly === true
         ? threads.filter((thread) => thread.releasedAt === null)
         : threads
+    },
+
+    recentThreadResults(taskId, limit = 2) {
+      const capped = Math.min(Math.max(Math.trunc(limit), 0), 10)
+      if (capped === 0) return []
+      const threadIds = (listThreadsByTask.all(taskId) as TaskThreadRow[])
+        .map((row) => row.thread_id)
+        .filter((id, index, all) => all.indexOf(id) === index)
+      if (threadIds.length === 0) return []
+      // One receipt per (task, round) is guaranteed by `ux_receipts_round`, so
+      // the join cannot duplicate a task. `round = t.round` keeps a re-run's
+      // older summary out of the context.
+      const marks = threadIds.map(() => '?').join(', ')
+      const rows = db.prepare(`
+        SELECT t.id AS task_id, t.task_ref, t.finished_at, r.summary
+          FROM tasks t
+          JOIN receipts r ON r.task_id = t.id AND r.round = t.round
+         WHERE t.status = 'succeeded'
+           AND t.id <> ?
+           AND t.finished_at IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM task_threads tt
+              WHERE tt.task_id = t.id AND tt.thread_id IN (${marks})
+           )
+         ORDER BY t.finished_at DESC, t.created_at DESC
+         LIMIT ?
+      `).all(taskId, ...threadIds, capped) as ThreadResultRow[]
+      return rows.map((row) => ({
+        taskId: row.task_id,
+        taskRef: row.task_ref,
+        finishedAt: row.finished_at,
+        summary: row.summary,
+      }))
     },
 
     enqueueInput(input) {

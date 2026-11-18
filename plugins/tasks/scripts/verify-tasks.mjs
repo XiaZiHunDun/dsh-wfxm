@@ -574,6 +574,40 @@ await check('v_task_anchors falls back to tasks.origin_msg_id and hides released
     && after.length === 0
 })
 
+// ---- Slice AP: same-thread execution context --------------------------------
+
+await check('recentThreadResults lists only earlier succeeded receipts on the same thread', () => {
+  const contextStore = createTaskStore(join(dir, 'thread-results.sqlite'))
+  const thread = 'thread-results'
+  const finished = (summary, boundThread) => {
+    const task = contextStore.createTask({ intent: summary, riskLevel: 'R1' })
+    if (boundThread !== undefined) {
+      contextStore.bindThread({ taskId: task.id, threadId: boundThread, relation: 'default_owner' })
+    }
+    contextStore.transition(task.id, { to: 'running' })
+    // A terminal transition writes the receipt for the task's round itself.
+    contextStore.transition(task.id, { to: 'succeeded', summary })
+    return task
+  }
+  finished('旧结果一', thread)
+  finished('旧结果二', thread)
+  finished('别的线程', 'thread-results-other')
+  const failed = contextStore.createTask({ intent: '失败任务', riskLevel: 'R1' })
+  contextStore.bindThread({ taskId: failed.id, threadId: thread, relation: 'anchor', anchorMsgId: 'msg-failed' })
+  contextStore.transition(failed.id, { to: 'running' })
+  contextStore.transition(failed.id, { to: 'failed', summary: '失败回执' })
+
+  const current = contextStore.createTask({ intent: '当前任务', riskLevel: 'R1' })
+  contextStore.bindThread({ taskId: current.id, threadId: thread, relation: 'anchor', anchorMsgId: 'msg-current' })
+  const results = contextStore.recentThreadResults(current.id)
+  const limited = contextStore.recentThreadResults(current.id, 1)
+  contextStore.close()
+  return results.length === 2
+    && results.every((row) => row.summary.startsWith('旧结果') && row.taskRef !== null)
+    && limited.length === 1
+    && results.every((row) => row.summary !== '别的线程' && row.summary !== '失败回执')
+})
+
 // ---- pending inputs (TaskInputApi, 15 §9.6) ---------------------------------
 
 const inputTask = store.createTask({ intent: 'collect follow-ups', riskLevel: 'R1', round: 3 })
@@ -1170,6 +1204,37 @@ await check('the executor sees its task id in ambient context, outside it is nul
   const task = workerStore.createTask({ intent: 'context', riskLevel: 'R1' })
   await worker.runOnce()
   return seen === task.id && currentTaskId() === null
+})
+
+await check('the worker hands earlier same-thread results to the executor', async () => {
+  const contextStore = createTaskStore(join(dir, 'worker-thread-context.sqlite'))
+  const thread = 'thread-worker-context'
+  const earlier = contextStore.createTask({ intent: '第一轮', riskLevel: 'R1' })
+  contextStore.bindThread({ taskId: earlier.id, threadId: thread, relation: 'default_owner' })
+  contextStore.transition(earlier.id, { to: 'running' })
+  contextStore.transition(earlier.id, { to: 'succeeded', summary: '第一轮已完成：写入了 hello.txt' })
+
+  const current = contextStore.createTask({ intent: '接着改一下', riskLevel: 'R1' })
+  contextStore.bindThread({ taskId: current.id, threadId: thread, relation: 'anchor', anchorMsgId: 'msg-ctx' })
+  let seen = null
+  const worker = createTaskWorker({
+    store: contextStore,
+    owner: 'worker-A',
+    leaseMs: 1_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    execute: (claimed) => {
+      seen = claimed
+      return { status: 'succeeded', summary: 'done' }
+    },
+  })
+  const report = await worker.runOnce()
+  contextStore.close()
+  return report.outcome === 'succeeded'
+    && typeof seen?.threadContext === 'string'
+    && seen.threadContext.startsWith('同线程此前已完成的任务')
+    && seen.threadContext.includes('第一轮已完成：写入了 hello.txt')
+    && !seen.threadContext.includes('接着改一下')
 })
 
 await check('checkpoints get increasing seq, close once, and log their phases', async () => {

@@ -5,8 +5,9 @@
  * Design notes (read before changing):
  *
  * - The task prompt is `task.intent`, delivered on stdin (`-`) so no argv
- *   quoting or length limits apply. stdout carries NDJSON events, stderr
- *   carries diagnostics.
+ *   quoting or length limits apply. Slice AP appends `threadContext` after the
+ *   intent (same stdin), so the intent always stays first. stdout carries
+ *   NDJSON events, stderr carries diagnostics.
  *
  * - dsh exits 0 even when the run itself failed (e.g. MISSING_CREDENTIAL);
  *   the verdict comes from the `turn_end` event's `reason.kind`. Exit codes
@@ -60,6 +61,11 @@ export interface ExecutorTaskRef {
   intent: string
   projectId?: string | null
   riskLevel?: string
+  /**
+   * Slice AP: results already produced on the same thread. Appended after the
+   * intent (never in front of it) so the actual request keeps priority.
+   */
+  threadContext?: string | null
 }
 
 /** Structural twin of ⑤'s `ExecHooks`. */
@@ -156,6 +162,9 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
     if (intent.length === 0) {
       return { status: 'failed', failure: 'invalid_input', summary: 'task has an empty intent; nothing to run' }
     }
+    // Slice AP: context is an appendix, so the intent always comes first.
+    const threadContext = task.threadContext?.trim() ?? ''
+    const prompt = threadContext.length === 0 ? intent : `${intent}\n\n${threadContext}`
 
     let cwd: string
     if (options.workdirResolver !== undefined) {
@@ -336,7 +345,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
       child.stdin?.on('error', () => {
         // EPIPE: the child died before reading the prompt; `close` settles it.
       })
-      child.stdin?.write(`${intent}\n`)
+      child.stdin?.write(`${prompt}\n`)
       child.stdin?.end()
 
       child.on('close', (code, signal) => {

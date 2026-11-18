@@ -163,6 +163,29 @@ await check('DSH_WFXM_TASK_ID / CHECKPOINT_ID / ATTEMPT reach the child env', ()
     && summary.includes('attempt=1')
 })
 
+// ---- Slice AP: same-thread context -----------------------------------------
+
+await check('thread context is appended after the intent on stdin', async () => {
+  const thread = 'thread-stdin'
+  const earlier = makeTask({ intent: '第一轮：写 greet' })
+  store.bindThread({ taskId: earlier.id, threadId: thread, relation: 'default_owner' })
+  store.transition(earlier.id, { to: 'running' })
+  store.transition(earlier.id, { to: 'succeeded', summary: '第一轮已完成：greet 已写入' })
+
+  const followUp = makeTask({ intent: '第二轮：把 greet 改成中文' })
+  store.bindThread({ taskId: followUp.id, threadId: thread, relation: 'anchor', anchorMsgId: 'msg-follow' })
+  const outFile = join(dir, 'thread-context.txt')
+  const worker = makeWorker({ STUB_MODE: 'ok', STUB_OUTFILE: outFile })
+  const report = await worker.runOnce()
+  const written = existsSync(outFile) ? readFileSync(outFile, 'utf8') : ''
+  const intentAt = written.indexOf('第二轮：把 greet 改成中文')
+  const contextAt = written.indexOf('同线程此前已完成的任务')
+  return report.outcome === 'succeeded'
+    && intentAt === 'stub wrote: '.length
+    && contextAt > intentAt
+    && written.includes('第一轮已完成：greet 已写入')
+})
+
 // ---- ③ 任务级审批 → 工具级闸门（2026-11-11） --------------------------------
 
 await check('only approved R2/R3 tasks hand DSH_WFXM_APPROVED_LEVEL to the child', async () => {

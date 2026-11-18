@@ -137,6 +137,17 @@ export interface Receipt {
   createdAt: string
 }
 
+/**
+ * Slice AP: a result already produced on the same thread. Only the fields the
+ * executor needs to build context — which task, when, and what it reported.
+ */
+export interface ThreadResult {
+  taskId: string
+  taskRef: string | null
+  finishedAt: string
+  summary: string
+}
+
 /** One live or released subscription of a task to a thread (15 §9.1). */
 export interface TaskThread {
   id: string
