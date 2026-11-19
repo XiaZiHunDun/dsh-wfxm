@@ -1787,4 +1787,4 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `AGENTS.md` Slice BE
 - [x] `tasks.md` 本切片
 - [x] 提交（`d0b1f22`）
-- [ ] 推送（本机无 GitHub 凭据，`git push` 返回 HTTP 401/408，待 owner 处理）
+- [x] 推送（`ailearn` 用户，`887815d`）
