@@ -1683,4 +1683,5 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `verify-gateway` 128 例（新增渠道/限流/超大/环境解析 4 例）
 - [x] 门禁：`build` / `--noEmit` / `check-style 188 files` / `verify-all 47 passed`
 - [x] 生产 `/etc/dsh-wfxm/env` 配置渠道与限流，重启确认 `admission` 日志
+- [x] 真机：owner 发「你好」→ `routed`、无 `error_code`、`say` 已 `sent`，无 `admission:` 拒绝
 - [x] 文档：`docs/09 H2`、`docs/11 §5.3`、`docs/15 §二`、`docs/16 §12.42`、`AGENTS.md Slice BB`
