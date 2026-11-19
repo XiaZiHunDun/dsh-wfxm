@@ -8,6 +8,12 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readMailAccount, type MailAccount, type MailConfigResult } from './config.js'
 import {
+  buildMailDigest,
+  renderDigest,
+  type MailDigestRequest,
+  type MailDigestResult,
+} from './digest.js'
+import {
   MailError,
   readMail,
   searchMail,
@@ -26,6 +32,7 @@ export const inject = ['tools']
 export const MAIL_TOOL_RISK = {
   mail_search: 'R0',
   mail_read: 'R0',
+  mail_digest: 'R0',
 } as const
 
 export const MAIL_TOOL_PORT = 'Mail'
@@ -39,6 +46,9 @@ export interface MailToolsDeps {
   config?: () => MailConfigResult
   search?: (request: MailSearchRequest, options: { account: MailAccount }) => Promise<MailSearchResult>
   read?: (request: MailReadRequest, options: { account: MailAccount }) => Promise<MailReadResult>
+  digest?: (request: MailDigestRequest, options: { account: MailAccount }) => Promise<MailDigestResult>
+  /** Tests pin "now"; production uses the wall clock. */
+  now?: () => Date
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -88,6 +98,31 @@ export function validateReadArgs(args: Record<string, unknown>): MailReadRequest
       throw new MailError('protocol', 'maxChars must be an integer between 1 and 20000')
     }
     request.maxChars = maxChars
+  }
+  return request
+}
+
+export function validateDigestArgs(args: Record<string, unknown>): MailDigestRequest {
+  const request: MailDigestRequest = {}
+  if (args.hours !== undefined && args.hours !== null) {
+    const hours = Number(args.hours)
+    if (!Number.isInteger(hours) || hours < 1 || hours > 168) {
+      throw new MailError('protocol', 'hours must be an integer between 1 and 168')
+    }
+    request.hours = hours
+  }
+  if (args.limit !== undefined && args.limit !== null) {
+    const limit = Number(args.limit)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+      throw new MailError('protocol', 'limit must be an integer between 1 and 50')
+    }
+    request.limit = limit
+  }
+  if (args.unreadOnly !== undefined && args.unreadOnly !== null) {
+    if (typeof args.unreadOnly !== 'boolean') {
+      throw new MailError('protocol', 'unreadOnly must be a boolean')
+    }
+    request.unreadOnly = args.unreadOnly
   }
   return request
 }
@@ -144,6 +179,28 @@ const READ_SCHEMA = {
   },
 } as const
 
+const DIGEST_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    mailbox: { type: 'string', required: true },
+    windowHours: { type: 'number', required: true },
+    total: { type: 'number', required: true },
+    unread: { type: 'number', required: true },
+    truncated: { type: 'boolean', required: true },
+    groups: {
+      type: 'object',
+      required: true,
+      additionalProperties: false,
+      properties: {
+        reply: { type: 'array', required: true, items: MESSAGE_SCHEMA },
+        action: { type: 'array', required: true, items: MESSAGE_SCHEMA },
+        fyi: { type: 'array', required: true, items: MESSAGE_SCHEMA },
+      },
+    },
+  },
+} as const
+
 function renderSearch(result: MailSearchResult): string {
   const header = `mailbox: ${result.mailbox}; total ${result.total}; showing ${result.messages.length}`
     + (result.localFilter ? `（本地过滤，扫描 ${result.scanned} 封）` : '')
@@ -179,6 +236,13 @@ export function registerMailTools(ctx: ContextLike, deps: MailToolsDeps = {}): v
   const loadConfig = deps.config ?? (() => readMailAccount())
   const doSearch = deps.search ?? (async (request, options) => searchMail(request, options))
   const doRead = deps.read ?? (async (request, options) => readMail(request, options))
+  const doDigest = deps.digest ?? (async (request, options) => {
+    const now = deps.now?.() ?? new Date()
+    const hours = request.hours ?? 24
+    const since = new Date(now.getTime() - hours * 3_600_000).toISOString().slice(0, 10)
+    const search = await doSearch({ since, limit: 50 }, options)
+    return buildMailDigest(search, { now, request })
+  })
 
   const accountOf = (): MailAccount => {
     const result = loadConfig()
@@ -211,6 +275,24 @@ export function registerMailTools(ctx: ContextLike, deps: MailToolsDeps = {}): v
   }))
 
   registry.register(defineTool({
+    name: 'mail_digest',
+    description: 'Read-only digest of recent INBOX metadata, grouped into needs-reply / needs-action / FYI. Does not read bodies, send, move or delete anything.',
+    parameters: {
+      hours: { type: 'number', description: 'Look-back window in hours, 1..168, default 24.' },
+      limit: { type: 'number', description: 'Max messages to return, 1..50, default 20.' },
+      unreadOnly: { type: 'boolean', description: 'Only include unread messages.' },
+    },
+    output: {
+      schema: DIGEST_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderDigest(value) }],
+    },
+    async execute(args) {
+      const request = validateDigestArgs(args as Record<string, unknown>)
+      return doDigest(request, { account: accountOf() })
+    },
+  }))
+
+  registry.register(defineTool({
     name: 'mail_read',
     description: 'Read one message by uid from the read-only INBOX. Body is plain text (HTML stripped) and truncated to maxChars; attachments are listed, never downloaded.',
     parameters: {
@@ -230,5 +312,5 @@ export function registerMailTools(ctx: ContextLike, deps: MailToolsDeps = {}): v
 
 export function apply(ctx: ContextLike): void {
   registerMailTools(ctx)
-  ctx.logger?.info?.('[mail] read-only IMAP tools registered (mail_search, mail_read)')
+  ctx.logger?.info?.('[mail] read-only IMAP tools registered (mail_search, mail_read, mail_digest)')
 }

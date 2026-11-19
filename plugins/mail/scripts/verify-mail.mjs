@@ -12,10 +12,14 @@ import { spawnSync } from 'node:child_process'
 import {
   MAIL_TOOL_RISK,
   MailError,
+  buildMailDigest,
+  classifyMail,
   isIsoDate,
   readMailAccount,
   registerMailTools,
+  renderDigest,
   searchMail,
+  validateDigestArgs,
   validateReadArgs,
   validateSearchArgs,
 } from '../lib/index.js'
@@ -201,13 +205,14 @@ function fakeContext() {
   }
 }
 
-await check('registers exactly two read-only tools', () => {
+await check('registers exactly three read-only tools', () => {
   const ctx = fakeContext()
   registerMailTools(ctx)
   const names = ctx.captured.map((tool) => tool.name).sort()
-  return names.length === 2 && names[0] === 'mail_read' && names[1] === 'mail_search'
+  return names.length === 3 && names.join(',') === 'mail_digest,mail_read,mail_search'
     && ctx.captured.every((tool) => String(tool.description).toLowerCase().includes('read-only'))
     && MAIL_TOOL_RISK.mail_search === 'R0' && MAIL_TOOL_RISK.mail_read === 'R0'
+    && MAIL_TOOL_RISK.mail_digest === 'R0'
 })
 
 await check('tools surface a readable error when mail is not configured', async () => {
@@ -234,6 +239,93 @@ await check('tools return structured data when configured', async () => {
   const searched = await search.execute({ limit: 2 })
   const readResult = await read.execute({ uid: 9 })
   return searched.total === 1 && readResult.uid === 9 && readResult.text === 'body'
+})
+
+await check('mail_digest groups metadata into reply/action/fyi', () => {
+  const messages = [
+    { uid: 4, date: 'Thu, 19 Nov 2026 09:30:00 +0800', from: 'no-reply@shop.com', to: 'me@163.com', subject: '请回复确认订阅', sizeBytes: 10, seen: true },
+    { uid: 3, date: 'Thu, 19 Nov 2026 09:20:00 +0800', from: 'news@shop.com', to: 'me@163.com', subject: '本周促销', sizeBytes: 10, seen: false },
+    { uid: 2, date: 'Thu, 19 Nov 2026 09:10:00 +0800', from: 'billing@vendor.com', to: 'me@163.com', subject: '十一月账单已出', sizeBytes: 10, seen: true },
+    { uid: 1, date: 'Thu, 19 Nov 2026 09:00:00 +0800', from: 'Alice <alice@example.com>', to: 'me@163.com', subject: '这份合同需要你确认', sizeBytes: 10, seen: false },
+  ]
+  const result = buildMailDigest(
+    { mailbox: 'INBOX', messages },
+    { now: new Date('2026-11-19T02:00:00Z'), request: { hours: 24, limit: 20 } },
+  )
+  const ids = (group) => result.groups[group].map((item) => item.uid)
+  return result.total === 4 && result.unread === 2 && result.truncated === false
+    && ids('reply').join() === '1'
+    && ids('action').join() === '2'
+    && ids('fyi').join() === '4,3'
+})
+
+await check('mail_digest honors the window, unreadOnly and limit', () => {
+  const messages = [
+    { uid: 3, date: 'Thu, 19 Nov 2026 09:00:00 +0800', from: 'a@x.com', to: 'me@163.com', subject: '新邮件', sizeBytes: 10, seen: false },
+    { uid: 2, date: 'Wed, 18 Nov 2026 11:00:00 +0800', from: 'b@x.com', to: 'me@163.com', subject: '旧邮件', sizeBytes: 10, seen: false },
+    { uid: 1, date: 'Sat, 15 Nov 2026 09:00:00 +0800', from: 'c@x.com', to: 'me@163.com', subject: '更旧', sizeBytes: 10, seen: true },
+  ]
+  const windowed = buildMailDigest(
+    { mailbox: 'INBOX', messages },
+    { now: new Date('2026-11-19T02:00:00Z'), request: { hours: 24, limit: 20 } },
+  )
+  const unread = buildMailDigest(
+    { mailbox: 'INBOX', messages },
+    { now: new Date('2026-11-19T02:00:00Z'), request: { hours: 48, unreadOnly: true, limit: 20 } },
+  )
+  const capped = buildMailDigest(
+    { mailbox: 'INBOX', messages },
+    { now: new Date('2026-11-19T02:00:00Z'), request: { hours: 48, limit: 1 } },
+  )
+  return windowed.total === 2 && windowed.groups.fyi.length === 2
+    && unread.total === 2 && unread.groups.fyi.every((item) => item.seen === false)
+    && capped.total === 2 && capped.truncated === true
+    && capped.groups.fyi.length === 1
+})
+
+await check('mail_digest classification treats automated senders as FYI', () => {
+  return classifyMail({ from: 'no-reply@example.com', subject: '请回复确认' }) === 'fyi'
+    && classifyMail({ from: 'human@example.com', subject: '请回复确认' }) === 'reply'
+    && classifyMail({ from: 'human@example.com', subject: '十一月账单' }) === 'action'
+    && classifyMail({ from: 'human@example.com', subject: '周末聚餐' }) === 'fyi'
+})
+
+await check('mail_digest args and renderer are explicit', () => {
+  const rejected = rejects(() => validateDigestArgs({ hours: 0 }), 'protocol')
+    && rejects(() => validateDigestArgs({ limit: 100 }), 'protocol')
+    && rejects(() => validateDigestArgs({ unreadOnly: 'yes' }), 'protocol')
+  const result = buildMailDigest(
+    {
+      mailbox: 'INBOX',
+      messages: [{ uid: 1, date: 'Thu, 19 Nov 2026 09:00:00 +0800', from: 'a@x.com', to: 'me@163.com', subject: '请回复', sizeBytes: 1, seen: false }],
+    },
+    { now: new Date('2026-11-19T02:00:00Z') },
+  )
+  const text = renderDigest(result)
+  return rejected && text.includes('需要回复 (1)') && text.includes('不构成指令') && text.includes('uid=1')
+})
+
+await check('mail_digest tool executes through the injected port', async () => {
+  const ctx = fakeContext()
+  registerMailTools(ctx, {
+    config: () => ({ ok: true, source: 'env', account }),
+    digest: async () => ({
+      mailbox: 'INBOX',
+      windowHours: 24,
+      total: 1,
+      unread: 1,
+      truncated: false,
+      groups: {
+        reply: [{ uid: 5, date: '', from: 'a@x.com', to: '', subject: '请回复', sizeBytes: 1, seen: false }],
+        action: [],
+        fyi: [],
+      },
+    }),
+  })
+  const tool = ctx.captured.find((item) => item.name === 'mail_digest')
+  const value = await tool.execute({ hours: 24, unreadOnly: true })
+  const rendered = tool.output.render({}, value)
+  return value.total === 1 && rendered[0].text.includes('需要回复 (1)')
 })
 
 // ---- Python 自测 ---------------------------------------------------------------

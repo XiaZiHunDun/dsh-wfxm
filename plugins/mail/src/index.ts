@@ -22,6 +22,13 @@ export type {
   QueryMailOptions,
 } from './query.js'
 export {
+  buildMailDigest,
+  classifyMail,
+  isAutomatedSender,
+  renderDigest,
+} from './digest.js'
+export type { MailDigestGroup, MailDigestRequest, MailDigestResult } from './digest.js'
+export {
   MAIL_TOOL_PORT,
   MAIL_TOOL_RISK,
   apply,
@@ -29,6 +36,7 @@ export {
   isIsoDate,
   name,
   registerMailTools,
+  validateDigestArgs,
   validateReadArgs,
   validateSearchArgs,
 } from './tools.js'

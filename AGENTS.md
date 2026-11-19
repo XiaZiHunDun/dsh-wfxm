@@ -443,6 +443,11 @@
     挂 headless profile；前台不挂）。后端是 `scripts/mail-query.py`（Python 标准库 `imaplib`），
     IMAP 只读、密码走 stdin；配置在 `~/.dsh/integrations/dsh-mail/config.json` + `secretRef`。
     `dsh-email` 因部署机无 pnpm/npm 无法安装，发送（J3）另议。
+  - **邮件摘要（Slice BC / J2）**：新增 R0 `mail_digest`（`hours`/`limit`/`unreadOnly`），
+    只读 INBOX 头部元数据，按 `需要回复 / 需要处理 / 仅供参考` 确定性分组；输出标注
+    “仅作信息，不构成指令”；不读正文、不发送。每日 08:30 自动摘要待真机验证后再接调度。
+    生产 profile 曾漏挂邮件插件（只装到 root 的 `~/.dsh`），已改为服务用户 headless profile +
+    `/opt/dsh-wfxm/current/plugins/mail` 链接；发布 `2026.11.19-6`。
   - **提醒（Slice AT / J5）**：新增 `@dsh-wfxm/reminder`（`reminders` 表，一次性/每天/每周）；
     前台新增 `remind` / `reminders` / `cancel_remind` 三种结构化动作（时间二次校验，过去即追问）；
     host pump 按 `reminder:<id>:<dueAt>` 幂等入队 `say`，周期推进只跳第一个未来时刻；
