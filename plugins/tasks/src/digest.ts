@@ -31,9 +31,17 @@ export interface TaskDigestCounts {
   waitingInput: number
 }
 
+export interface TaskDigestUsage {
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+}
+
 export interface TaskDigest {
   counts: TaskDigestCounts
   total: number
+  /** Slice BK (I5): summed usage for the tasks counted in this window. */
+  usage: TaskDigestUsage
   /** Bullet lines, newest/most notable first. */
   lines: string[]
   text: string
@@ -88,6 +96,21 @@ function pad(value: number): string {
   return String(value).padStart(2, '0')
 }
 
+function formatTokens(value: number): string {
+  return value >= 1_000 ? `${(value / 1_000).toFixed(1)}k` : String(value)
+}
+
+function usageSuffix(usage: TaskDigestUsage): string {
+  if (usage.costUsd > 0) {
+    const digits = usage.costUsd < 0.01 ? 4 : 2
+    return `费用 $${usage.costUsd.toFixed(digits)}`
+  }
+  if (usage.inputTokens > 0 || usage.outputTokens > 0) {
+    return `tokens ${formatTokens(usage.inputTokens)}/${formatTokens(usage.outputTokens)}`
+  }
+  return ''
+}
+
 /**
  * Returns `null` when nothing happened and nothing is live — a daily message
  * saying "0 tasks" is noise, and noise is exactly what this feature avoids.
@@ -97,6 +120,7 @@ export function summarizeTaskDigest(
   window: TaskDigestWindow,
 ): TaskDigest | null {
   const counts = emptyCounts()
+  const usage: TaskDigestUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 }
   const finished: Task[] = []
   const live: Task[] = []
 
@@ -108,14 +132,17 @@ export function summarizeTaskDigest(
       if (task.status === 'succeeded') counts.succeeded += 1
       else if (task.status === 'failed') counts.failed += 1
       else counts.cancelled += 1
-      continue
+    } else {
+      live.push(task)
+      if (task.status === 'paused') counts.paused += 1
+      else if (task.status === 'running') counts.running += 1
+      else if (task.status === 'queued') counts.queued += 1
+      else if (task.status === 'waiting_approval') counts.waitingApproval += 1
+      else if (task.status === 'waiting_input') counts.waitingInput += 1
     }
-    live.push(task)
-    if (task.status === 'paused') counts.paused += 1
-    else if (task.status === 'running') counts.running += 1
-    else if (task.status === 'queued') counts.queued += 1
-    else if (task.status === 'waiting_approval') counts.waitingApproval += 1
-    else if (task.status === 'waiting_input') counts.waitingInput += 1
+    usage.inputTokens += task.inputTokens ?? 0
+    usage.outputTokens += task.outputTokens ?? 0
+    usage.costUsd += task.costUsd ?? 0
   }
 
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0)
@@ -132,7 +159,9 @@ export function summarizeTaskDigest(
   if (counts.queued > 0) parts.push(`排队 ${counts.queued}`)
 
   const stamp = `${pad(window.to.getMonth() + 1)}-${pad(window.to.getDate())}`
+  const suffix = usageSuffix(usage)
   const head = `${window.title ?? `任务日报 ${stamp}`}：${parts.join(' · ')}`
+    + (suffix === '' ? '' : ` · ${suffix}`)
 
   const byFinished = finished.sort((a, b) => (b.finishedAt ?? '').localeCompare(a.finishedAt ?? ''))
   const notable = [...byFinished, ...live.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))]
@@ -142,6 +171,7 @@ export function summarizeTaskDigest(
   return {
     counts,
     total,
+    usage,
     lines,
     text: lines.length === 0 ? head : `${head}\n${lines.join('\n')}`,
   }

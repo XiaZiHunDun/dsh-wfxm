@@ -107,6 +107,7 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     .prepare("SELECT name FROM sqlite_master WHERE type IN ('index','trigger','view')")
     .all()
     .map((row) => row.name)
+  const columns = db.prepare('PRAGMA table_info(tasks)').all().map((row) => row.name)
   db.close()
   return names.includes('tasks')
     && names.includes('task_events')
@@ -116,7 +117,8 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     && names.includes('task_inputs')
     && names.includes('task_checkpoints')
     && names.includes('resource_locks')
-    && version.version === 8
+    && version.version === 9
+    && ['input_tokens', 'output_tokens', 'cost_usd'].every((column) => columns.includes(column))
     && objects.includes('ux_task_events_seq')
     && objects.includes('task_events_no_update')
     && objects.includes('task_events_no_delete')
@@ -134,6 +136,16 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     && objects.includes('ux_tasks_worktree_path')
     && objects.includes('ux_resource_lock_live')
     && objects.includes('ix_resource_locks_lease')
+})
+
+await check('BK usage accumulates token/cost across attempts', () => {
+  const usageTask = store.createTask({ intent: 'usage bookkeeping', riskLevel: 'R1' })
+  store.recordUsage(usageTask.id, { inputTokens: 1_200, outputTokens: 300, costUsd: 0.0021 })
+  store.recordUsage(usageTask.id, { inputTokens: 800, outputTokens: 200, costUsd: 0.0009 })
+  const task = store.getTask(usageTask.id)
+  return task.inputTokens === 2_000
+    && task.outputTokens === 500
+    && Math.abs(task.costUsd - 0.003) < 1e-9
 })
 
 await check('a v1 database upgrades in place to v3 without rebuilding old tables', () => {
@@ -162,6 +174,9 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     ALTER TABLE tasks DROP COLUMN base_commit;
     ALTER TABLE tasks DROP COLUMN worktree_path;
     ALTER TABLE tasks DROP COLUMN isolation;
+    ALTER TABLE tasks DROP COLUMN input_tokens;
+    ALTER TABLE tasks DROP COLUMN output_tokens;
+    ALTER TABLE tasks DROP COLUMN cost_usd;
     UPDATE schema_migrations SET version = 1 WHERE module = 'tasks';
   `)
   raw.close()
@@ -185,7 +200,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     && keptTask.taskRef === null
     && fresh.taskRef !== null
     && fresh.taskRef.length === 10
-    && version.version === 8
+    && version.version === 9
     && keptTask.isolation === 'serial'
     && fresh.isolation === 'serial'
     && fresh.worktreePath === null
@@ -1192,6 +1207,23 @@ await check('a queued task runs once to succeeded with a receipt', async () => {
     && settled.leaseOwner === null
     && receipts.length === 1
     && receipts[0].summary === 'done'
+})
+
+await check('BK worker persists usage on the settled task', async () => {
+  const { worker } = workerFixture({
+    execute: () => ({
+      status: 'succeeded',
+      summary: 'done',
+      usage: { inputTokens: 1_000, outputTokens: 200, costUsd: 0.001 },
+    }),
+  })
+  const task = workerStore.createTask({ intent: 'usage path', riskLevel: 'R1' })
+  await worker.runOnce()
+  const settled = workerStore.getTask(task.id)
+  return settled.status === 'succeeded'
+    && settled.inputTokens === 1_000
+    && settled.outputTokens === 200
+    && Math.abs(settled.costUsd - 0.001) < 1e-9
 })
 
 await check('the executor sees its task id in ambient context, outside it is null', async () => {

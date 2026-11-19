@@ -168,5 +168,32 @@ check('a custom title replaces the daily header without changing counts', () => 
   assert.doesNotMatch(digest.text, /任务日报/)
 })
 
+check('BK usage: header appends cost when prices are configured', () => {
+  const a = task({
+    status: 'succeeded',
+    finishedAt: new Date(TO.getTime() - 3_600_000).toISOString(),
+    inputTokens: 1200,
+    outputTokens: 300,
+    costUsd: 0.0021,
+  })
+  const b = task({
+    status: 'failed',
+    finishedAt: new Date(TO.getTime() - 2 * 3_600_000).toISOString(),
+    inputTokens: 800,
+    outputTokens: 200,
+    costUsd: 0.0009,
+  })
+  const digest = summarizeTaskDigest([a, b], { from: FROM, to: TO, maxLines: 0 })
+  assert.equal(digest.usage.costUsd, 0.003)
+  assert.match(digest.text, /费用 \$0\.0030/)
+})
+
+check('BK usage: tokens are visible even when no price is set', () => {
+  const live = task({ status: 'running', inputTokens: 1500, outputTokens: 200, costUsd: 0 })
+  const digest = summarizeTaskDigest([live], { from: FROM, to: TO, maxLines: 0 })
+  assert.match(digest.text, /tokens 1\.5k\/200/)
+  assert.doesNotMatch(digest.text, /费用/)
+})
+
 console.log(`\ntask-digest: ${pass} passed, ${fail} failed`)
 if (fail > 0) process.exitCode = 1

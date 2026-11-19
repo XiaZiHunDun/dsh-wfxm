@@ -1903,3 +1903,29 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 发布 `2026.11.19-13`、重启、`[startup] 8/8`
 - [x] `docs/09` A8 / `docs/14 §3.1` / `docs/16 §12.48` / `AGENTS.md` 对齐
 - [x] 提交推送（ailearn）
+
+# Slice BK — I5 成本可见（2026-11-19，release `2026.11.19-14`）
+
+## BK1 采集与入库
+
+- [x] 执行器解析 `status/step_end` usage，outcome 返回 `{inputTokens,outputTokens,costUsd}`
+- [x] `DshExecutorOptions.pricing` + 组合根 `DSH_WFXM_PRICE_{IN,OUT}_USD_PER_MTOK`
+- [x] tasks v9 迁移：`input_tokens` / `output_tokens` / `cost_usd`
+- [x] `recordUsage` 累加；worker 在成功/失败/待补充/重试的 settle 路径都调用
+- [x] `Task` 暴露三列；`ExecUsage` 端口类型
+
+## BK2 展示
+
+- [x] 任务日报表头：有金额显示 `费用 $x`，无单价时显示 `tokens a/b`
+- [x] `deploy/systemd/dsh-wfxm.env.example` 价格注释
+
+## BK3 用例与发布
+
+- [x] `verify-executor 32`（两步求和 + 计价）
+- [x] `verify-tasks 115`（v9 迁移 / 累加 / worker settle）
+- [x] `verify-digest 14`（费用与 token 表头）
+- [x] `verify-serve 14`（价格配置与非法值）
+- [x] `verify-all 47 passed / 0 failed`
+- [x] 发布 `2026.11.19-14`、重启、`schema_migrations(tasks)=9`
+- [x] 文档：`docs/09` I5 / `docs/15` v9 / `docs/16 §12.49` / `AGENTS.md`
+- [x] 提交推送（ailearn）

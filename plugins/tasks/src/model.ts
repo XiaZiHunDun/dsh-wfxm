@@ -105,6 +105,10 @@ export interface Task {
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
+  /** Slice BK (I5): cumulative model usage across attempts; null = unrecorded. */
+  inputTokens?: number | null
+  outputTokens?: number | null
+  costUsd?: number | null
 }
 
 export interface TaskEvent {

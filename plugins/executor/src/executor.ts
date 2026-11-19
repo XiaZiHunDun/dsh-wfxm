@@ -50,18 +50,28 @@ export interface ExecAttachment {
   name: string
 }
 
+/** Slice BK (I5): model usage observed on `status/step_end` events. */
+export interface ExecutorUsage {
+  inputTokens: number
+  outputTokens: number
+  /** USD, computed from the host-supplied price; 0 when no price is set. */
+  costUsd: number
+}
+
 export interface ExecSuccess {
   status: 'succeeded'
   summary: string
   evidenceLocator?: string | null
   /** Produced by `[[ATTACH]] <path>` lines; never outside the workspace. */
   attachments?: ExecAttachment[]
+  usage?: ExecutorUsage
 }
 
 export interface ExecFailure {
   status: 'failed'
   summary: string
   failure: FailureKind
+  usage?: ExecutorUsage
 }
 
 /** Slice AR: the run needs a fact only the owner can supply. */
@@ -69,6 +79,7 @@ export interface ExecNeedsInput {
   status: 'needs_input'
   question: string
   summary?: string
+  usage?: ExecutorUsage
 }
 
 export type ExecOutcome = ExecSuccess | ExecFailure | ExecNeedsInput
@@ -112,6 +123,11 @@ export interface DshExecutorOptions {
   profile?: string
   /** Extra env for the child, merged over `process.env` (attribution keys win). */
   env?: Record<string, string>
+  /**
+   * Slice BK (I5): USD per million tokens. Absent/zero still records tokens;
+   * only `costUsd` stays 0 so the owner can add prices later without a migration.
+   */
+  pricing?: { inputPerMTok: number; outputPerMTok: number } | null
   /** Hard wall-clock limit per attempt; a timeout is a transient failure. */
   timeoutMs?: number
   /** Grace between SIGTERM and SIGKILL when killing the child. */
@@ -302,11 +318,13 @@ interface RunEvent {
   reason?: { kind?: unknown; error?: { code?: unknown; message?: unknown } }
   sessionId?: unknown
   text?: unknown
+  usage?: { inputTokens?: unknown; outputTokens?: unknown }
 }
 
 export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecutorFn {
   const dshBin = options.dshBin ?? 'dsh'
   const profile = options.profile ?? 'headless'
+  const pricing = options.pricing ?? null
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
@@ -350,8 +368,28 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
     }
 
     return new Promise<ExecOutcome>((resolve) => {
+      // Slice BK (I5): sum step_end usage even when the run ends in a failure.
+      let inputTokens = 0
+      let outputTokens = 0
+      const usageOf = (): ExecutorUsage | undefined => {
+        if (inputTokens === 0 && outputTokens === 0) return undefined
+        const costUsd = pricing === null
+          ? 0
+          : Number((
+              (inputTokens / 1_000_000) * pricing.inputPerMTok
+              + (outputTokens / 1_000_000) * pricing.outputPerMTok
+            ).toFixed(6))
+        return { inputTokens, outputTokens, costUsd }
+      }
+
       const fail = (failure: FailureKind, summary: string): void => {
-        resolve({ status: 'failed', failure, summary: truncate(summary, maxSummary) })
+        const usage = usageOf()
+        resolve({
+          status: 'failed',
+          failure,
+          summary: truncate(summary, maxSummary),
+          ...(usage === undefined ? {} : { usage }),
+        })
       }
 
       // One attempt = one checkpoint. Loud on begin: without the boundary the
@@ -473,6 +511,9 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
           textFallback.push(event.text)
         } else if (event.type === 'final' && typeof event.text === 'string') {
           finalText = event.text
+        } else if (event.type === 'status' && event.phase === 'step_end') {
+          inputTokens += Number(event.usage?.inputTokens) || 0
+          outputTokens += Number(event.usage?.outputTokens) || 0
         } else if (
           event.type === 'status'
           && event.phase === 'turn_end'
@@ -565,10 +606,12 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
             // The attempt stopped before producing a result; roll its step back
             // so a later run starts clean.
             closeCheckpoint('aborted')
+            const usage = usageOf()
             resolve({
               status: 'needs_input',
               question: truncate(question, 500),
               summary: truncate(text.trim(), maxSummary),
+              ...(usage === undefined ? {} : { usage }),
             })
             return
           }
@@ -582,10 +625,12 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         const notes = parsed !== null && parsed.ignored.length > 0
           ? `\n附件忽略：${parsed.ignored.join('；')}`
           : ''
+        const usage = usageOf()
         resolve({
           status: 'succeeded',
           summary: truncate(`${body}${notes}`, maxSummary),
           evidenceLocator,
+          ...(usage === undefined ? {} : { usage }),
           ...parsed === null || parsed.attachments.length === 0
             ? {}
             : { attachments: parsed.attachments },

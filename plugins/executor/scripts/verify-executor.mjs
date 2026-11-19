@@ -401,6 +401,27 @@ await check('AS attach 3: the worker only reports artifacts after a successful s
     && receipt.summary === '(no output)'
 })
 
+// ---- Slice BK (I5): usage -----------------------------------------------------
+
+const usageExecutor = createDshExecutor({
+  dshBin: stubBin,
+  env: { STUB_MODE: 'ok', STUB_OUTFILE: join(dir, 'usage-out.txt') },
+  timeoutMs: 2_000,
+  heartbeatMs: 50,
+  pricing: { inputPerMTok: 1, outputPerMTok: 2 },
+})
+const usageOutcome = await usageExecutor(
+  { id: 't-usage', intent: 'measure usage' },
+  { heartbeat: () => true, attempt: 1 },
+)
+
+await check('BK usage: step_end tokens are summed and priced', () => {
+  return usageOutcome.status === 'succeeded'
+    && usageOutcome.usage?.inputTokens === 3_000
+    && usageOutcome.usage?.outputTokens === 600
+    && usageOutcome.usage?.costUsd === 0.0042
+})
+
 // ---- failure classification ---------------------------------------------------
 
 const boom = makeTask({ intent: 'fail with a plain error' })

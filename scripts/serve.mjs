@@ -239,6 +239,8 @@ async function main() {
           defaultWorkdir: config.workdir,
           workdirResolver: config.worktreeIsolation ? workdirResolver : undefined,
           timeoutMs: config.executorTimeoutMs,
+          // Slice BK (I5): tokens always recorded; USD only when prices are set.
+          pricing: config.pricing,
           // One attempt = one checkpoint, so ④ pre-images and ⑤ rollback share
           // the same step id (13 §3.4 步级回滚).
           checkpoints: {

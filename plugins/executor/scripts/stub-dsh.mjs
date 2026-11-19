@@ -21,6 +21,9 @@ process.stdin.on('end', () => {
     case 'ok':
       writeFileSync(process.env.STUB_OUTFILE, `stub wrote: ${input.trim()}\n`)
       emit({ type: 'text', text: 'file written' })
+      // Slice BK (I5): two steps so the executor must sum, not overwrite.
+      emit({ type: 'status', phase: 'step_end', turn: 1, usage: { inputTokens: 1000, outputTokens: 200 } })
+      emit({ type: 'status', phase: 'step_end', turn: 2, usage: { inputTokens: 2000, outputTokens: 400 } })
       emit({ type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } })
       emit({ type: 'final', text: 'stub completed the task' })
       break

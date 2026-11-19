@@ -295,6 +295,16 @@ ALTER TABLE task_assertions_v8 RENAME TO task_assertions;
 CREATE INDEX IF NOT EXISTS ix_task_assertions_task ON task_assertions(task_id);
 `
 
+/**
+ * v9 (Slice BK / I5): cumulative model usage per task. Additive columns keep
+ * every existing query (`SELECT *`) working; old rows read as NULL.
+ */
+const TASKS_V9_DDL = `
+ALTER TABLE tasks ADD COLUMN input_tokens INTEGER;
+ALTER TABLE tasks ADD COLUMN output_tokens INTEGER;
+ALTER TABLE tasks ADD COLUMN cost_usd REAL;
+`
+
 const MIGRATIONS: ReadonlyArray<{ version: number; ddl: string }> = [
   {
     version: 1,
@@ -307,10 +317,17 @@ const MIGRATIONS: ReadonlyArray<{ version: number; ddl: string }> = [
   { version: 6, ddl: TASKS_V6_DDL },
   { version: 7, ddl: TASKS_V7_DDL },
   { version: 8, ddl: TASKS_V8_DDL },
+  { version: 9, ddl: TASKS_V9_DDL },
 ]
 
-export interface CreateTaskInput {
-  intent: string
+/** Slice BK (I5): one attempt's observed usage, accumulated per task. */
+export interface TaskUsage {
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+}
+
+export interface CreateTaskInput {  intent: string
   riskLevel: RiskLevel
   projectId?: string | null
   conversationId?: string | null
@@ -427,6 +444,8 @@ export interface TaskStore {
   createTask(input: CreateTaskInput): Task
   getTask(id: string): Task | null
   listTasks(filter?: TaskFilter): Task[]
+  /** Slice BK (I5): add one attempt's usage; safe to call on every settle path. */
+  recordUsage(taskId: string, usage: TaskUsage): void
   transition(taskId: string, input: TransitionInput): Task
   addAssertion(taskId: string, assertion: PreparedAssertion): TaskAssertion
   listAssertions(taskId: string): TaskAssertion[]
@@ -698,6 +717,9 @@ interface TaskRow {
   created_at: string
   started_at: string | null
   finished_at: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cost_usd: number | null
 }
 
 interface EventRow {
@@ -824,6 +846,9 @@ function toTask(row: TaskRow): Task {
     createdAt: row.created_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    costUsd: row.cost_usd,
   }
 }
 
@@ -1008,6 +1033,14 @@ export function createTaskStore(dbPath: string): TaskStore {
   const listTasksByProject = db.prepare(
     'SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC, rowid ASC',
   )
+  // Slice BK (I5): accumulate across retries; NULL is treated as zero.
+  const addTaskUsage = db.prepare(`
+    UPDATE tasks
+       SET input_tokens  = COALESCE(input_tokens, 0) + ?,
+           output_tokens = COALESCE(output_tokens, 0) + ?,
+           cost_usd      = COALESCE(cost_usd, 0) + ?
+     WHERE id = ?
+  `)
   const updateTransition = db.prepare(`
     UPDATE tasks
        SET status = ?, attempt = ?, started_at = ?, finished_at = ?,
@@ -1300,6 +1333,21 @@ export function createTaskStore(dbPath: string): TaskStore {
   const getTask = (id: string): Task | null => {
     const row = selectTask.get(id) as TaskRow | undefined
     return row === undefined ? null : toTask(row)
+  }
+
+  /**
+   * Slice BK (I5): record one attempt's usage. Invalid/negative values are
+   * clamped rather than thrown — usage bookkeeping must never fail a task.
+   */
+  const recordUsage = (taskId: string, usage: TaskUsage): void => {
+    const clean = (value: number): number =>
+      Number.isFinite(value) && value > 0 ? value : 0
+    addTaskUsage.run(
+      Math.floor(clean(usage.inputTokens)),
+      Math.floor(clean(usage.outputTokens)),
+      clean(usage.costUsd),
+      taskId,
+    )
   }
 
   function appendEvent(taskId: string, type: TaskEventType, payload?: Json): TaskEvent {
@@ -1727,6 +1775,8 @@ export function createTaskStore(dbPath: string): TaskStore {
     },
 
     getTask,
+
+    recordUsage,
 
     listTasks(filter) {
       const limit = filter?.limit === undefined ? undefined : Math.max(1, Math.floor(filter.limit))

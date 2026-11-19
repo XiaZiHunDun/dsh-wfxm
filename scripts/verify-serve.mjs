@@ -197,6 +197,21 @@ await check('配置非法值拒绝启动（步 1），默认路径由 DATA_DIR �
   }
   assert(partial instanceof StartupError, 'half-configured ASR was accepted')
   assert(partial.message.includes('must be set together'), partial.message)
+  assert(config.pricing === null, 'pricing should default off')
+  const pricing = parseServeConfig({
+    DSH_WFXM_DATA_DIR: '/srv/x',
+    DSH_WFXM_PRICE_IN_USD_PER_MTOK: '0.5',
+    DSH_WFXM_PRICE_OUT_USD_PER_MTOK: '1.5',
+  }).pricing
+  assert(pricing?.inputPerMTok === 0.5 && pricing?.outputPerMTok === 1.5, `pricing=${JSON.stringify(pricing)}`)
+  let badPrice = null
+  try {
+    parseServeConfig({ DSH_WFXM_DATA_DIR: '/srv/x', DSH_WFXM_PRICE_IN_USD_PER_MTOK: 'free' })
+  } catch (caught) {
+    badPrice = caught
+  }
+  assert(badPrice instanceof StartupError, 'invalid price was accepted')
+  assert(badPrice.message.includes('must be a number'), badPrice.message)
   return error.message
 })
 

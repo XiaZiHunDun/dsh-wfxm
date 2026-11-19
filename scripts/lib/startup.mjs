@@ -95,8 +95,22 @@ function readInt(env, key, fallback, problems, range) {
   return value
 }
 
-function readEnum(env, key, fallback, allowed, problems) {
+function readFloat(env, key, fallback, problems, range) {
   const raw = readString(env, key, null)
+  if (raw === null) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value)) {
+    problems.push(`${key} must be a number (got ${JSON.stringify(raw)})`)
+    return fallback
+  }
+  if (value < range[0] || value > range[1]) {
+    problems.push(`${key} must be within ${range[0]}..${range[1]} (got ${value})`)
+    return fallback
+  }
+  return value
+}
+
+function readEnum(env, key, fallback, allowed, problems) {  const raw = readString(env, key, null)
   if (raw === null) return fallback
   if (!allowed.includes(raw)) {
     problems.push(`${key} must be one of ${allowed.join('|')} (got ${JSON.stringify(raw)})`)
@@ -186,6 +200,13 @@ export function parseServeConfig(env = process.env) {
     // without the flag behave exactly as before.
     resourceLocks: readFlag(env, 'DSH_WFXM_RESOURCE_LOCKS', false),
   }
+  // Slice BK (I5): USD per million tokens. Both zero (the default) still
+  // records tokens; only dollar cost stays 0.
+  const priceIn = readFloat(env, 'DSH_WFXM_PRICE_IN_USD_PER_MTOK', 0, problems, [0, 10_000])
+  const priceOut = readFloat(env, 'DSH_WFXM_PRICE_OUT_USD_PER_MTOK', 0, problems, [0, 10_000])
+  config.pricing = priceIn === 0 && priceOut === 0
+    ? null
+    : { inputPerMTok: priceIn, outputPerMTok: priceOut }
   // Slice BI (A8): optional OpenAI-compatible ASR. The key is a *file path*
   // (docs/16 §二: secrets never go in env), readable by the service user.
   // Base URL and key file or neither; absent keeps the "转写未启用" note.

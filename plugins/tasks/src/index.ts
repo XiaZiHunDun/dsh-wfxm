@@ -69,6 +69,7 @@ export type {
   SteerTaskResult,
   TaskFilter,
   TaskStore,
+  TaskUsage,
   TransitionInput,
   WakeTaskInput,
 } from './store.js'
@@ -141,6 +142,7 @@ export type {
   ExecNeedsInput,
   ExecOutcome,
   ExecSuccess,
+  ExecUsage,
   FailureKind,
   ChangePort,
   SnapshotPort,

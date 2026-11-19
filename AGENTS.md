@@ -516,6 +516,10 @@
   - **A8 零后端决策（Slice BJ）**：飞书客户端「转文字」不通过事件暴露（只有 `file_key` + `duration`），
     飞书服务端 ASR 免费版不支持且需 PCM 转码。因此默认不接 ASR：语音消息保留，回复引导
     「手机输入法语音输入」或「长按语音转文字」；ASR seam 仅作可选增强。`verify-feishu 65`。
+  - **I5 成本可见（Slice BK）**：执行器从 `status/step_end` 汇总 usage 并随 outcome 返回；⑤ `tasks` v9
+    新增 `input_tokens/output_tokens/cost_usd`，**每条 settle 路径**调用 `recordUsage` 累加（重试不覆盖）；
+    任务日报表头追加 `费用 $x` 或 `tokens a/b`。价格用 `DSH_WFXM_PRICE_{IN,OUT}_USD_PER_MTOK`，默认 0
+    （只记 token）。`verify-executor 32` / `verify-tasks 115` / `verify-digest 14`（[16 §12.49](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

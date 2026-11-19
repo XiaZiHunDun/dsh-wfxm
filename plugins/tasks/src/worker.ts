@@ -28,17 +28,26 @@ export interface ExecAttachment {
   name: string
 }
 
+/** Slice BK (I5): usage reported by the executor for one attempt. */
+export interface ExecUsage {
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+}
+
 export interface ExecSuccess {
   status: 'succeeded'
   summary: string
   evidenceLocator?: string | null
   attachments?: ExecAttachment[]
+  usage?: ExecUsage
 }
 
 export interface ExecFailure {
   status: 'failed'
   summary: string
   failure: FailureKind
+  usage?: ExecUsage
 }
 
 /**
@@ -50,6 +59,7 @@ export interface ExecNeedsInput {
   /** Shown to the owner verbatim (already truncated by the executor). */
   question: string
   summary?: string
+  usage?: ExecUsage
 }
 
 export type ExecOutcome = ExecSuccess | ExecFailure | ExecNeedsInput
@@ -262,6 +272,15 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
   }
 
   async function settle(task: Task, outcome: ExecOutcome, wakeAt: string | null): Promise<TaskRunReport> {
+    // Slice BK (I5): count usage on every settle path, including retries and
+    // needs-input, so cost is not lost when a run ends early.
+    if (outcome.usage !== undefined) {
+      try {
+        store.recordUsage(task.id, outcome.usage)
+      } catch (error) {
+        options.onError?.(error)
+      }
+    }
     // Slice AR: the attempt asked a question. Park the row so the host can
     // relay it; a cancelled/already-settled task loses this race harmlessly.
     if (outcome.status === 'needs_input') {
