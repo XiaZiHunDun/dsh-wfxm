@@ -589,7 +589,7 @@ await check('python backend self-test passes', () => {
   const result = spawnSync('python3', [script], { input: '{"action":"self-test"}', encoding: 'utf8' })
   if (result.status !== 0) return false
   const parsed = JSON.parse(result.stdout)
-  return parsed.ok === true && parsed.checks >= 10
+  return parsed.ok === true && parsed.checks >= 13
 })
 
 // ---- profile 安装脚本 ----------------------------------------------------------

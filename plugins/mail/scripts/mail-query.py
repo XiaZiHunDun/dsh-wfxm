@@ -202,18 +202,26 @@ def validate_uids(raw) -> list[int]:
     return seen
 
 
-def supports_move(imap) -> bool:
+def read_capabilities(imap) -> bytes:
     try:
         typ, data = imap.capability()
     except Exception:
-        return False
+        return b""
     if typ != "OK":
-        return False
-    for item in data or []:
-        token = item if isinstance(item, bytes) else str(item).encode("ascii", "ignore")
-        if b"MOVE" in token:
-            return True
-    return False
+        return b""
+    return b" ".join(
+        item if isinstance(item, bytes) else str(item).encode("ascii", "ignore")
+        for item in data or []
+    )
+
+
+def archive_strategy(capabilities: bytes) -> str | None:
+    """优先 UID MOVE；无 MOVE 但有 UIDPLUS 时用作用域受限的 UID EXPUNGE。"""
+    if b"MOVE" in capabilities:
+        return "move"
+    if b"UIDPLUS" in capabilities:
+        return "copy-expunge"
+    return None
 
 
 def ensure_folder(imap, folder: str, encoded: bytes) -> None:
@@ -354,19 +362,38 @@ def read_mail(imap, request: dict) -> dict:
 
 
 def archive_mail(imap, request: dict) -> dict:
-    """把 INBOX 中显式指定的 uid 移到归档夹；只做 MOVE，不删除、不发送。"""
+    """把 INBOX 中显式指定的 uid 移到归档夹；只移动，不发送、不改写。"""
     uids = validate_uids(request.get("uids"))
     folder = str(request.get("folder") or DEFAULT_ARCHIVE_FOLDER)
-    if not supports_move(imap):
-        raise MailError("protocol", "server does not support UID MOVE; refusing to archive by COPY+EXPUNGE")
+    strategy = archive_strategy(read_capabilities(imap))
+    if strategy is None:
+        raise MailError(
+            "protocol",
+            "server supports neither UID MOVE nor UIDPLUS; refusing to archive without a scoped expunge",
+        )
     ensure_folder(imap, folder, encode_mailbox(folder))
     typ, data = imap.select("INBOX", readonly=False)
     if typ != "OK":
         raise MailError("protocol", f"cannot open INBOX for archiving: {data!r}")
     uid_set = ",".join(str(uid) for uid in uids)
-    typ, data = imap.uid("MOVE", uid_set, quote_mailbox(encode_mailbox(folder)))
-    if typ != "OK":
-        raise MailError("protocol", f"UID MOVE failed: {data!r}")
+    quoted_folder = quote_mailbox(encode_mailbox(folder))
+
+    if strategy == "move":
+        typ, data = imap.uid("MOVE", uid_set, quoted_folder)
+        if typ != "OK":
+            raise MailError("protocol", f"UID MOVE failed: {data!r}")
+    else:
+        typ, data = imap.uid("COPY", uid_set, quoted_folder)
+        if typ != "OK":
+            raise MailError("protocol", f"UID COPY failed: {data!r}")
+        typ, data = imap.uid("STORE", uid_set, "+FLAGS", "(\\Deleted)")
+        if typ != "OK":
+            raise MailError("protocol", f"UID STORE \\Deleted failed: {data!r}")
+        typ, data = imap.uid("EXPUNGE", uid_set)
+        if typ != "OK":
+            # 回滚删除标记，避免留下「已标记未清除」的半状态。
+            imap.uid("STORE", uid_set, "-FLAGS", "(\\Deleted)")
+            raise MailError("protocol", f"UID EXPUNGE failed: {data!r}")
     return {"folder": folder, "moved": len(uids), "uids": uids}
 
 
@@ -433,6 +460,9 @@ def self_test() -> int:
     check("mailbox modified utf-7", encoded.startswith(b"&") and encoded.endswith(b"-")
           and base64.b64decode(payload).decode("utf-16-be") == "已归档")
     check("uid list", validate_uids([3, 1, 3]) == [3, 1])
+    check("archive strategy move", archive_strategy(b"IMAP4rev1 MOVE UIDPLUS") == "move")
+    check("archive strategy copy-expunge", archive_strategy(b"IMAP4rev1 UIDPLUS") == "copy-expunge")
+    check("archive strategy unsupported", archive_strategy(b"IMAP4rev1") is None)
 
     raw = (
         "From: =?UTF-8?B?5byg5LiJ?= <a@example.com>\r\n"

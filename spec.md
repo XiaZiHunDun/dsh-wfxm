@@ -2584,9 +2584,11 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
   - 审批：`ctx.get('approval').request({ agent, toolName:'mail_archive', callId, reason })`，
     仅 `allowed-once` 继续；审批服务缺失 / 被拒 / 取消 → 抛 `MailError('approval')`，
     **邮件一封不动**（fail-closed，AR13）。
-  - 执行：Python `action='archive'`，以**读写**方式打开 INBOX；目标夹不存在则 `CREATE` 后复查；
-    使用 `UID MOVE`。服务器不支持 `MOVE` → `protocol` 错误，**不做 COPY+EXPUNGE 兜底**
-    （避免误删其他客户端已标记删除的邮件）。
+  - 执行：Python `action='archive'`，以**读写**方式打开 INBOX；目标夹不存在则 `CREATE` 后复查。
+    优先 `UID MOVE`；服务器不支持 `MOVE` 但支持 `UIDPLUS` 时，退化为
+    `UID COPY → UID STORE \Deleted → UID EXPUNGE <uid-set>`（作用域仅限本次 uid，
+    不会清理其他客户端标记删除的邮件）。两者都不支持 → `protocol` 错误，绝不使用全量 `EXPUNGE`。
+    > 2026-11-19 真机修正：163 IMAP 能力表无 `MOVE`、有 `UIDPLUS`，无此兜底则归档在生产不可用。
   - 返回 `{ folder, moved, uids }`；目标集合为空时直接返回 `moved: 0`，
     不请求审批、不产生写操作。
 - **审批桥**：③ 的 `approval/request` 应答器在「已批准 R2/R3 任务子进程」里，

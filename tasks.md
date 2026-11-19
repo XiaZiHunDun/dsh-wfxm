@@ -1936,7 +1936,7 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 
 - [x] `config.ts`：`DEFAULT_ARCHIVE_FOLDER='Archive'`、`readArchiveFolder(env)`（空值回落）
 - [x] `query.ts`：`MailErrorCode` 增 `approval`；`MailArchiveResult` / `archiveMail`（显式 uid 列表 + folder）
-- [x] `mail-query.py`：`action='archive'`；modified UTF-7 夹名；目标夹不存在则创建；仅 `UID MOVE`（无 MOVE 即报错）
+- [x] `mail-query.py`：`action='archive'`；modified UTF-7 夹名；目标夹不存在则创建；优先 `UID MOVE`，无 `MOVE` 有 `UIDPLUS` 时 `COPY+STORE \Deleted+UID EXPUNGE`
 - [x] `tools.ts`：`validateArchiveArgs`（uid/uids/筛选互斥、1..50）；注册 `mail_archive`（R2）
 - [x] 审批：`ctx.get('approval').request` → 仅 `allowed-once` 执行；缺失/拒绝/取消统一 `approval` 错误，邮件不动
 - [x] 空集合直接 `moved:0`，不请求审批；筛选模式先 `searchMail` 冻结 uid
@@ -1951,5 +1951,6 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `verify-mail`：参数校验、0 匹配不审批、approval 缺失/拒绝不执行、allowed-once 单次、folder 默认/覆盖、Python self-test
 - [x] 四门禁：`build` / `--noEmit` / `check-style` / `verify-all`
 - [x] 发布 `2026.11.19-15`、重启、`[startup] 8/8`
+- [x] 真机验收：163 IMAP 无 `MOVE` → 补 UIDPLUS 安全兜底，发布 `2026.11.19-16`；审批缺失不动、`allowed-once` 后 uid 离开 INBOX
 - [x] 文档：`docs/09` J2、`docs/08` J2、`docs/16 §12.50`、`AGENTS.md` Slice BL
 - [x] 提交推送（ailearn）
