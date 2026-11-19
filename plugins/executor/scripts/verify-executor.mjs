@@ -246,6 +246,8 @@ await check('the asking attempt aborts its checkpoint and the prompt states the 
     && checkpoints[0].status === 'aborted'
     && prompt.includes('把报告写到指定目录')
     && prompt.includes('[[NEED_INPUT]]')
+    && prompt.includes('[[ATTACH]]')
+    && prompt.includes('交付约定')
 })
 
 // ---- Slice AS: produced files leave through [[ATTACH]] -----------------------

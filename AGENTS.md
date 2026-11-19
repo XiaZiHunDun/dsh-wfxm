@@ -437,6 +437,8 @@
     （仅 cwd 内、≤3、≤20MB）经 worker `onArtifacts` 由 host 入队 `task.artifact`。
     **真机验收（2026-11-19，`2026.11.19-2`）**：文件与截图均落盘并进入任务；文件用 `read`
     读出标记，截图被正确描述。同批修复 `readRoots` 未含 `attachments` 与未知大小误显示「0 字节」。
+    **执行产物真机（2026-11-19，`2026.11.19-5`）**：任务 `acex6akv3n` 的 `a4-report.txt`
+    经 `task.artifact` 以文件消息送达；同时补上提示词里的 `[[ATTACH]]` 交付约定。
   - **邮件（Slice AU / J1）**：新增 `@dsh-wfxm/mail`（`mail_search` / `mail_read` 两个 R0 只读工具，
     挂 headless profile；前台不挂）。后端是 `scripts/mail-query.py`（Python 标准库 `imaplib`），
     IMAP 只读、密码走 stdin；配置在 `~/.dsh/integrations/dsh-mail/config.json` + `secretRef`。

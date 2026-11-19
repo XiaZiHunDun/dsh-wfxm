@@ -151,6 +151,13 @@ const NEED_INPUT_INSTRUCTION = '【执行约定】如果缺少继续执行所必
  * from elsewhere on the host (the server is "全域" only for reading tools).
  */
 export const ATTACH_MARKER = '[[ATTACH]]'
+/**
+ * Keep the marker discoverable to the model. Without this line the parser only
+ * works in tests that inject the marker themselves (A4 real-run gap).
+ */
+const ATTACH_INSTRUCTION = '【交付约定】如果你在工作目录内生成了需要交付给用户的文件，'
+  + `请在最终答复的最后用 ${ATTACH_MARKER} <相对路径> 逐行标出（最多 3 个，必须在工作目录内）。`
+  + '不要把这个标记写进解释文字，也不要用它标注目录或不存在/超大的文件。'
 export const MAX_ATTACHMENTS = 3
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
@@ -262,7 +269,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
     // Slice AP: context is an appendix, so the intent always comes first.
     // Slice AR: the asking convention is the last block, never before the intent.
     const threadContext = task.threadContext?.trim() ?? ''
-    const prompt = `${intent}\n\n${threadContext.length === 0 ? '' : `${threadContext}\n\n`}${NEED_INPUT_INSTRUCTION}`
+    const prompt = `${intent}\n\n${threadContext.length === 0 ? '' : `${threadContext}\n\n`}${NEED_INPUT_INSTRUCTION}\n${ATTACH_INSTRUCTION}`
 
     let cwd: string
     if (options.workdirResolver !== undefined) {

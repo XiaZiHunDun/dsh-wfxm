@@ -1508,6 +1508,8 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 修复 `readRoots` 未含 `/var/lib/dsh-wfxm/attachments`（此前 `read` 被拦，模型改用 `cat`）
 - [x] 修复未知 `file_size` 显示「0 字节」：改用落盘实际字节数（`statSync`）
 - [x] `verify-feishu` 61 例、全量 `46 passed`；发布 `2026.11.19-2` 并重启
+- [x] 执行产物真机：任务 `acex6akv3n` 生成 `a4-report.txt`（28 B）→ `task.artifact` `sent`（`kind=file`）
+- [x] 修复执行器提示词未告知 `[[ATTACH]]` 约定（发布 `2026.11.19-5`）
 
 # Slice AT — 提醒（J5，2026-11-18，release `2026.11.18-9`）
 
