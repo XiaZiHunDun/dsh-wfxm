@@ -1121,6 +1121,7 @@ export async function ingestInbound(
           {
             taskId,
             actorId: resolved.actor.id,
+            ...followUp.projectId ? { domain: followUp.projectId } : {},
             reason: `anchored reply to a finished task (round ${followUp.round ?? '?'})`,
           },
         )

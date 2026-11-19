@@ -34,7 +34,7 @@ import {
   createLarkClient,
   loadFeishuCredentials,
 } from '@dsh-wfxm/feishu'
-import { createApprovalStore, createGrantStore } from '@dsh-wfxm/governance'
+import { createApprovalStore, createGrantStore, loadPolicy } from '@dsh-wfxm/governance'
 import { inboundText, redactedText, summarizeConversationDigest } from '@dsh-wfxm/gateway'
 import { createWfxmHost, createRuleForeground } from '@dsh-wfxm/host'
 import { createMemoryStore, createProjectLookupPort } from '@dsh-wfxm/knowledge'
@@ -239,6 +239,10 @@ async function main() {
           },
         })
         const systemd = createSystemdAdapter({ runner: spawnRunner })
+        // Slice AZ (AR37): the policy version in force at boot. Wake
+        // re-verification rejects grants issued under a different version.
+        const policyVersion = loadPolicy()?.version ?? null
+        log('policy', { version: policyVersion })
         // Slice S: deterministic read-only checks for the front desk's quick answers.
         const quickLogWindowMinutes = readInspectionConfig(process.env).thresholds.logWindowMinutes
         host = createWfxmHost({
@@ -251,6 +255,7 @@ async function main() {
           rollback: createPreimageRollbackPort(stores.snapshot),
           approvals: stores.approvals,
           grants: stores.grants,
+          policyVersion,
           reminders: stores.reminders,
           changes: stores.changes,
           // Startup recovery restores a `dir:` workspace snapshot before the

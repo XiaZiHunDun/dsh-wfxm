@@ -139,6 +139,10 @@ export function apply(ctx: ContextLike): void {
   ctx.logger?.info?.(`[governance] audit sink ready at ${dbPath}`)
   ctx.logger?.info?.('[governance] approval store ready')
 
+  // AR37: load before the admin routes so a grant minted without an explicit
+  // version stamps the policy version currently in force.
+  const policy = loadPolicy()
+
   // 任务级审批下沉到工具级闸门（2026-11-11）：
   // ⑤ 只在 claim 到 R2/R3 任务（即 ③ 已批准的）时给子进程注入
   // DSH_WFXM_APPROVED_LEVEL。子进程里的 `svc_*` 写操作可以对这次审批
@@ -162,6 +166,7 @@ export function apply(ctx: ContextLike): void {
   const adminRoutes = createGrantsAdminRoutes({
     grants,
     audit: store,
+    policyVersion: () => policy?.version ?? null,
     authorize: createBearerAuthorizer({
       token: process.env.DSH_WFXM_ADMIN_TOKEN ?? null,
     }),
@@ -200,7 +205,6 @@ export function apply(ctx: ContextLike): void {
   ctx.effect?.(() => () => approvals.close())
   ctx.effect?.(() => () => grants.close())
 
-  const policy = loadPolicy()
   if (policy === null) {
     ctx.logger?.warn?.(`[governance] no policy at ${policyPath()}; tool gating disabled`)
     return

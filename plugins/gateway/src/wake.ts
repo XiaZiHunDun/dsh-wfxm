@@ -15,7 +15,11 @@ export const WAKE_ACTION = 'task.wake'
 export interface GrantCheckPort {
   verify(input: {
     actorId: string
-    required: { actions: string[] }
+    /**
+     * AR37 scope: `domain` is the task's project when it has one. A grant whose
+     * `domains` are omitted stays unrestricted; one with domains must cover it.
+     */
+    required: { actions: string[]; domain?: string }
   }): { ok: boolean; reason?: string }
 }
 
@@ -46,6 +50,8 @@ export interface WakePorts {
 export interface WakeInput {
   taskId: string
   actorId: string
+  /** AR37 scope: the task's project (absent for project-less tasks). */
+  domain?: string
   reason?: string
 }
 
@@ -68,7 +74,10 @@ export function wakeTask(ports: WakePorts, input: WakeInput): WakeReport {
 
   const check = ports.grant.verify({
     actorId: input.actorId,
-    required: { actions: [WAKE_ACTION] },
+    required: {
+      actions: [WAKE_ACTION],
+      ...input.domain === undefined ? {} : { domain: input.domain },
+    },
   })
   if (!check.ok) {
     return {

@@ -166,6 +166,25 @@ await check('a path prefix covers children but not siblings', () => {
   return inside.ok === true && sibling.ok === false && sibling.reason === 'scope-mismatch'
 })
 
+await check('a project domain is part of the grant scope (AR37)', () => {
+  const scoped = store.create({
+    actorId: 'owner',
+    kind: 'forever',
+    scope: { actions: ['task.wake'], domains: ['proj_a'] },
+  })
+  const hit = store.verify({
+    actorId: 'owner',
+    grantId: scoped.id,
+    required: { actions: ['task.wake'], domain: 'proj_a' },
+  })
+  const miss = store.verify({
+    actorId: 'owner',
+    grantId: scoped.id,
+    required: { actions: ['task.wake'], domain: 'proj_b' },
+  })
+  return hit.ok === true && miss.ok === false && miss.reason === 'scope-mismatch'
+})
+
 await check('another actor cannot use the grant', () => {
   const result = store.verify({ actorId: 'intruder', grantId: session.id })
   return result.ok === false && result.reason === 'actor-mismatch'
@@ -182,6 +201,16 @@ await check('policy version drift is rejected (AR37)', () => {
   return drift.ok === false
     && drift.reason === 'policy-version-mismatch'
     && same.ok === true
+})
+
+await check('a grant without a recorded policy version fails a versioned re-check (AR37)', () => {
+  const unversioned = store.create({
+    actorId: 'owner',
+    kind: 'forever',
+    scope: { actions: ['task.wake'] },
+  })
+  const result = store.verify({ actorId: 'owner', grantId: unversioned.id, policyVersion: 3 })
+  return result.ok === false && result.reason === 'policy-version-mismatch'
 })
 
 await check('an expired grant is rejected, expiry is authoritative', () => {
@@ -252,6 +281,13 @@ await check('scan mode skips the revoked grant and finds another that covers the
   store.revoke(dead.id)
   const result = store.verify({ actorId: 'erin', required: { actions: ['tool.write'] } })
   return result.ok === true && result.grantId === live.id
+})
+
+await check('a revoked-only actor reports revoked instead of not-found (AR37)', () => {
+  const dead = store.create({ actorId: 'frank', kind: 'forever', scope: { actions: ['tool.write'] } })
+  store.revoke(dead.id)
+  const result = store.verify({ actorId: 'frank', required: { actions: ['tool.write'] } })
+  return result.ok === false && result.reason === 'revoked'
 })
 
 // ---- source linkage ---------------------------------------------------------
@@ -393,10 +429,10 @@ await check('AR37 E2E: after revoke the reply is unowned — no wake, no attach,
   relayCalls.length = 0
   const result = await replyAgain()
   const task = e2eTasks.getTask(e2eTask.id)
-  // Scan mode (no grantId) only looks at live grants, so a revoked one reads as
-  // `not-found` — either way ① must not wake and must not attach.
+  // AR37 diagnostics: scanning now reads revoked rows too, so the precise
+  // `revoked` reason is reported instead of a blanket `not-found`.
   return result.wake.granted === false
-    && result.wake.reason === 'not-found'
+    && result.wake.reason === 'revoked'
     && result.target.kind === 'orchestrator'
     && result.disposition === null
     && task.status === 'succeeded'

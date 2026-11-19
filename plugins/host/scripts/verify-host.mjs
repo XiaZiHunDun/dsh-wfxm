@@ -421,6 +421,57 @@ await check('a granted actor wakes the finished task into round 2 and queues the
     && task.intent.includes('开始第二轮')
 })
 
+await check('policy version drift blocks the wake and sends the reply back to the foreground', async () => {
+  const grants = createGrantStore(join(dir, 'grants-drift.sqlite'), { now })
+  const { host } = makeHost({ options: { grants, policyVersion: 2 } })
+  const { actor } = await pair(host)
+  const { result } = await say(host, '第一轮')
+  const taskId = result.foreground.taskId
+  await host.runWorkerOnce()
+  await host.pump()
+  const receiptMsgId = host.stores.tasks.listReceipts(taskId)[0].externalMsgId
+  grants.create({
+    actorId: actor.id,
+    scope: { actions: ['task.wake'] },
+    kind: 'forever',
+    policyVersion: 1,
+  })
+  const reply = await say(host, '版本漂移后不该唤醒', { replyToMsgId: receiptMsgId })
+  const task = host.stores.tasks.getTask(taskId)
+  const inputs = host.stores.tasks.pendingInputs(taskId)
+  host.close()
+  grants.close()
+  return reply.result.result.wake?.granted === false
+    && reply.result.result.wake?.reason === 'policy-version-mismatch'
+    && reply.result.result.wake?.woken === false
+    && reply.result.result.target.kind === 'orchestrator'
+    && task.status === 'succeeded'
+    && task.round === 1
+    && inputs.length === 0
+})
+
+await check('an unversioned grant cannot wake under a versioned policy', async () => {
+  const grants = createGrantStore(join(dir, 'grants-unversioned.sqlite'), { now })
+  const { host } = makeHost({ options: { grants, policyVersion: 3 } })
+  const { actor } = await pair(host)
+  const { result } = await say(host, '第一轮')
+  const taskId = result.foreground.taskId
+  await host.runWorkerOnce()
+  await host.pump()
+  const receiptMsgId = host.stores.tasks.listReceipts(taskId)[0].externalMsgId
+  grants.create({ actorId: actor.id, scope: { actions: ['task.wake'] }, kind: 'forever' })
+  const reply = await say(host, '没有版本号的授权不该唤醒', { replyToMsgId: receiptMsgId })
+  const task = host.stores.tasks.getTask(taskId)
+  const inputs = host.stores.tasks.pendingInputs(taskId)
+  host.close()
+  grants.close()
+  return reply.result.result.wake?.granted === false
+    && reply.result.result.wake?.reason === 'policy-version-mismatch'
+    && reply.result.result.target.kind === 'orchestrator'
+    && task.status === 'succeeded'
+    && inputs.length === 0
+})
+
 // ---- 控制命令 ------------------------------------------------------------------------
 
 await check('stop cancels the live task and writes a receipt', async () => {

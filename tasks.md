@@ -1641,3 +1641,15 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `build` / `--noEmit` / `check-style` / `verify-all 46 passed`
 - [x] 发布 `2026.11.18-12`、重启、勾选 checklist、提交推送
 - [x] 飞书真机验收（停 → 拦消息 → 恢复）；修复停止文件路径与 `status_all` 文案，发布 `2026.11.18-14`
+
+## AZ H6 / AR37 授权唤醒闭环
+
+- [x] ① `wake.ts` / `ingest.ts`：唤醒 scope 带 `domain = task.projectId`
+- [x] ③ `grants/store.ts`：扫描读该 actor 全部授权，撤销回报 `revoked`
+- [x] ③ `grants-admin.ts` / `index.ts`：发放省略 `policyVersion` 时落当前策略版本
+- [x] host `ports.ts` / `host.ts`：注入 `policyVersion`，复验透传 `domain`
+- [x] `serve.mjs`：启动读取 `policy.yaml` 版本并输出 `policy {"version":1}`
+- [x] `verify-grants`（30）/ `verify-grants-admin`（21）/ `verify-gateway`（124）/ `verify-host`（57）
+- [x] 门禁：`build` / `--noEmit` / `check-style 185 files` / `verify-all 46 passed`
+- [x] 发布 `2026.11.19-1`、重启、`[startup] 8/8`
+- [x] 文档：`docs/09 H6`、`docs/11 §九 AR37`、`docs/15 §三`、`AGENTS.md Slice AZ`

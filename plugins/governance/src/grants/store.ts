@@ -282,6 +282,13 @@ export function createGrantStore(dbPath: string, options: GrantStoreOptions = {}
      WHERE actor_id = ? AND revoked_at IS NULL AND consumed_at IS NULL
      ORDER BY granted_at DESC, rowid DESC
   `)
+  // AR37 diagnostics: scan every grant so a revoked/consumed-only actor reports
+  // the precise reason instead of a blanket `not-found`.
+  const selectByActor = db.prepare(`
+    SELECT * FROM grants
+     WHERE actor_id = ?
+     ORDER BY granted_at DESC, rowid DESC
+  `)
   const revokeStmt = db.prepare(
     'UPDATE grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL',
   )
@@ -342,7 +349,7 @@ export function createGrantStore(dbPath: string, options: GrantStoreOptions = {}
       if (row === undefined) return { ok: false, reason: 'not-found' }
       candidates = [toGrant(row)]
     } else {
-      const rows = selectLive.all(input.actorId) as GrantRow[]
+      const rows = selectByActor.all(input.actorId) as GrantRow[]
       candidates = rows.map(toGrant)
       if (candidates.length === 0) return { ok: false, reason: 'not-found' }
     }

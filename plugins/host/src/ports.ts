@@ -37,6 +37,11 @@ export interface HostPortDeps {
   approvals?: ApprovalStore | null
   /** Abort a live attempt before the task row is moved to `cancelled`. */
   cancelRunning?: (taskId: string) => boolean
+  /**
+   * AR37: policy version currently in force. When set, a wake re-verification
+   * rejects grants issued under another version (and unversioned grants).
+   */
+  policyVersion?: string | number | null
   /** Shared host clock; defaults to wall time. Tests pin it. */
   now?: () => Date
 }
@@ -132,9 +137,16 @@ export function createHostPorts(deps: HostPortDeps): HostPorts {
   const grantCheck: GrantCheckPort = {
     verify(input) {
       if (grants === null) return { ok: false, reason: NO_GRANT_REASON }
+      const required: { actions: string[]; domain?: string } = {
+        actions: input.required.actions.length === 0 ? [WAKE_ACTION] : input.required.actions,
+      }
+      if (input.required.domain !== undefined) required.domain = input.required.domain
       const result = grants.verify({
         actorId: input.actorId,
-        required: { actions: input.required.actions.length === 0 ? [WAKE_ACTION] : input.required.actions },
+        required,
+        ...deps.policyVersion === undefined || deps.policyVersion === null
+          ? {}
+          : { policyVersion: deps.policyVersion },
       })
       return { ok: result.ok, reason: result.reason }
     },

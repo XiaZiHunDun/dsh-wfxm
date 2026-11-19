@@ -1361,6 +1361,7 @@ await check('a re-verified reply wakes the finished task and queues the message'
     && wakeCalls[0].op === 'verify'
     && wakeCalls[0].actorId === anchorOwner.id
     && wakeCalls[0].required.actions.join() === 'task.wake'
+    && wakeCalls[0].required.domain === 'proj_alpha'
     && wakeCalls[1].op === 'wake'
     && wakeCalls[1].taskId === 'task_three'
     && relayCalls.some((call) => call.op === 'enqueue' && call.taskId === 'task_three')

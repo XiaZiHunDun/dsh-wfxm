@@ -459,6 +459,10 @@
     默认 `$DSH_WFXM_DATA_DIR/KILL`；工具调用即拒）、中止运行中尝试置 `paused`、停新任务与提醒；
     `全局恢复` 解除，跨重启保持。
     停止期间控制命令与 outbox 仍工作；不撤销 Grant、不自动重跑（[11 §5.3](docs/11-架构锚定.md)、[16 §12.40](docs/16-部署与运行.md)）。
+  - **授权唤醒闭环（Slice AZ / H6 / AR37）**：宿主编排注入当前 `policy.yaml` 版本，唤醒复验补齐
+    `policy_version` 与项目 `domain`；授权未记录版本或版本漂移一律 `policy-version-mismatch`（fail-closed）。
+    ③ 扫描模式改读该 actor 全部授权，撤销回报 `revoked`；管理面发放省略 `policyVersion` 时自动落当前版本。
+    验证：`verify-grants 30` / `verify-grants-admin 21` / `verify-gateway 124` / `verify-host 57`。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

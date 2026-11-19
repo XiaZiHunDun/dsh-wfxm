@@ -178,6 +178,8 @@ export interface WfxmHostOptions {
   foregroundFactory?: ((stores: { gateway: GatewayStore; tasks: TaskStore }) => ForegroundHandler) | null
   snapshot?: SnapshotPort | null
   grants?: GrantStore | null
+  /** AR37: current policy version; wake re-verification rejects drift. */
+  policyVersion?: string | number | null
   /** ③'s approval store; without it approval cards cannot be issued or answered. */
   approvals?: ApprovalStore | null
   /** Slice AT (J5): reminders store; absent means the front desk cannot set reminders. */
@@ -279,6 +281,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   const ports = createHostPorts({
     tasks,
     grants: options.grants ?? null,
+    policyVersion: options.policyVersion ?? null,
     approvals,
     project: options.project ?? null,
     rollback: options.rollback ?? null,

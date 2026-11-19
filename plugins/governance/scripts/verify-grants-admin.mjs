@@ -79,6 +79,7 @@ async function startServer(routes) {
 const primary = await startServer(createGrantsAdminRoutes({
   grants,
   audit,
+  policyVersion: () => 'policy-9',
   authorize: createBearerAuthorizer({ token }),
 }))
 const base = primary.base
@@ -227,6 +228,15 @@ await check('the list filters by actor and can include revoked rows', async () =
     && scoped.body.grants.length === 1
     && scoped.body.grants[0].actorId === 'actor-2'
     && all.body.grants.length === 2
+})
+
+await check('a grant without an explicit policy version stamps the current one (AR37)', async () => {
+  const { response, body } = await postJson(GRANTS_ADMIN_PATH, {
+    actorId: 'actor-stamp',
+    kind: 'session',
+    scope: { actions: ['task.wake'] },
+  }, { [ADMIN_HEADER]: '1' })
+  return response.status === 201 && body.grant.policyVersion === 'policy-9'
 })
 
 await check('revoking one grant stamps revokedAt and audits it', async () => {

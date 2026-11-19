@@ -49,6 +49,11 @@ export interface GrantsAdminDeps {
   authorize?: AdminAuthorizer | null
   /** ④ 的 append；缺省只做动作不记审计（宿主应始终注入）。 */
   audit?: AuditSink | null
+  /**
+   * AR37: current policy version used to stamp grants that omit one. Without
+   * it an unversioned grant cannot be re-verified once a policy exists.
+   */
+  policyVersion?: () => string | number | null
   now?: () => Date
 }
 
@@ -349,6 +354,11 @@ export function createGrantsAdminRoutes(deps: GrantsAdminDeps): AdminRoute[] {
     }
 
     try {
+      // AR37: stamp the policy version in force when the operator did not name
+      // one, so new grants stay re-verifiable after a policy bump.
+      const resolvedPolicyVersion = parsed.policyVersion === undefined
+        ? deps.policyVersion?.() ?? null
+        : parsed.policyVersion
       const grant = grants.create({
         actorId: parsed.actorId.trim(),
         scope,
@@ -357,9 +367,9 @@ export function createGrantsAdminRoutes(deps: GrantsAdminDeps): AdminRoute[] {
           ? { sourceApprovalId: parsed.sourceApprovalId }
           : {},
         ...expiresAt === undefined ? {} : { expiresAt: expiresAt as string | null },
-        ...parsed.policyVersion === undefined
+        ...parsed.policyVersion === undefined && resolvedPolicyVersion === null
           ? {}
-          : { policyVersion: parsed.policyVersion as string | number | null },
+          : { policyVersion: resolvedPolicyVersion as string | number | null },
       })
       if (!record(admin, 'grant.create', grant.id, {
         actorId: grant.actorId,
