@@ -513,6 +513,9 @@
     分别保留明确提示，消息不丢（AR13）。配置用 `DSH_WFXM_ASR_BASE_URL` +
     `DSH_WFXM_ASR_API_KEY_FILE`（密钥只放文件）；不配置则保持原提示。`verify-feishu 65` /
     `verify-serve 14`（[16 §12.48](docs/16-部署与运行.md)）。**边界**：不做转码、不处理微信语音。
+  - **A8 零后端决策（Slice BJ）**：飞书客户端「转文字」不通过事件暴露（只有 `file_key` + `duration`），
+    飞书服务端 ASR 免费版不支持且需 PCM 转码。因此默认不接 ASR：语音消息保留，回复引导
+    「手机输入法语音输入」或「长按语音转文字」；ASR seam 仅作可选增强。`verify-feishu 65`。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

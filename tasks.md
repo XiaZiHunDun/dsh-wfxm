@@ -1887,3 +1887,19 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `docs/16 §12.48`
 - [x] `AGENTS.md` Slice BI
 - [x] `tasks.md` 本切片
+
+# Slice BJ — A8 零后端语音引导（2026-11-19，release `2026.11.19-13`）
+
+## BJ1 决策与文案
+
+- [x] 确认飞书客户端转文字不通过事件暴露（仅 `file_key` + `duration`）
+- [x] 确认飞书服务端 ASR 免费版不支持、需 PCM 转码，不作默认路径
+- [x] 未配置/转写为空/转写失败统一引导：手机输入法语音输入，或长按语音「转文字」
+- [x] 本地路径只留在 `attachments` JSON，不在回复里刷屏
+
+## BJ2 用例与发布
+
+- [x] `verify-feishu` 65 例通过
+- [x] 发布 `2026.11.19-13`、重启、`[startup] 8/8`
+- [x] `docs/09` A8 / `docs/14 §3.1` / `docs/16 §12.48` / `AGENTS.md` 对齐
+- [x] 提交推送（ailearn）

@@ -70,6 +70,14 @@ const DEFAULT_NAME: Record<InboundAttachment['kind'], string> = {
 /** Keep a runaway transcript from bloating the inbox row. */
 const MAX_TRANSCRIPT_CHARS = 10_000
 
+/**
+ * A8 v1 (Slice BJ): zero-backend path. Feishu client-side transcription is not
+ * exposed to bots, so when ASR is off/failed we point the user at the two
+ * working mobile flows instead of asking them to provide an ASR model.
+ */
+const VOICE_FALLBACK_HINT = '请用手机输入法的语音输入发文字，'
+  + '或在飞书长按这条语音选「转文字」后把文字发给我。'
+
 /** Basename only, no control characters, no traversal, bounded length. */
 export function safeAttachmentName(
   name: string | null,
@@ -107,11 +115,13 @@ function noteOf(item: StagedAttachment, sizeBytes: number | null): string {
       if (item.transcription === 'ok' && item.transcript !== null && item.transcript !== '') {
         return `[语音转写] ${item.transcript}`
       }
-      if (item.transcription === 'empty' || item.transcription === 'failed') {
-        return `[语音附件] ${item.transcription === 'empty' ? '转写为空' : '转写失败'}，`
-          + `请补充文字说明要办的事（本地路径：${item.path}）`
+      if (item.transcription === 'empty') {
+        return `[语音附件] 这句没转写出来。${VOICE_FALLBACK_HINT}`
       }
-      return `[语音附件] 本地路径：${item.path}（本机未启用语音转写，请补充文字说明要办的事）`
+      if (item.transcription === 'failed') {
+        return `[语音附件] 语音转写失败。${VOICE_FALLBACK_HINT}`
+      }
+      return `[语音附件] 我暂时不能直接听语音。${VOICE_FALLBACK_HINT}`
     case 'video':
       return `[视频附件] ${item.name}，本地路径：${item.path}`
   }

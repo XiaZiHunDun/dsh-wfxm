@@ -1204,11 +1204,15 @@ await check('BI voice 2: empty/failed/disabled keep the message and explain', as
   const empty = await run('om_v2', async () => ({ text: '   ' }))
   const failed = await run('om_v3', async () => { throw new Error('boom') })
   const disabled = await run('om_v4', undefined)
-  return empty.text.includes('转写为空')
+  return empty.text.includes('没转写出来')
+    && empty.text.includes('输入法')
+    && empty.text.includes('转文字')
     && empty.attachments[0].transcription === 'empty'
     && failed.text.includes('转写失败')
+    && failed.text.includes('输入法')
     && failed.attachments[0].transcription === 'failed'
-    && disabled.text.includes('未启用语音转写')
+    && disabled.text.includes('暂时不能直接听语音')
+    && disabled.text.includes('转文字')
     && disabled.attachments[0].transcription === 'disabled'
 })
 
