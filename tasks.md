@@ -1952,4 +1952,4 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 四门禁：`build` / `--noEmit` / `check-style` / `verify-all`
 - [x] 发布 `2026.11.19-15`、重启、`[startup] 8/8`
 - [x] 文档：`docs/09` J2、`docs/08` J2、`docs/16 §12.50`、`AGENTS.md` Slice BL
-- [ ] 提交推送（ailearn）
+- [x] 提交推送（ailearn）
