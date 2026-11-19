@@ -44,7 +44,7 @@ import {
   summarizeConversationDigest,
 } from '@dsh-wfxm/gateway'
 import { createWfxmHost, createRuleForeground } from '@dsh-wfxm/host'
-import { parseDigestEnv } from '@dsh-wfxm/mail'
+import { countMailFolder, parseDigestEnv, readArchiveFolder, readMailAccount } from '@dsh-wfxm/mail'
 import { createMemoryStore, createProjectLookupPort } from '@dsh-wfxm/knowledge'
 import { createReminderPort, createReminderStore } from '@dsh-wfxm/reminder'
 import {
@@ -322,6 +322,20 @@ async function main() {
                   }
                 } catch {
                   return { activeState: 'unknown', activeEnteredAtMs: null }
+                }
+              },
+              // `mail_archived` 的只读探针（Slice BM）：只 SELECT 归档夹取
+              // EXISTS 计数，不读正文、不移动。邮箱未配置或 IMAP 失败返回
+              // null → 断言 skipped → 完成被拒（fail-closed）。
+              mailFolderCount: async (folder) => {
+                const account = readMailAccount()
+                if (!account.ok) return null
+                const target = folder ?? readArchiveFolder()
+                try {
+                  const result = await countMailFolder({ folder: target }, { account: account.account })
+                  return { folder: result.folder, count: result.count }
+                } catch {
+                  return null
                 }
               },
             },

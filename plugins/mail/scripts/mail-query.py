@@ -9,6 +9,7 @@
   {"action":"search","account":{host,port,secure,user,password},"request":{...}}
   {"action":"read","account":{...},"request":{"uid":123,"maxChars":4000}}
   {"action":"archive","account":{...},"request":{"uids":[1,2],"folder":"Archive"}}
+  {"action":"count","account":{...},"request":{"folder":"Archive"}}
   {"action":"self-test"}
 """
 
@@ -397,6 +398,20 @@ def archive_mail(imap, request: dict) -> dict:
     return {"folder": folder, "moved": len(uids), "uids": uids}
 
 
+def count_mail(imap, request: dict) -> dict:
+    """只读选区并返回 EXISTS 计数，用作 `mail_archived` 判据的探针。"""
+    folder = str(request.get("folder") or DEFAULT_ARCHIVE_FOLDER)
+    quoted = quote_mailbox(encode_mailbox(folder))
+    typ, data = imap.select(quoted, readonly=True)
+    if typ != "OK":
+        raise MailError("protocol", f"cannot open folder {folder!r}: {data!r}")
+    try:
+        count = int(data[0])
+    except (TypeError, ValueError, IndexError):
+        count = 0
+    return {"folder": folder, "count": count}
+
+
 def send_client_id(imap) -> None:
     """163/126 要求客户端先发 IMAP ID，否则 SELECT 返回 Unsafe Login。
 
@@ -516,7 +531,7 @@ def main() -> int:
     action = payload.get("action")
     if action == "self-test":
         return self_test()
-    if action not in ("search", "read", "archive"):
+    if action not in ("search", "read", "archive", "count"):
         return emit_error("protocol", f"unknown action {action!r}")
 
     imap = None
@@ -527,6 +542,8 @@ def main() -> int:
             result = search_mail(imap, request)
         elif action == "read":
             result = read_mail(imap, request)
+        elif action == "count":
+            result = count_mail(imap, request)
         else:
             result = archive_mail(imap, request)
         print(json.dumps({"ok": True, **result}, ensure_ascii=False))

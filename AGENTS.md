@@ -527,6 +527,13 @@
     UID EXPUNGE <uid>`（163 实测无 `MOVE`；作用域仅限本次 uid，不用全量 `EXPUNGE`）。归档夹默认 `Archive`，
     `DSH_WFXM_MAIL_ARCHIVE_FOLDER` 覆盖（非 ASCII 用 modified UTF-7）。③ 审批桥在已批准 R2/R3
     任务里也放行 `mail_archive`。`verify-mail 38` / `verify-approval-bridge 9`（[16 §12.50](docs/16-部署与运行.md)）。
+  - **J2 归档 R2 接线（Slice BM）**：`planTaskRisk` 的 `isMailArchiveIntent` 认「邮件词 + 归档词 + 操作句式」
+    （含 `uid N`，排除「查看归档邮件 / 归档夹」等只读），命中即升 `R2` + `mail-archived` reason，
+    自动附新判据 `mail_archived`（第 8 种；`VerifyContext.mailFolderCount` 只读 SELECT 归档夹取 EXISTS，
+    `count ≥ minCount` pass、探不到 skipped → 完成被拒）；与「绝对路径写入」规则**叠加**时两条断言都保留。
+    邮件插件新增只读 `action='count'`，`serve.mjs` 注入 `verify.mailFolderCount`（未配置 → 不注入），
+    tasks 迁移 v10 放宽 `task_assertions.kind`。**边界**：v1 只复核「归档夹可读且非空」，不逐 uid 溯源。
+    `verify-risk 16` / `verify-tasks 119` / `verify-mail 39`（[16 §12.51](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

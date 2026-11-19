@@ -10,6 +10,7 @@ export {
 export {
   MailError,
   archiveMail,
+  countMailFolder,
   queryMail,
   readMail,
   searchMail,
@@ -19,6 +20,8 @@ export type {
   MailArchiveResult,
   MailAttachmentInfo,
   MailErrorCode,
+  MailFolderCountRequest,
+  MailFolderCountResult,
   MailMessageSummary,
   MailReadRequest,
   MailReadResult,

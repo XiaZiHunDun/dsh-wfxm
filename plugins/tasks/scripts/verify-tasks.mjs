@@ -117,7 +117,7 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     && names.includes('task_inputs')
     && names.includes('task_checkpoints')
     && names.includes('resource_locks')
-    && version.version === 9
+    && version.version === 10
     && ['input_tokens', 'output_tokens', 'cost_usd'].every((column) => columns.includes(column))
     && objects.includes('ux_task_events_seq')
     && objects.includes('task_events_no_update')
@@ -200,7 +200,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     && keptTask.taskRef === null
     && fresh.taskRef !== null
     && fresh.taskRef.length === 10
-    && version.version === 9
+    && version.version === 10
     && keptTask.isolation === 'serial'
     && fresh.isolation === 'serial'
     && fresh.worktreePath === null
@@ -342,6 +342,40 @@ await check('credentials embedded in a URL are rejected', () => {
     (error) => error instanceof TaskError && error.code === 'invalid-assertion',
   )
   return true
+})
+
+await check('mail_archived accepts defaults and a folder, rejects bad minCount/control chars', () => {
+  const defaults = prepareAssertions([{ kind: 'mail_archived' }])
+  const folder = prepareAssertions([{ kind: 'mail_archived', folder: '已归档', minCount: 3 }])
+  let badCount = false
+  let badFolder = false
+  try {
+    prepareAssertions([{ kind: 'mail_archived', minCount: 0 }])
+  } catch {
+    badCount = true
+  }
+  try {
+    prepareAssertions([{ kind: 'mail_archived', folder: 'a\u0001b' }])
+  } catch {
+    badFolder = true
+  }
+  return defaults.length === 1
+    && defaults[0].kind === 'mail_archived'
+    && defaults[0].spec.minCount === 1
+    && defaults[0].spec.folder === undefined
+    && folder[0].spec.folder === '已归档'
+    && folder[0].spec.minCount === 3
+    && badCount
+    && badFolder
+})
+
+await check('mail_archived survives the v10 CHECK constraint on a real row', () => {
+  const task = store.createTask({ intent: 'mail archive row', riskLevel: 'R2' })
+  for (const prepared of prepareAssertions([{ kind: 'mail_archived' }])) {
+    store.addAssertion(task.id, prepared)
+  }
+  const row = store.listAssertions(task.id)[0]
+  return row.kind === 'mail_archived' && row.status === 'pending'
 })
 
 await check('duplicate assertions are rejected', () => {
@@ -1667,6 +1701,75 @@ await check('R2 without assertions can no longer reach succeeded', async () => {
   return report.outcome === 'failed'
     && row.status === 'failed'
     && failedEvent?.payload.reason === 'criteria-required'
+})
+
+await check('mail_archived passes/fails/skips on the read-only Mail probe', async () => {
+  const pass = await evaluateAssertion(
+    { kind: 'mail_archived', spec: { minCount: 1 } },
+    { mailFolderCount: async () => ({ folder: 'Archive', count: 2 }) },
+  )
+  const empty = await evaluateAssertion(
+    { kind: 'mail_archived', spec: { minCount: 1 } },
+    { mailFolderCount: async () => ({ folder: 'Archive', count: 0 }) },
+  )
+  const unavailable = await evaluateAssertion(
+    { kind: 'mail_archived', spec: { folder: 'Archive', minCount: 1 } },
+    { mailFolderCount: async () => null },
+  )
+  const noAdapter = await evaluateAssertion({ kind: 'mail_archived', spec: { minCount: 1 } })
+  const seen = []
+  await evaluateAssertion(
+    { kind: 'mail_archived', spec: { folder: '已归档', minCount: 1 } },
+    { mailFolderCount: async (folder) => { seen.push(folder); return { folder, count: 1 } } },
+  )
+  return pass.status === 'pass'
+    && pass.evidence.observed === 2
+    && empty.status === 'fail'
+    && unavailable.status === 'skipped'
+    && unavailable.evidence.transient === true
+    && noAdapter.status === 'skipped'
+    && seen[0] === '已归档'
+})
+
+await check('R2 mail archive completes only when the Mail probe is mounted', async () => {
+  const archiveStore = createTaskStore(join(dir, 'verifier-mail.sqlite'))
+  const task = archiveStore.createTask({ intent: 'archive mail', riskLevel: 'R2' })
+  for (const prepared of prepareAssertions([{ kind: 'mail_archived' }])) {
+    archiveStore.addAssertion(task.id, prepared)
+  }
+  const worker = createTaskWorker({
+    store: archiveStore,
+    owner: 'worker-A',
+    leaseMs: 1_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    verify: { mailFolderCount: async () => ({ folder: 'Archive', count: 3 }) },
+    execute: () => ({ status: 'succeeded', summary: 'archived 1 mail' }),
+  })
+  const report = await worker.runOnce()
+  const row = archiveStore.getTask(task.id)
+
+  const bareStore = createTaskStore(join(dir, 'verifier-mail-bare.sqlite'))
+  const bare = bareStore.createTask({ intent: 'archive mail', riskLevel: 'R2' })
+  for (const prepared of prepareAssertions([{ kind: 'mail_archived' }])) {
+    bareStore.addAssertion(bare.id, prepared)
+  }
+  const bareWorker = createTaskWorker({
+    store: bareStore,
+    owner: 'worker-A',
+    leaseMs: 1_000,
+    heartbeatMs: 60_000,
+    now: workerNow,
+    execute: () => ({ status: 'succeeded', summary: 'archived 1 mail' }),
+  })
+  const bareReport = await bareWorker.runOnce()
+  const bareRow = bareStore.getTask(bare.id)
+  archiveStore.close()
+  bareStore.close()
+  return report.outcome === 'succeeded'
+    && row.status === 'succeeded'
+    && bareReport.outcome === 'failed'
+    && bareRow.status === 'failed'
 })
 
 await check('expired leases are reclaimed: requeue while attempts remain, fail with receipt when exhausted', () => {

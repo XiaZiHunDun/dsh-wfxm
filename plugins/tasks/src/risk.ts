@@ -10,6 +10,9 @@
  * v1 template: restart/start of a managed systemd unit → R3 + `unit_restarted`
  * (proof the restart happened) + `service_active` (proof it is healthy now).
  * v2 template: writing to an explicit absolute file → R2 + `file_exists`.
+ * v3 template: archiving mail → R2 + `mail_archived` (the archive folder is
+ * readable and non-empty). Matching templates stack: a combined intent keeps
+ * both assertions instead of silently dropping one.
  * Anything without a derivable assertion stays at its baseline risk, so the
  * "no criteria, no R2+" invariant is never bypassed.
  */
@@ -82,6 +85,31 @@ export function writtenFileFor(intent: string): string | null {
   return hit === null ? null : hit[1]
 }
 
+/** Mail nouns, plus an explicit uid — "归档 uid 123" names a mail target. */
+const MAIL_TARGET = '(?:邮件|收件箱|邮箱|inbox|e-?mail|\\bmail\\b|uid\\s*\\d+)'
+const MAIL_TOKEN = new RegExp(MAIL_TARGET, 'i')
+const ARCHIVE_TOKEN = /(归档|存档|\barchive\b)/i
+/**
+ * Read-only requests about the archive folder are not operations:
+ * 「查看归档邮件」「归档邮件里有什么」「归档夹里还有几封」.
+ */
+const MAIL_ARCHIVE_READ =
+  /(?:查看|看看|看一下|列出|显示|搜索|查找|找出|有哪些|多少|几封|状态|历史)[^。；;，,]{0,10}(?:归档|存档|archive)|(?:归档|存档|archive)(?:的|过)?\s*(?:邮件|邮件夹|邮箱)\s*(?:里|中|的)|(?:归档|存档)\s*(?:夹|箱)/i
+/** Operation shapes: 归档…邮件 / 把…邮件…归档 / 邮件…归档 / archive the mail. */
+const MAIL_ARCHIVE_OP: readonly RegExp[] = [
+  new RegExp(`(?:归档|存档)\\s*(?:一下|一遍|这些|那几|这|那)?\\s*[^。；;，,]{0,12}?${MAIL_TARGET}`, 'i'),
+  new RegExp(`(?:把|将)[^。；;，,]{0,30}?${MAIL_TARGET}[^。；;，,]{0,20}?(?:归档|存档)`, 'i'),
+  new RegExp(`${MAIL_TARGET}[^。；;，,]{0,12}?(?:归档|存档)`, 'i'),
+  /\barchive\b[^.;,]{0,30}\b(?:mail|email|inbox)\b/i,
+]
+
+/** Is this intent an archive operation (not a question about the archive)? */
+export function isMailArchiveIntent(intent: string): boolean {
+  if (!MAIL_TOKEN.test(intent) || !ARCHIVE_TOKEN.test(intent)) return false
+  if (MAIL_ARCHIVE_READ.test(intent)) return false
+  return MAIL_ARCHIVE_OP.some((pattern) => pattern.test(intent))
+}
+
 /**
  * Raise a baseline R0/R1 task when the intent is a state-changing service
  * operation that has a template assertion. `stop` is intentionally absent:
@@ -105,13 +133,20 @@ export function planTaskRisk(intent: string, baseline: RiskLevel): RiskPlan {
     }
   }
 
+  const archive = isMailArchiveIntent(intent)
   const file = writtenFileFor(intent)
-  if (file !== null) {
-    return {
-      risk: 'R2',
-      reasons: [`file-write:${file}`],
-      assertions: prepareAssertions([{ kind: 'file_exists', path: file }]),
-    }
+  if (archive || file !== null) {
+    // Templates stack: a combined "archive the mail and write a report to
+    // /abs/path.txt" intent must keep both proofs, not silently drop one.
+    const reasons = [
+      ...(archive ? ['mail-archive'] : []),
+      ...(file === null ? [] : [`file-write:${file}`]),
+    ]
+    const raw: unknown[] = [
+      ...(archive ? [{ kind: 'mail_archived' }] : []),
+      ...(file === null ? [] : [{ kind: 'file_exists', path: file }]),
+    ]
+    return { risk: 'R2', reasons, assertions: prepareAssertions(raw) }
   }
   return { risk: baseline, reasons: [], assertions: [] }
 }

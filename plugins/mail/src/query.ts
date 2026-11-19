@@ -86,6 +86,17 @@ export interface MailArchiveResult {
   uids: number[]
 }
 
+export interface MailFolderCountRequest {
+  /** 目标夹；省略时由 Python 侧回落 `Archive`。 */
+  folder?: string
+}
+
+export interface MailFolderCountResult {
+  folder: string
+  /** 该夹的消息数（SELECT 的 EXISTS）。 */
+  count: number
+}
+
 export interface QueryMailOptions {
   account: MailAccount
   /** 默认 `python3`（可用 `DSH_WFXM_PYTHON` 覆盖）。 */
@@ -178,8 +189,8 @@ function runScript(
 }
 
 export async function queryMail(
-  request: MailSearchRequest | MailReadRequest | MailArchiveRequest,
-  options: QueryMailOptions & { action: 'search' | 'read' | 'archive' },
+  request: MailSearchRequest | MailReadRequest | MailArchiveRequest | MailFolderCountRequest,
+  options: QueryMailOptions & { action: 'search' | 'read' | 'archive' | 'count' },
 ): Promise<Record<string, unknown>> {
   return runScript({ action: options.action, account: options.account, request }, options)
 }
@@ -207,6 +218,17 @@ export async function archiveMail(
     folder: String(result.folder ?? request.folder),
     moved: Number(result.moved ?? 0),
     uids: Array.isArray(result.uids) ? result.uids as number[] : [],
+  }
+}
+
+export async function countMailFolder(
+  request: MailFolderCountRequest,
+  options: QueryMailOptions,
+): Promise<MailFolderCountResult> {
+  const result = await queryMail(request, { ...options, action: 'count' })
+  return {
+    folder: String(result.folder ?? request.folder ?? ''),
+    count: Number(result.count ?? 0),
   }
 }
 

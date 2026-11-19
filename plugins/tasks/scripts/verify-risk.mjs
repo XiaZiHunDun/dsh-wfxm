@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict'
 
-const { managedUnitFor, planTaskRisk } = await import('../lib/index.js')
+const { isMailArchiveIntent, managedUnitFor, planTaskRisk } = await import('../lib/index.js')
 
 let pass = 0
 let fail = 0
@@ -90,6 +90,38 @@ check('基线已是 R2/R3 时只透传，不重复加断言', () => {
 
 check('规则层只升不降：R0 的真实服务操作也会升到 R3', () => {
   return planTaskRisk('重启 demo 服务', 'R0').risk === 'R3'
+})
+
+check('「把这两封邮件归档」升 R2，并带 mail_archived（folder 省略=适配器默认）', () => {
+  const plan = planTaskRisk('把这两封邮件归档一下', 'R1')
+  assert.equal(plan.risk, 'R2')
+  assert.deepEqual(plan.reasons, ['mail-archive'])
+  assert.equal(plan.assertions.length, 1)
+  assert.equal(plan.assertions[0].kind, 'mail_archived')
+  assert.equal(plan.assertions[0].spec.minCount, 1)
+  assert.equal(plan.assertions[0].spec.folder, undefined)
+  return true
+})
+
+check('「归档 uid 1411137890」也识别为归档操作', () => {
+  return planTaskRisk('归档 uid 1411137890', 'R1').risk === 'R2'
+})
+
+check('只读句式不升级：查看归档邮件 / 归档邮件里有什么 / 归档夹', () => {
+  for (const text of ['查看归档邮件', '归档邮件里有什么', '归档夹里还有几封', '看看归档邮件']) {
+    assert.equal(planTaskRisk(text, 'R1').risk, 'R1', text)
+    assert.equal(isMailArchiveIntent(text), false, text)
+  }
+  return true
+})
+
+check('规则叠加：归档 + 写绝对路径同时保留两条断言', () => {
+  const plan = planTaskRisk('把邮件归档，并把结果写入 /var/lib/dsh-wfxm/workspace/report.txt', 'R1')
+  assert.equal(plan.risk, 'R2')
+  assert.deepEqual(plan.reasons.sort(), ['file-write:/var/lib/dsh-wfxm/workspace/report.txt', 'mail-archive'])
+  const kinds = plan.assertions.map((item) => item.kind).sort()
+  assert.deepEqual(kinds, ['file_exists', 'mail_archived'])
+  return true
 })
 
 check('managedUnitFor 只认托管前缀', () => {

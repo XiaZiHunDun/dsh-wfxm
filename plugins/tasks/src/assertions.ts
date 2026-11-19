@@ -1,7 +1,7 @@
 /**
  * Assertion DSL and static validation (17 §8.1 / §8.4).
  *
- * Seven kinds, parameters only. Every model-generated assertion must pass this
+ * Eight kinds, parameters only. Every model-generated assertion must pass this
  * whitelist before it can reach `task_assertions`; adding a kind means changing
  * both docs/15's CHECK constraint and this file (17 §8.1).
  */
@@ -192,6 +192,19 @@ export function prepareAssertion(
       const selector = text(raw.selector, 'page_contains.selector', MAX_SHORT_TEXT)
       const expect = text(raw.expect, 'page_contains.expect', MAX_SHORT_TEXT)
       return { kind: 'page_contains', spec: { url: parsed.toString(), selector, expect } }
+    }
+    case 'mail_archived': {
+      // `folder` omitted means "the mail adapter's configured default"
+      // (DSH_WFXM_MAIL_ARCHIVE_FOLDER, else Archive); the rule layer must not
+      // import the mail package just to read that default.
+      const folder = raw.folder === undefined ? undefined : text(raw.folder, 'mail_archived.folder', MAX_SHORT_TEXT)
+      const minCount = raw.minCount === undefined ? 1 : raw.minCount
+      if (typeof minCount !== 'number' || !Number.isInteger(minCount) || minCount < 1 || minCount > 10_000) {
+        invalid('mail_archived.minCount must be an integer in 1..10000')
+      }
+      const spec: JsonObject = { minCount }
+      if (folder !== undefined) spec.folder = folder
+      return { kind: 'mail_archived', spec }
     }
   }
   return invalid('unreachable assertion kind')

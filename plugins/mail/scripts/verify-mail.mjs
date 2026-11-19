@@ -16,6 +16,7 @@ import {
   MailError,
   archiveMail,
   buildMailDigest,
+  countMailFolder,
   classifyMail,
   digestDue,
   isIsoDate,
@@ -516,6 +517,21 @@ process.stdin.on('end', () => {
 `)
   const result = await archiveMail({ uids: [3, 4], folder: 'Archive/2026' }, { ...queryOptions, scriptPath: script })
   return result.folder === 'Archive/2026' && result.moved === 2 && result.uids.join() === '3,4'
+})
+
+await check('count sends action=count and parses folder/count', async () => {
+  const script = join(dir, 'count-fake.mjs')
+  writeFileSync(script, `
+let input = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => { input += chunk })
+process.stdin.on('end', () => {
+  const payload = JSON.parse(input)
+  console.log(JSON.stringify({ ok: true, action: payload.action, folder: payload.request.folder, count: 7 }))
+})
+`)
+  const result = await countMailFolder({ folder: '已归档' }, { ...queryOptions, scriptPath: script })
+  return result.folder === '已归档' && result.count === 7
 })
 
 await check('archive with no matches does not ask for approval or write', async () => {

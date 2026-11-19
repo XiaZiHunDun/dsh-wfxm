@@ -1955,3 +1955,37 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 飞书审批卡点击链路：组合指令进入 R2（写绝对路径），单击批准后任务 `dqggzcmayg` `succeeded`；卡片/更新/回执均 `sent`，INBOX 39→38、Archive 2 封、标记文件 `done`
 - [x] 文档：`docs/09` J2、`docs/08` J2、`docs/16 §12.50`、`AGENTS.md` Slice BL
 - [x] 提交推送（ailearn）
+
+# Slice BM — J2 归档 R2 接线（2026-11-19）
+
+## BM1 规则层升 R2
+
+- [x] `plugins/tasks/src/risk.ts`：`isMailArchiveIntent`（邮件词 + 归档词 + 操作句式，排除只读/归档夹）
+- [x] 命中升 `R2`，reason `mail-archive`，附模板断言 `{kind:'mail_archived', spec:{}}`
+- [x] 与「绝对路径写入」规则叠加：reasons / assertions 合并，单规则行为不变
+- [x] `plugins/tasks/src/index.ts`：导出 `isMailArchiveIntent` 与 `PreparedAssertion` 已有出口
+
+## BM2 判据 `mail_archived`
+
+- [x] `model.ts`：`AssertionKind` / `ASSERTION_KINDS` 增 `mail_archived`
+- [x] `assertions.ts`：`folder?`（≤200、无控制字符）、`minCount?`（1..10000，默认 1）校验
+- [x] `verify.ts`：`VerifyContext.mailFolderCount`；`skipped / pass / fail` 三分支与 evidence
+- [x] `store.ts`：迁移 v10 重建 `task_assertions`，CHECK 增 `mail_archived`
+
+## BM3 邮件只读探测
+
+- [x] `plugins/mail/src/query.ts`：`countMailFolder({folder?}, options)`，`action:'count'`
+- [x] `plugins/mail/scripts/mail-query.py`：`count` action（`readonly=True` SELECT + EXISTS 计数，modified UTF-7）
+- [x] `plugins/mail/src/index.ts`：导出 `countMailFolder` / 类型
+- [x] `scripts/serve.mjs`：`verify.mailFolderCount`（`readMailAccount` + `readArchiveFolder`；未配置 → null）
+
+## BM4 用例、文档与验收
+
+- [x] `verify-risk`：归档 → R2 + `mail_archived`；只读句式保持 baseline；叠加规则两条断言
+- [x] `verify-tasks`：`mail_archived` 校验、pass/fail/skipped、R2 完成门槛、迁移后写入
+- [x] `verify-mail`：`countMailFolder` 请求/解析
+- [x] 四门禁：`build` / `--noEmit` / `check-style` / `verify-all`
+- [x] 文档：`docs/17 §8.1/§8.3`、`docs/09` J2、`docs/16 §12.51`、`AGENTS.md` Slice BM
+- [x] 发布并重启（`[startup] 8/8`）
+- [x] 真机（owner 点击）：飞书「把邮件 uid <uid> 归档」→ R2 卡 → 批准 → 回执 + `mail_archived=pass`
+- [x] 提交推送（ailearn）

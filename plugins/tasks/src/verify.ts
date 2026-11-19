@@ -46,6 +46,13 @@ export interface VerifyContext {
   }>
   /** Filled by `verifyTask` from `task.startedAt`; baseline for `unit_restarted`. */
   taskStartedAt?: string | null
+  /**
+   * Adapter hook for `mail_archived` (Mail): read-only SELECT of the archive
+   * folder and its EXISTS count. `folder` null means the adapter's default
+   * (`DSH_WFXM_MAIL_ARCHIVE_FOLDER`, else Archive). Returning null = the probe
+   * could not decide (unconfigured account, IMAP error).
+   */
+  mailFolderCount?: (folder: string | null) => Promise<{ folder: string; count: number } | null>
   /** Adapter hook for `page_contains` (Browser). */
   browserContains?: (input: { url: string; selector: string; expect: string }) => Promise<boolean | null>
   /** Adapter hook for `git_diff_matches`; defaults to a read-only `git diff`. */
@@ -240,6 +247,33 @@ export async function evaluateAssertion(
           startedAt,
           activeState: state.activeState,
           observed: new Date(state.activeEnteredAtMs).toISOString(),
+        },
+      }
+    }
+
+    case 'mail_archived': {
+      const folder = typeof spec.folder === 'string' ? spec.folder : null
+      const expected = Number(spec.minCount ?? 1)
+      if (context.mailFolderCount === undefined) {
+        return {
+          status: 'skipped',
+          evidence: { evaluator: 'mail_archived', folder, reason: 'no Mail adapter mounted' },
+        }
+      }
+      const observed = await context.mailFolderCount(folder)
+      if (observed === null) {
+        return {
+          status: 'skipped',
+          evidence: { evaluator: 'mail_archived', folder, observed: 'unavailable', transient: true },
+        }
+      }
+      return {
+        status: observed.count >= expected ? 'pass' : 'fail',
+        evidence: {
+          evaluator: 'mail_archived',
+          folder: observed.folder,
+          expected,
+          observed: observed.count,
         },
       }
     }

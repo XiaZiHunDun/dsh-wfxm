@@ -2625,3 +2625,76 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 - `plugins/governance/src/index.ts`：审批桥放行 `mail_archive`
 - `plugins/governance/scripts/verify-approval-bridge.mjs`：新增 2 例
 - 文档：`docs/09` J2、`docs/08` J2、`docs/16 §12.50`、`AGENTS.md` Slice BL、根 `tasks.md`
+
+## Slice BM Spec — J2 归档 R2 接线（2026-11-19）
+
+### 1. 问题
+
+Slice BL 的 `mail_archive` 只在 `chat` preset 里由工具自己请求审批；飞书走 `orchestrator`
+→ 任务子进程，而 `planTaskRisk` 不认邮件意图，纯「把邮件归档」只会得到 R1 任务：
+要么工具审批缺失直接失败，要么按 R2 建卡又因「R2+ 必须有判据」在完成时被拒。
+BL 真机验收只能靠「归档 + 写绝对路径」的组合指令绕过，这不合理。
+
+本片目标：**纯归档意图在飞书直接升 R2、出审批卡、批准后执行、完成后可复核**。
+
+### 2. 机制
+
+- **规则层**（`plugins/tasks/src/risk.ts`）
+  - 新增 `isMailArchiveIntent(intent)`：同时命中「邮件词」（邮件/收件箱/邮箱/inbox/mail/email）
+    与「归档词」（归档/存档/archive），且命中操作句式（`归档…邮件`、`把…邮件…归档`、
+    `邮件…归档`、`archive the mail`），并排除只读句式（`查看归档邮件`、`归档邮件里有什么`、
+    `归档夹/归档箱`）→ 才算归档操作。
+  - 命中时升 `R2`，reason `mail-archive`，自动附模板断言
+    `{ kind:'mail_archived', spec:{} }`（`mail_archived.folder` 省略 = 用邮件插件默认归档夹）。
+  - 与「写绝对路径」规则**可叠加**：同时命中时 reasons 与 assertions 都保留（不再二选一），
+    风险仍为 R2。单规则命中的既有行为不变。
+- **判据**（新 kind `mail_archived`，第 8 种）
+  - 参数：`folder?: string`（省略用适配器默认）、`minCount?: number`（默认 1，1..10000）。
+  - 只读执行：`VerifyContext.mailFolderCount(folder) → {folder,count} | null`，
+    以 `readonly=True` SELECT 归档夹并取 EXISTS 计数；适配器缺失 → `skipped`（完成被拒），
+    探测失败 → `skipped + transient`，`count ≥ minCount` → `pass`，否则 `fail`。
+  - 语义边界：v1 复核「归档夹可读且非空」，与 `file_exists` 同级的模板判据；
+    逐 uid 溯源（移动是否由本次任务发生）留后续增强，不在本片伪装成已支持。
+- **接线**
+  - `plugins/mail/src/query.ts` + `scripts/mail-query.py`：新增只读 `action='count'`，
+    返回 `{folder,count}`；非 ASCII 夹名仍走 modified UTF-7 + 引号。
+  - `scripts/serve.mjs`：worker 的 `verify` 注入 `mailFolderCount`，用 `readMailAccount()`
+    取账号、`readArchiveFolder()` 补默认夹名；未配置邮箱 → 不注入（fail-closed）。
+  - 任务卡/审批/执行链路完全复用 Slice I/BL：R2 → `holdForApproval` → 卡片 → 批准 →
+    `DSH_WFXM_APPROVED_LEVEL=R2` → ③ 审批桥放行 `mail_archive`。
+- **schema**：`task_assertions.kind` 的 CHECK 增 `mail_archived`（迁移 v10 重建表，沿用 v8 做法）。
+
+### 3. 边界
+
+- 不改审批卡协议、不加新工具、不改 orchestrator 提示词的风险上限（模型仍只提 R0/R1）。
+- 不推断 uid：规则只负责升风险与挂判据；具体归档集合仍由执行模型按 `mail_archive` 参数决定。
+- 归档仍是移动，不是删除；筛选模式仍先冻结 uid 再审批。
+- 只读探测不读正文、不落凭据；失败不重试（沿用 Verifier 的一次性规则）。
+
+### 4. 验证
+
+- `verify-risk`：归档操作 → R2 + `mail_archive` reason + `mail_archived` 断言；
+  只读句式保持 baseline；与绝对路径写入叠加时两条断言都在；baseline R2/R3 原样返回。
+- `verify-tasks`：`mail_archived` 静态校验（folder/minCount 非法被拒）；三种探测结果
+  （pass/fail/skipped）；R2 + `mail_archived` 在适配器挂载时可完成、缺失时被拒；迁移后
+  可写入新 kind。
+- `verify-mail`：`countMailFolder` 请求/解析（伪脚本注入）；Python `count` 分支存在。
+- `verify-host` / `verify-orchestrator`：保持全绿（规则叠加不改变既有用例）。
+- 四门禁：`build` / `--noEmit` / `check-style` / `verify-all`。
+- 真机（需 owner 点击）：飞书发「把邮件 uid <uid> 归档」→ R2 卡 → 批准 → 回执成功、
+  INBOX 少 1、Archive 多 1，`task_assertions.mail_archived=pass`。
+
+### 5. 文件落点
+
+- `plugins/tasks/src/risk.ts`：`isMailArchiveIntent`、规则叠加、`mail_archived` 模板
+- `plugins/tasks/src/model.ts`：`AssertionKind` / `ASSERTION_KINDS` 增 `mail_archived`
+- `plugins/tasks/src/assertions.ts`：`mail_archived` 静态校验
+- `plugins/tasks/src/verify.ts`：`VerifyContext.mailFolderCount` + 判定分支
+- `plugins/tasks/src/store.ts`：迁移 v10（CHECK 增 `mail_archived`）
+- `plugins/tasks/src/index.ts`：导出 `isMailArchiveIntent`（按需）
+- `plugins/tasks/scripts/verify-risk.mjs`、`verify-tasks.mjs`
+- `plugins/mail/src/query.ts`、`index.ts`：`countMailFolder`
+- `plugins/mail/scripts/mail-query.py`：`count` action
+- `plugins/mail/scripts/verify-mail.mjs`
+- `scripts/serve.mjs`：`verify.mailFolderCount`
+- 文档：`docs/17 §8.1/§8.3`、`docs/09` J2、`docs/16 §12.51`、`AGENTS.md` Slice BM、根 `tasks.md`

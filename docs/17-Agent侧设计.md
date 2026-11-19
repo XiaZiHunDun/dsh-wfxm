@@ -381,7 +381,7 @@ bundle 内置 skills/                          内置（随版本发布）
 
 ## 八、Verifier：断言从哪来、怎么安全执行
 
-### 8.1 断言 DSL（7 种，与 15 的 `task_assertions` 一致）
+### 8.1 断言 DSL（9 种，与 15 的 `task_assertions` 一致）
 
 | kind | 参数 | 由哪个端口执行 |
 |---|---|---|
@@ -393,6 +393,7 @@ bundle 内置 skills/                          内置（随版本发布）
 | `http_status` | `url`、`expected` | Search（只读） |
 | `git_diff_matches` | `ref`、`paths`、`expect` | Exec |
 | `page_contains` | `url`、`selector`、`expect` | Browser |
+| `mail_archived` | 可选 `folder`（默认取 `DSH_WFXM_MAIL_ARCHIVE_FOLDER`）、`minCount`（默认 1） | Mail（`SELECT readonly` + EXISTS 计数） |
 
 > **新增 kind 必须同时改本文与 15 的 `CHECK` 约束**，否则迁移与代码会各说各话。
 
@@ -417,6 +418,7 @@ bundle 内置 skills/                          内置（随版本发布）
 | **服务起停** | `unit_restarted(unit)` + `service_active(unit)`（**规则层自动附**：`planTaskRisk` 命中「起/重启 <托管服务>」即升 R3 并加这两条，见 §7.1） |
 | 代码修复 | `exit_code(0)`（测试）+ `git_diff_matches(提交, 预期文件)` |
 | 邮件发送 | `exit_code(0)` + 发送记录 `evidence`（不接受"模型自称已发"） |
+| **邮件归档** | `mail_archived(folder?)`（**规则层自动附**：`planTaskRisk` 命中归档意图即升 R2 并加此条；只读 SELECT 归档夹，`count ≥ minCount` 才 pass） |
 
 ### 8.4 生成断言的静态校验（五条，任一失败即拒绝）
 
@@ -467,7 +469,7 @@ bundle 内置 skills/                          内置（随版本发布）
 | [08](08-产品能力构想.md) | O3 从"要有判据"具体化为 **7 种 DSL + 三级来源 + 模板库**；D9 任务对象增 `verifier` 语义 |
 | [11](11-架构锚定.md) | **不新增 AR**；本文是 AR4（工具名）、AR29（只干预）、AR30（子代理）、AR31（闸不可绕）、AR34（专家）的具体化 |
 | [12](12-技术栈选型.md) | 明确复用宿主 `skill` / `skill-filesystem` / `tool-skill`、`preset` 家族、`subagent` 家族；不新造这三类机制 |
-| [15](15-数据与契约.md) | `task_assertions.kind` 已含 7 种（无需改表）；**已同批补**：`decisions` 增 `rule_id` / `ruleset_version`；`spec_json` 的 DSL schema 进 zod 真源 |
+| [15](15-数据与契约.md) | `task_assertions.kind` 已含 9 种（v10 增 `mail_archived`）；**已同批补**：`decisions` 增 `rule_id` / `ruleset_version`；`spec_json` 的 DSL schema 进 zod 真源 |
 | [13](13-核心能力方案.md) | §3.1 的断言由"举例"变为**可落库的 DSL + 来源规则** |
 | [18](18-Super-agent对照与改进建议.md) | §十一 C 方案：本文新增 `orchestrator` preset（窄白名单）、`chat` 降为 Web 深度会话；AR25 v2 的工具面即本节 §二 |
 | [16](16-部署与运行.md) | 启动自检**第 4 步**已并入：工具注册三件套齐全（schema / 风险基线 / 端口），缺一拒绝启动 |
