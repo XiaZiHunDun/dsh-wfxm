@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -14,6 +15,7 @@ import {
   classifyFeishuError,
   createFeishuChannel,
   createFeishuTransport,
+  createOpenAiTranscriber,
   inject,
   loadFeishuBotConfig,
   name,
@@ -1147,6 +1149,114 @@ await check('AS in 6: safe names strip traversal/controls and fall back per kind
     && safeAttachmentName('', 'image', 0) === 'image-1.png'
     && safeAttachmentName('voice', 'audio', 1) === 'voice.opus'
     && safeAttachmentName('x'.repeat(120) + '.txt', 'file', 0).length <= 84
+})
+
+// -- Slice BI (A8): voice transcription ---------------------------------------
+
+function voiceContent(msgId) {
+  return {
+    text: '',
+    messageType: 'audio',
+    externalMsgId: msgId,
+    raw: { file_key: 'fk_voice', duration: 1200 },
+    attachments: [{ kind: 'audio', key: 'fk_voice', name: null, sizeBytes: null, durationMs: 1200 }],
+  }
+}
+
+const voiceResource = () => ({
+  async get() {
+    return { writeFile: async (path) => writeFileSync(path, Buffer.from('OggS')) }
+  },
+})
+
+await check('BI voice 1: a successful transcript replaces the placeholder note', async () => {
+  const calls = []
+  const out = await stageAttachments({
+    content: voiceContent('om_v1'),
+    externalMsgId: 'om_v1',
+    options: {
+      dir: join(dir, 'attachments-voice-1'),
+      resource: voiceResource(),
+      transcribe: async (input) => {
+        calls.push(input)
+        return { text: '  帮我看下磁盘  ' }
+      },
+    },
+  })
+  const item = out.attachments[0]
+  return calls.length === 1
+    && calls[0].durationMs === 1200
+    && item.transcription === 'ok'
+    && item.transcript === '帮我看下磁盘'
+    && out.text === '[语音转写] 帮我看下磁盘'
+})
+
+await check('BI voice 2: empty/failed/disabled keep the message and explain', async () => {
+  const run = (msgId, transcribe) => stageAttachments({
+    content: voiceContent(msgId),
+    externalMsgId: msgId,
+    options: {
+      dir: join(dir, `attachments-voice-${msgId}`),
+      resource: voiceResource(),
+      ...(transcribe === undefined ? {} : { transcribe }),
+    },
+  })
+  const empty = await run('om_v2', async () => ({ text: '   ' }))
+  const failed = await run('om_v3', async () => { throw new Error('boom') })
+  const disabled = await run('om_v4', undefined)
+  return empty.text.includes('转写为空')
+    && empty.attachments[0].transcription === 'empty'
+    && failed.text.includes('转写失败')
+    && failed.attachments[0].transcription === 'failed'
+    && disabled.text.includes('未启用语音转写')
+    && disabled.attachments[0].transcription === 'disabled'
+})
+
+await check('BI voice 3: OpenAI-compatible client sends multipart and parses text', async () => {
+  const file = join(dir, 'voice.opus')
+  writeFileSync(file, Buffer.from('OggS'))
+  const seen = {}
+  const server = createServer((request, response) => {
+    const chunks = []
+    request.on('data', (chunk) => chunks.push(chunk))
+    request.on('end', () => {
+      seen.url = request.url
+      seen.auth = request.headers.authorization
+      seen.type = request.headers['content-type']
+      seen.body = Buffer.concat(chunks).toString('latin1')
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ text: ' 你好 ' }))
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const transcribe = createOpenAiTranscriber({
+    baseUrl: `http://127.0.0.1:${port}/v1/`,
+    apiKey: 'test-key',
+  })
+  const out = await transcribe({ path: file, name: 'voice.opus' })
+  await new Promise((resolve) => server.close(resolve))
+  return out.text === '你好'
+    && seen.url === '/v1/audio/transcriptions'
+    && seen.auth === 'Bearer test-key'
+    && seen.type.startsWith('multipart/form-data; boundary=')
+    && seen.body.includes('name="model"')
+    && seen.body.includes('whisper-1')
+    && seen.body.includes('name="language"')
+    && seen.body.includes('zh')
+    && seen.body.includes('name="file"; filename="audio.opus"')
+})
+
+await check('BI voice 4: oversized audio is rejected before any upload', async () => {
+  const file = join(dir, 'big.opus')
+  writeFileSync(file, Buffer.alloc(2048))
+  const transcribe = createOpenAiTranscriber({
+    baseUrl: 'http://127.0.0.1:1/v1',
+    apiKey: 'k',
+    maxBytes: 1024,
+  })
+  await assert.rejects(() => transcribe({ path: file, name: 'big.opus' }), /超过上限/)
+  return true
 })
 
 await check('AS in 7: the channel stages before the sink so text carries the path', async () => {

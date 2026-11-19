@@ -186,6 +186,33 @@ export function parseServeConfig(env = process.env) {
     // without the flag behave exactly as before.
     resourceLocks: readFlag(env, 'DSH_WFXM_RESOURCE_LOCKS', false),
   }
+  // Slice BI (A8): optional OpenAI-compatible ASR. The key is a *file path*
+  // (docs/16 §二: secrets never go in env), readable by the service user.
+  // Base URL and key file or neither; absent keeps the "转写未启用" note.
+  const asrBaseUrl = readString(env, 'DSH_WFXM_ASR_BASE_URL', null)
+  const asrKeyFile = readString(env, 'DSH_WFXM_ASR_API_KEY_FILE', null)
+  let asrApiKey = null
+  if (asrKeyFile !== null) {
+    try {
+      asrApiKey = readFileSync(asrKeyFile, 'utf8').trim()
+      if (asrApiKey === '') problems.push('DSH_WFXM_ASR_API_KEY_FILE is empty')
+    } catch (error) {
+      problems.push(`DSH_WFXM_ASR_API_KEY_FILE unreadable: ${error.message}`)
+    }
+  }
+  if ((asrBaseUrl === null) !== (asrApiKey === null)) {
+    problems.push('DSH_WFXM_ASR_BASE_URL and DSH_WFXM_ASR_API_KEY_FILE must be set together')
+  }
+  config.asr = asrBaseUrl === null || asrApiKey === null
+    ? null
+    : {
+        baseUrl: asrBaseUrl,
+        apiKey: asrApiKey,
+        model: readString(env, 'DSH_WFXM_ASR_MODEL', 'whisper-1'),
+        language: readString(env, 'DSH_WFXM_ASR_LANGUAGE', 'zh'),
+        timeoutMs: readInt(env, 'DSH_WFXM_ASR_TIMEOUT_MS', 30_000, problems, [1_000, 120_000]),
+        maxBytes: readInt(env, 'DSH_WFXM_ASR_MAX_BYTES', 10 * 1024 * 1024, problems, [1_024, 100 * 1024 * 1024]),
+      }
   if (problems.length > 0) fail(1, 'config', problems.join('; '))
   return config
 }

@@ -507,6 +507,12 @@
     定义整体通过率 / 覆盖率 / 任务坍塌阈值；`regress.mjs` 对比 `bench/baselines/reference.json`，
     默认 advisory，`--enforce` 时退化退出 3。参考基线由 `--write-reference` 生成。
     `bench/verify` 22 例（[16 §12.47](docs/16-部署与运行.md)）。
+  - **A8 语音转写（Slice BI）**：`plugins/feishu/src/asr.ts` 提供 OpenAI 兼容
+    `/audio/transcriptions` 客户端（手写 multipart、大小/超时上限、错误不含密钥）；
+    `stageAttachments` 对 `audio` 可选转写，成功写 `[语音转写] <text>`，为空/失败/未配置
+    分别保留明确提示，消息不丢（AR13）。配置用 `DSH_WFXM_ASR_BASE_URL` +
+    `DSH_WFXM_ASR_API_KEY_FILE`（密钥只放文件）；不配置则保持原提示。`verify-feishu 65` /
+    `verify-serve 14`（[16 §12.48](docs/16-部署与运行.md)）。**边界**：不做转码、不处理微信语音。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

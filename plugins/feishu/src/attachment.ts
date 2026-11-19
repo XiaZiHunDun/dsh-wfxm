@@ -15,6 +15,7 @@
 import { mkdirSync, statSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { InboundAttachment, Json } from './normalize.js'
+import type { AudioTranscriber } from './asr.js'
 
 /** Narrow seam over the lark resource API; satisfied by `client.im.v1.messageResource`. */
 export interface FeishuResourceApi {
@@ -30,6 +31,11 @@ export interface AttachmentStagingOptions {
   readonly resource: FeishuResourceApi
   /** File name length cap; defaults to 80 characters. */
   readonly maxNameChars?: number
+  /**
+   * A8: optional voice transcriber. Absent/null keeps the "转写未启用" note;
+   * errors are per-attachment and never drop the message.
+   */
+  readonly transcribe?: AudioTranscriber | null
 }
 
 export interface AttachmentLogger {
@@ -42,6 +48,9 @@ export interface StagedAttachment {
   readonly name: string
   readonly path: string | null
   readonly status: 'staged' | 'failed'
+  /** A8: audio only; absent for other kinds / failed downloads. */
+  readonly transcription?: 'ok' | 'empty' | 'failed' | 'disabled'
+  readonly transcript?: string | null
 }
 
 const DEFAULT_EXT: Record<InboundAttachment['kind'], string> = {
@@ -57,6 +66,9 @@ const DEFAULT_NAME: Record<InboundAttachment['kind'], string> = {
   audio: 'voice',
   video: 'video',
 }
+
+/** Keep a runaway transcript from bloating the inbox row. */
+const MAX_TRANSCRIPT_CHARS = 10_000
 
 /** Basename only, no control characters, no traversal, bounded length. */
 export function safeAttachmentName(
@@ -92,6 +104,13 @@ function noteOf(item: StagedAttachment, sizeBytes: number | null): string {
         ? `[文件附件] ${item.name}，本地路径：${item.path}`
         : `[文件附件] ${item.name}（${sizeBytes} 字节），本地路径：${item.path}`
     case 'audio':
+      if (item.transcription === 'ok' && item.transcript !== null && item.transcript !== '') {
+        return `[语音转写] ${item.transcript}`
+      }
+      if (item.transcription === 'empty' || item.transcription === 'failed') {
+        return `[语音附件] ${item.transcription === 'empty' ? '转写为空' : '转写失败'}，`
+          + `请补充文字说明要办的事（本地路径：${item.path}）`
+      }
       return `[语音附件] 本地路径：${item.path}（本机未启用语音转写，请补充文字说明要办的事）`
     case 'video':
       return `[视频附件] ${item.name}，本地路径：${item.path}`
@@ -174,7 +193,37 @@ export async function stageAttachments(input: {
       } catch {
         // Keep the channel-reported size when the stat fails.
       }
-      staged.push({ kind: item.kind, key: item.key, name, path, status: 'staged' })
+      let transcription: StagedAttachment['transcription']
+      let transcript: string | null = null
+      if (item.kind === 'audio') {
+        if (input.options.transcribe == null) {
+          transcription = 'disabled'
+        } else {
+          try {
+            const result = await input.options.transcribe({
+              path,
+              name,
+              durationMs: item.durationMs,
+            })
+            transcript = result.text.trim().slice(0, MAX_TRANSCRIPT_CHARS)
+            transcription = transcript === '' ? 'empty' : 'ok'
+          } catch (error) {
+            transcription = 'failed'
+            input.logger?.warn('feishu voice transcription failed', {
+              msgId: input.externalMsgId,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+        }
+      }
+      staged.push({
+        kind: item.kind,
+        key: item.key,
+        name,
+        path,
+        status: 'staged',
+        ...(item.kind === 'audio' ? { transcription, transcript } : {}),
+      })
       sizes.push(actual)
     } catch (error) {
       input.logger?.warn('feishu attachment download failed', {

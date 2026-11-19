@@ -179,6 +179,24 @@ await check('配置非法值拒绝启动（步 1），默认路径由 DATA_DIR �
   assert(config.resourceLocks === false, 'resource locks should default off')
   assert(parseServeConfig({ DSH_WFXM_DATA_DIR: '/srv/x', DSH_WFXM_RESOURCE_LOCKS: '1' }).resourceLocks === true,
     'DSH_WFXM_RESOURCE_LOCKS=1 did not enable it')
+  assert(config.asr === null, 'ASR should default off')
+  const keyFile = join(tempDir('asr'), 'asr.key')
+  writeFileSync(keyFile, 'test-secret\n')
+  const asr = parseServeConfig({
+    DSH_WFXM_DATA_DIR: '/srv/x',
+    DSH_WFXM_ASR_BASE_URL: 'https://asr.example/v1',
+    DSH_WFXM_ASR_API_KEY_FILE: keyFile,
+  }).asr
+  assert(asr?.model === 'whisper-1' && asr?.language === 'zh', `asr=${JSON.stringify(asr)}`)
+  assert(asr.apiKey === 'test-secret', 'ASR key file was not read/trimmed')
+  let partial = null
+  try {
+    parseServeConfig({ DSH_WFXM_DATA_DIR: '/srv/x', DSH_WFXM_ASR_BASE_URL: 'https://asr.example/v1' })
+  } catch (caught) {
+    partial = caught
+  }
+  assert(partial instanceof StartupError, 'half-configured ASR was accepted')
+  assert(partial.message.includes('must be set together'), partial.message)
   return error.message
 })
 

@@ -1856,3 +1856,34 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `docs/16 §12.47`
 - [x] `AGENTS.md` Slice BH
 - [x] `tasks.md` 本切片
+
+# Slice BI — A8 语音转写（2026-11-19，release `2026.11.19-12`）
+
+## BI1 ASR 客户端
+
+- [x] `plugins/feishu/src/asr.ts`：OpenAI 兼容 `/audio/transcriptions`，手写 multipart
+- [x] 大小上限、超时、错误脱敏（不含 key / 音频内容）、响应 `text` 校验
+- [x] `index.ts` 导出 `createOpenAiTranscriber` 与类型
+
+## BI2 入站接线
+
+- [x] `stageAttachments` 对 `audio` 可选 `transcribe`；成功 `[语音转写]`，空/失败/未配置分别提示
+- [x] 转写上限 10,000 字；失败不丢消息（AR13）
+- [x] `scripts/lib/startup.mjs`：`ASR_BASE_URL` + `ASR_API_KEY_FILE`（密钥不进 env）+ 模型/语言/超时/大小
+- [x] `scripts/serve.mjs`：构造 transcriber 并传入 channel，启动日志 `asr …`
+- [x] `deploy/systemd/dsh-wfxm.env.example` 注释示例
+
+## BI3 用例与门禁
+
+- [x] `verify-feishu` 65 例（新增 4 例：转写成功/空失败未配置/客户端 multipart/超限）
+- [x] `verify-serve` 14 例（ASR 配置默认关、半配置拒绝）
+- [x] `build` / `--noEmit` / `check-style` / `verify-all 47 passed`
+
+## BI4 发布与文档
+
+- [x] 发布 `2026.11.19-12`、重启、`[startup] 8/8`、`asr disabled`
+- [x] `docs/09` A8 行
+- [x] `docs/14 §3.1`
+- [x] `docs/16 §12.48`
+- [x] `AGENTS.md` Slice BI
+- [x] `tasks.md` 本切片

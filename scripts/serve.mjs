@@ -32,6 +32,7 @@ import {
   createFeishuChannel,
   createFeishuTransport,
   createLarkClient,
+  createOpenAiTranscriber,
   loadFeishuCredentials,
 } from '@dsh-wfxm/feishu'
 import { createApprovalStore, createGrantStore, loadPolicy } from '@dsh-wfxm/governance'
@@ -468,6 +469,12 @@ async function main() {
           appSecret: credentials.appSecret,
           ...credentials.domain === null ? {} : { domain: credentials.domain },
         })
+        // Slice BI (A8): voice transcription is optional; without ASR config the
+        // channel keeps its explicit "转写未启用" note.
+        const transcriber = config.asr === null ? null : createOpenAiTranscriber(config.asr)
+        log('asr', transcriber === null
+          ? 'disabled'
+          : { model: config.asr.model, baseUrl: config.asr.baseUrl })
         transport = createFeishuTransport({
           client,
           patchDelayMs: 8000,
@@ -486,7 +493,11 @@ async function main() {
           onCardAction,
           // Slice AS (A8): images/files/voice land under the data directory and
           // their paths are appended to the message text.
-          attachments: { dir: config.attachmentDir, resource: client.im.v1.messageResource },
+          attachments: {
+            dir: config.attachmentDir,
+            resource: client.im.v1.messageResource,
+            ...(transcriber === null ? {} : { transcribe: transcriber }),
+          },
           logger: {
             info: (message, meta) => log('channel', meta === undefined ? message : { message, ...meta }),
             warn: (message, meta) => log('channel:warn', meta === undefined ? message : { message, ...meta }),

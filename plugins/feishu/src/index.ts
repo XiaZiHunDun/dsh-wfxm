@@ -18,6 +18,8 @@ export type {
   StagedAttachment,
 } from './attachment.js'
 export { safeAttachmentName, stageAttachments } from './attachment.js'
+export type { AudioTranscriber, AudioTranscript, AudioTranscriptInput, OpenAiTranscriberOptions } from './asr.js'
+export { createOpenAiTranscriber } from './asr.js'
 export type {
   ApprovalCardPayload,
   ApprovalConfirmPayload,
