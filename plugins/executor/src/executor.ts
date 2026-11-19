@@ -182,6 +182,7 @@ export function buildTaskPrompt(
     threadContext.length === 0 ? '（无）' : threadContext,
     DATA_ZONE_END,
     '',
+    ACCEPTANCE_INSTRUCTION,
     NEED_INPUT_INSTRUCTION,
     ATTACH_INSTRUCTION,
   ].join('\n')
@@ -200,6 +201,15 @@ export const ATTACH_MARKER = '[[ATTACH]]'
 const ATTACH_INSTRUCTION = '【交付约定】如果你在工作目录内生成了需要交付给用户的文件，'
   + `请在最终答复的最后用 ${ATTACH_MARKER} <相对路径> 逐行标出（最多 3 个，必须在工作目录内）。`
   + '不要把这个标记写进解释文字，也不要用它标注目录或不存在/超大的文件。'
+
+/**
+ * C8 (Slice BF): "use a test to prove it is fixed" is part of the task
+ * contract, not a suggestion the model may skip. Without this line the agent
+ * can report "fixed" with no reproduction or verification evidence.
+ */
+export const ACCEPTANCE_INSTRUCTION = '【验收约定】修 bug 或改变行为时：先用最小测试或命令复现问题；'
+  + '修复后运行同一测试或命令证明修好，并在最终答复里给出命令与结果（通过/失败）。'
+  + '无法自动化验证时，说明原因并给出可复现的手工验证步骤；不要只说「已修复」。'
 export const MAX_ATTACHMENTS = 3
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 

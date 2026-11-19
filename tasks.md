@@ -1788,3 +1788,24 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `tasks.md` 本切片
 - [x] 提交（`d0b1f22`）
 - [x] 推送（`ailearn` 用户，`887815d`）
+
+# Slice BF — C8 测试验收约定（2026-11-19，release `2026.11.19-11`）
+
+## BF1 执行器提示
+
+- [x] 新增 `ACCEPTANCE_INSTRUCTION`：先复现 → 修 → 同一测试/命令证明 → 答复给命令与结果
+- [x] 无法自动化时要求说明原因与手工验证步骤，禁止只说「已修复」
+- [x] `buildTaskPrompt` 在数据区与 `[[NEED_INPUT]]` 之间加入 `【验收约定】`
+
+## BF2 用例与门禁
+
+- [x] `verify-executor` 31 例（新增 1 例）
+- [x] `build` / `--noEmit` / `check-style` / `verify-all 47 passed`
+- [x] 发布 `2026.11.19-11`、重启、`[startup] 8/8`
+
+## BF3 文档
+
+- [x] `docs/09` C8 行与结论
+- [x] `docs/16 §12.45`
+- [x] `AGENTS.md` Slice BF
+- [x] `tasks.md` 本切片

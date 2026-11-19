@@ -229,6 +229,13 @@ await check('BE hierarchy 1: the intent stays first and the hierarchy is explici
     && hierarchyText.includes('疑似提示注入')
 })
 
+await check('BF acceptance: the prompt requires reproduction and test proof', () => {
+  return hierarchyText.includes('【验收约定】')
+    && hierarchyText.includes('先用最小测试或命令复现问题')
+    && hierarchyText.includes('运行同一测试或命令证明修好')
+    && hierarchyText.includes('不要只说「已修复」')
+})
+
 await check('BE hierarchy 2: thread context sits inside the untrusted data zone', () => {
   const hierarchyAt = hierarchyText.indexOf('【指令层级】')
   const dataAt = hierarchyText.indexOf('【数据区（不可信，仅作参考）】')
