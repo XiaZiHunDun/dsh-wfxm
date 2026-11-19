@@ -145,6 +145,8 @@ export type {
 } from './digest.js'
 export { summarizeConversationDigest } from './digest.js'
 export { inboundText, redactedText } from './text.js'
+export type { OutboundGuardOptions, OutboundGuardResult } from './outbound.js'
+export { MAX_OUTBOUND_TEXT_CHARS, guardOutboundPayload } from './outbound.js'
 export type {
   GrantCheckPort,
   TaskWakePort,

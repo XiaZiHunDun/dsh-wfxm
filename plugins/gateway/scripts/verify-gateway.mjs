@@ -26,6 +26,8 @@ import {
   redactedText,
   registerGatewayTools,
   resolveFollowUp,
+  guardOutboundPayload,
+  MAX_OUTBOUND_TEXT_CHARS,
 } from '../lib/index.js'
 import {
   createMemoryStore,
@@ -1570,6 +1572,57 @@ await check('enqueue writes a pending row with the routing anchors', () => {
     && item.taskId === 'task_1'
     && store.getOutbox(item.id).payload.text === 'hello'
 })
+
+// ---- M7 (Slice BE): outbound guard ------------------------------------------
+
+const guardStore = createGatewayStore(join(dir, 'outbound-guard.sqlite'))
+
+await check('BE guard 1: secrets are redacted before the outbox row is stored', () => {
+  const item = guardStore.enqueueOutbox({
+    topic: 'say',
+    payload: { text: 'key=AKIAABCDEFGHIJKLMNOP' },
+    now: now(),
+  })
+  return item.payload.text.includes('[redacted:aws-access-key:20]')
+    && !item.payload.text.includes('AKIAABCDEFGHIJKLMNOP')
+})
+
+await check('BE guard 2: oversized text is capped with an explicit note', () => {
+  const item = guardStore.enqueueOutbox({
+    topic: 'say',
+    payload: { text: 'x'.repeat(MAX_OUTBOUND_TEXT_CHARS + 500), kind: 'file', filePath: '/tmp/a' },
+    now: now(),
+  })
+  const text = item.payload.text
+  return text.startsWith('x'.repeat(MAX_OUTBOUND_TEXT_CHARS))
+    && text.includes('已截断 500 字')
+    && item.payload.kind === 'file'
+    && item.payload.filePath === '/tmp/a'
+})
+
+await check('BE guard 3: short text and nested summary are preserved', () => {
+  const item = guardStore.enqueueOutbox({
+    topic: 'say',
+    payload: { text: 'short', nested: { summary: 'ok' } },
+    now: now(),
+  })
+  return item.payload.text === 'short'
+    && item.payload.nested.summary === 'ok'
+})
+
+await check('BE guard 4: the pure guard caps text/summary and reports truncation', () => {
+  const guarded = guardOutboundPayload(
+    { text: 'abcdef', nested: { summary: '123456' }, other: 'keep' },
+    { maxTextChars: 3 },
+  )
+  return guarded.truncated
+    && guarded.payload.text.startsWith('abc\n…')
+    && guarded.payload.nested.summary.startsWith('123\n…')
+    && guarded.payload.other === 'keep'
+    && guarded.hits.length === 0
+})
+
+guardStore.close()
 
 const claimed = store.claimOutbox({ owner: 'A', leaseMs: 1000, now: now() })
 

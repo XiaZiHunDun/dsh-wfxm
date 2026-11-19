@@ -10,7 +10,7 @@ import { mkdirSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { dirname } from 'node:path'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
-import { redactDeep } from '@dsh-wfxm/redact'
+import { guardOutboundPayload } from './outbound.js'
 import { inboundText } from './text.js'
 import {
   ACTOR_KINDS,
@@ -1650,17 +1650,17 @@ export function createGatewayStore(dbPath: string): GatewayStore {
 
     enqueueOutbox(input) {
       const topic = requiredText(input.topic, 'topic')
-      // Outbound redaction (19 A5): ① owns `outbox`, so this is the single
-      // export choke point — nothing a secret could leak through reaches the
-      // transport or the stored payload.
-      const redacted = redactDeep(input.payload)
-      const payloadJson = serializeJson(redacted.value, 'payload')
+      // Outbound guard (M7 / Slice BE): redact secrets first, then cap text.
+      // ① owns `outbox`, so this is the single export choke point — nothing a
+      // secret could leak through reaches the transport or the stored payload.
+      const guarded = guardOutboundPayload(input.payload)
+      const payloadJson = serializeJson(guarded.payload, 'payload')
       const dedupeKey = optionalText(input.dedupeKey, 'dedupeKey')
       const now = input.now ?? new Date()
       const item: OutboxItem = {
         id: uuidv7(),
         topic,
-        payload: redacted.value,
+        payload: guarded.payload,
         status: 'pending',
         attempts: 0,
         nextRetryAt: null,
