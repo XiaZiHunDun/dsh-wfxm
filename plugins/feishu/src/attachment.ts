@@ -12,7 +12,7 @@
  * `failed`, the body says so, and the rest of the message is processed.
  */
 
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, statSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { InboundAttachment, Json } from './normalize.js'
 
@@ -88,7 +88,9 @@ function noteOf(item: StagedAttachment, sizeBytes: number | null): string {
     case 'image':
       return `[图片附件] ${item.name}，本地路径：${item.path}（可用 read_image 查看）`
     case 'file':
-      return `[文件附件] ${item.name}（${sizeBytes ?? 0} 字节），本地路径：${item.path}`
+      return sizeBytes === null
+        ? `[文件附件] ${item.name}，本地路径：${item.path}`
+        : `[文件附件] ${item.name}（${sizeBytes} 字节），本地路径：${item.path}`
     case 'audio':
       return `[语音附件] 本地路径：${item.path}（本机未启用语音转写，请补充文字说明要办的事）`
     case 'video':
@@ -148,12 +150,16 @@ export async function stageAttachments(input: {
   }
 
   const staged: StagedAttachment[] = []
+  // Staged bytes are authoritative: Feishu file events often omit `file_size`,
+  // and showing "0 字节" for a non-empty file is worse than showing nothing.
+  const sizes: Array<number | null> = []
   for (let index = 0; index < source.length; index += 1) {
     const item = source[index]!
     const name = safeAttachmentName(item.name, item.kind, index, input.options.maxNameChars)
     const path = join(targetDir, `${String(index + 1).padStart(2, '0')}-${name}`)
     if (!dirReady) {
       staged.push({ kind: item.kind, key: item.key, name, path: null, status: 'failed' })
+      sizes.push(item.sizeBytes)
       continue
     }
     try {
@@ -162,7 +168,14 @@ export async function stageAttachments(input: {
         params: { type: item.kind === 'image' ? 'image' : 'file' },
       })
       await resource.writeFile(path)
+      let actual: number | null = item.sizeBytes
+      try {
+        actual = statSync(path).size
+      } catch {
+        // Keep the channel-reported size when the stat fails.
+      }
       staged.push({ kind: item.kind, key: item.key, name, path, status: 'staged' })
+      sizes.push(actual)
     } catch (error) {
       input.logger?.warn('feishu attachment download failed', {
         msgId: input.externalMsgId,
@@ -170,10 +183,11 @@ export async function stageAttachments(input: {
         error: error instanceof Error ? error.message : String(error),
       })
       staged.push({ kind: item.kind, key: item.key, name, path: null, status: 'failed' })
+      sizes.push(item.sizeBytes)
     }
   }
 
-  const notes = staged.map((item, index) => noteOf(item, source[index]?.sizeBytes ?? null))
+  const notes = staged.map((item, index) => noteOf(item, sizes[index] ?? null))
   const text = [caption, ...notes].filter((line) => line !== '').join('\n')
   return {
     ...content,

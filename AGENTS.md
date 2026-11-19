@@ -435,6 +435,8 @@
     再发媒体消息），永久失败降级文本；回执超 `DSH_WFXM_SPILL_CHARS`（默认 600，0 关闭）
     写 `<dataDir>/outbox-files/` 并作为附件发送，写入前 `redactedText`；执行器 `[[ATTACH]] <path>`
     （仅 cwd 内、≤3、≤20MB）经 worker `onArtifacts` 由 host 入队 `task.artifact`。
+    **真机验收（2026-11-19，`2026.11.19-2`）**：文件与截图均落盘并进入任务；文件用 `read`
+    读出标记，截图被正确描述。同批修复 `readRoots` 未含 `attachments` 与未知大小误显示「0 字节」。
   - **邮件（Slice AU / J1）**：新增 `@dsh-wfxm/mail`（`mail_search` / `mail_read` 两个 R0 只读工具，
     挂 headless profile；前台不挂）。后端是 `scripts/mail-query.py`（Python 标准库 `imaplib`），
     IMAP 只读、密码走 stdin；配置在 `~/.dsh/integrations/dsh-mail/config.json` + `secretRef`。

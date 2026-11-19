@@ -1114,8 +1114,31 @@ await check('AS in 5: a failed download is marked, never drops the caption or si
     && ok.attachments[1].status === 'staged'
     && ok.text.startsWith('两个文件\n')
     && ok.text.includes('fk_bad 下载失败')
-    && ok.text.includes('[文件附件] b.txt')
+    && ok.text.includes('[文件附件] b.txt（1 字节）')
     && warnings.length === 1
+})
+
+await check('AS in 5b: a file without a reported size uses the staged byte count, never "0 字节"', async () => {
+  const out = await stageAttachments({
+    content: {
+      text: '无尺寸',
+      messageType: 'file',
+      externalMsgId: 'om_f2',
+      raw: { file_key: 'fk_2', file_name: 'no-size.md' },
+      attachments: [{ kind: 'file', key: 'fk_2', name: 'no-size.md', sizeBytes: null, durationMs: null }],
+    },
+    externalMsgId: 'om_f2',
+    options: {
+      dir: join(dir, 'attachments-size'),
+      resource: {
+        async get() {
+          return { writeFile: async (path) => writeFileSync(path, 'A8') }
+        },
+      },
+    },
+  })
+  return out.text.includes('[文件附件] no-size.md（2 字节）')
+    && !out.text.includes('0 字节')
 })
 
 await check('AS in 6: safe names strip traversal/controls and fall back per kind', () => {

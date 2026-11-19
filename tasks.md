@@ -1500,6 +1500,15 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 发布 `2026.11.18-8`（`prepare/verify → switch → restart`，`active`、`NRestarts=0`）
 - [x] 回写 `spec.md` Slice AS、`AGENTS.md §4`、`docs/14 §五`、`docs/16 §12.35`、`docs/06 §六`
 
+## AS7 A8 真机验收（2026-11-19，release `2026.11.19-2`）
+
+- [x] 飞书真机：`a8-test.md`（62 B）→ 落盘 + 正文含本地路径，任务 `njyf7jg4s5` 用 `read` 读出标记
+- [x] 飞书真机：截图（26,307 B）→ 落盘 + 任务 `gk29a4vn6u` 正确描述截图内容
+- [x] 附件与配文分两条消息也能合并：附件建任务，配文作为补充指令并入同一任务
+- [x] 修复 `readRoots` 未含 `/var/lib/dsh-wfxm/attachments`（此前 `read` 被拦，模型改用 `cat`）
+- [x] 修复未知 `file_size` 显示「0 字节」：改用落盘实际字节数（`statSync`）
+- [x] `verify-feishu` 61 例、全量 `46 passed`；发布 `2026.11.19-2` 并重启
+
 # Slice AT — 提醒（J5，2026-11-18，release `2026.11.18-9`）
 
 > 目标：自然语言设提醒（一次性/每天/每周），到点推到原线程；提醒不是任务，不执行任何动作。

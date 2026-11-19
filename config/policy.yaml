@@ -18,6 +18,9 @@ readRoots:
   - /home/ailearn/githubpro
   - /tmp
   - /var/lib/dsh-wfxm/workspace
+  # A8: owner-sent attachments are staged here; the agent must be able to
+  # read them by the local path we put into the message text.
+  - /var/lib/dsh-wfxm/attachments
 
 # V2 并发写（Step 2d）：同一 workspace 的文件写串行，写前校验读取快照。
 concurrency:
