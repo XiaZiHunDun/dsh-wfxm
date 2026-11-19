@@ -1952,5 +1952,6 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 四门禁：`build` / `--noEmit` / `check-style` / `verify-all`
 - [x] 发布 `2026.11.19-15`、重启、`[startup] 8/8`
 - [x] 真机验收：163 IMAP 无 `MOVE` → 补 UIDPLUS 安全兜底，发布 `2026.11.19-16`；审批缺失不动、`allowed-once` 后 uid 离开 INBOX
+- [x] 飞书审批卡点击链路：组合指令进入 R2（写绝对路径），单击批准后任务 `dqggzcmayg` `succeeded`；卡片/更新/回执均 `sent`，INBOX 39→38、Archive 2 封、标记文件 `done`
 - [x] 文档：`docs/09` J2、`docs/08` J2、`docs/16 §12.50`、`AGENTS.md` Slice BL
 - [x] 提交推送（ailearn）
