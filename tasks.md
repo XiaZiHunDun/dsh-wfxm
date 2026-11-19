@@ -1929,3 +1929,27 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 发布 `2026.11.19-14`、重启、`schema_migrations(tasks)=9`
 - [x] 文档：`docs/09` I5 / `docs/15` v9 / `docs/16 §12.49` / `AGENTS.md`
 - [x] 提交推送（ailearn）
+
+# Slice BL — J2 邮件归档（R2，2026-11-19，release `2026.11.19-15`）
+
+## BL1 归档能力
+
+- [x] `config.ts`：`DEFAULT_ARCHIVE_FOLDER='Archive'`、`readArchiveFolder(env)`（空值回落）
+- [x] `query.ts`：`MailErrorCode` 增 `approval`；`MailArchiveResult` / `archiveMail`（显式 uid 列表 + folder）
+- [x] `mail-query.py`：`action='archive'`；modified UTF-7 夹名；目标夹不存在则创建；仅 `UID MOVE`（无 MOVE 即报错）
+- [x] `tools.ts`：`validateArchiveArgs`（uid/uids/筛选互斥、1..50）；注册 `mail_archive`（R2）
+- [x] 审批：`ctx.get('approval').request` → 仅 `allowed-once` 执行；缺失/拒绝/取消统一 `approval` 错误，邮件不动
+- [x] 空集合直接 `moved:0`，不请求审批；筛选模式先 `searchMail` 冻结 uid
+
+## BL2 审批桥
+
+- [x] `plugins/governance/src/index.ts`：已批准 R2/R3 任务下 `mail_archive` 也返回 `allowed-once`
+- [x] `verify-approval-bridge`：`mail_archive` 放行、`mail_search` 仍委派
+
+## BL3 用例与发布
+
+- [x] `verify-mail`：参数校验、0 匹配不审批、approval 缺失/拒绝不执行、allowed-once 单次、folder 默认/覆盖、Python self-test
+- [x] 四门禁：`build` / `--noEmit` / `check-style` / `verify-all`
+- [x] 发布 `2026.11.19-15`、重启、`[startup] 8/8`
+- [x] 文档：`docs/09` J2、`docs/08` J2、`docs/16 §12.50`、`AGENTS.md` Slice BL
+- [ ] 提交推送（ailearn）

@@ -520,6 +520,12 @@
     新增 `input_tokens/output_tokens/cost_usd`，**每条 settle 路径**调用 `recordUsage` 累加（重试不覆盖）；
     任务日报表头追加 `费用 $x` 或 `tokens a/b`。价格用 `DSH_WFXM_PRICE_{IN,OUT}_USD_PER_MTOK`，默认 0
     （只记 token）。`verify-executor 32` / `verify-tasks 115` / `verify-digest 14`（[16 §12.49](docs/16-部署与运行.md)）。
+  - **J2 邮件归档（Slice BL）**：`mail_archive`（R2，仅 `chat`）支持单封 `uid` / 最多 50 个 `uids` /
+    与 `mail_search` 同款筛选（先冻结 uid），三者互斥且不能为空；先 `ctx.get('approval').request`
+    且仅 `allowed-once` 执行，缺失/拒绝即 `MailError('approval')` 且邮件不动；Python 侧读写 INBOX、
+    目标夹不存在则创建、仅 `UID MOVE`（无 `MOVE` 报错，不 COPY+EXPUNGE）。归档夹默认 `Archive`，
+    `DSH_WFXM_MAIL_ARCHIVE_FOLDER` 覆盖（非 ASCII 用 modified UTF-7）。③ 审批桥在已批准 R2/R3
+    任务里也放行 `mail_archive`。`verify-mail 38` / `verify-approval-bridge 9`（[16 §12.50](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

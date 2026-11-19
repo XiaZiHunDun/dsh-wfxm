@@ -152,17 +152,19 @@ export function apply(ctx: ContextLike): void {
   // 直接返回 allowed-once；其余工具仍 fail-closed（delegate 到 unavailable）。
   const approvedLevel = process.env.DSH_WFXM_APPROVED_LEVEL
   if (process.env.DSH_WFXM_TASK_ID !== undefined && (approvedLevel === 'R2' || approvedLevel === 'R3')) {
+    // 已批准任务下沉到工具级闸门：服务写操作与邮件归档都只放行这一次。
+    const approvedWriteTools = new Set(['mail_archive'])
     ctx.on(
       'approval/request',
       (request: { toolName?: unknown }, next: () => Promise<unknown>) => {
         const toolName = typeof request?.toolName === 'string' ? request.toolName : ''
-        if (!toolName.startsWith('svc_')) return next()
+        if (!toolName.startsWith('svc_') && !approvedWriteTools.has(toolName)) return next()
         ctx.logger?.info?.(`[governance] tool approval granted by approved ${approvedLevel} task: ${toolName}`)
         return 'allowed-once'
       },
       { global: true },
     )
-    ctx.logger?.info?.(`[governance] approved ${approvedLevel} task answers svc_* tool gates`)
+    ctx.logger?.info?.(`[governance] approved ${approvedLevel} task answers svc_*/mail_archive tool gates`)
   }
 
   // ③ 管理面（AR26）：只在 Web 渠道挂路由；模型工具面拿不到授予/撤销。

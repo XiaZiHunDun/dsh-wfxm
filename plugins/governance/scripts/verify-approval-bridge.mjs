@@ -63,6 +63,12 @@ check('svc_* is allowed once by the task-level approval', svc === 'allowed-once'
 const other = await answer({ toolName: 'write', arguments: { path: '/tmp/x' } }, passThrough)
 check('other tools still fall through (fail-closed)', other === 'denied' && delegated === 1, String(other))
 
+const mail = await answer({ toolName: 'mail_archive', arguments: { uids: [7] } }, passThrough)
+check('mail_archive is allowed once by the task-level approval', mail === 'allowed-once' && delegated === 1, String(mail))
+
+const search = await answer({ toolName: 'mail_search', arguments: {} }, passThrough)
+check('mail_search still falls through', search === 'denied' && delegated === 2, String(search))
+
 // ---- R1 / 无任务：不注册，闸门保持原样 ---------------------------------------
 
 setEnv('task-plain', 'R1')

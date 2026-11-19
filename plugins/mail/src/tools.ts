@@ -6,7 +6,13 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { readMailAccount, type MailAccount, type MailConfigResult } from './config.js'
+import {
+  DEFAULT_ARCHIVE_FOLDER,
+  readArchiveFolder,
+  readMailAccount,
+  type MailAccount,
+  type MailConfigResult,
+} from './config.js'
 import {
   buildMailDigest,
   renderDigest,
@@ -15,8 +21,11 @@ import {
 } from './digest.js'
 import {
   MailError,
+  archiveMail,
   readMail,
   searchMail,
+  type MailArchiveRequest,
+  type MailArchiveResult,
   type MailReadRequest,
   type MailReadResult,
   type MailSearchRequest,
@@ -33,13 +42,47 @@ export const MAIL_TOOL_RISK = {
   mail_search: 'R0',
   mail_read: 'R0',
   mail_digest: 'R0',
+  mail_archive: 'R2',
 } as const
 
 export const MAIL_TOOL_PORT = 'Mail'
 
+interface ApprovalServiceLike {
+  request(req: {
+    agent: unknown
+    toolName: string
+    callId: string
+    reason: string
+    signal?: AbortSignal
+  }): Promise<string>
+}
+
+interface ExecutionContextLike {
+  agent?: unknown
+  callId: string
+  signal?: AbortSignal
+}
+
 export interface ContextLike {
   tools?: { register(tool: unknown): void }
+  get?(name: string): unknown
   logger?: { info?(message: string): void; warn?(message: string): void }
+}
+
+/**
+ * `mail_archive` 的入参：显式 uid/uids 与筛选条件二选一。
+ * `folder` 可覆盖默认归档夹。
+ */
+export interface MailArchiveArgs {
+  uid?: number
+  uids?: number[]
+  query?: string
+  from?: string
+  subject?: string
+  since?: string
+  before?: string
+  limit?: number
+  folder?: string
 }
 
 export interface MailToolsDeps {
@@ -47,6 +90,11 @@ export interface MailToolsDeps {
   search?: (request: MailSearchRequest, options: { account: MailAccount }) => Promise<MailSearchResult>
   read?: (request: MailReadRequest, options: { account: MailAccount }) => Promise<MailReadResult>
   digest?: (request: MailDigestRequest, options: { account: MailAccount }) => Promise<MailDigestResult>
+  archive?: (request: MailArchiveRequest, options: { account: MailAccount }) => Promise<MailArchiveResult>
+  /** Tests pin the approval service; production reads `ctx.get('approval')`. */
+  approval?: () => ApprovalServiceLike | undefined
+  /** Tests pin the archive folder; production reads the env. */
+  archiveFolder?: () => string
   /** Tests pin "now"; production uses the wall clock. */
   now?: () => Date
 }
@@ -124,6 +172,61 @@ export function validateDigestArgs(args: Record<string, unknown>): MailDigestReq
     }
     request.unreadOnly = args.unreadOnly
   }
+  return request
+}
+
+const FILTER_FIELDS = ['query', 'from', 'subject', 'since', 'before', 'limit'] as const
+
+function validateFolder(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw new MailError('protocol', 'folder must be a string')
+  const folder = value.trim()
+  if (folder === '') throw new MailError('protocol', 'folder must not be empty')
+  if (folder.length > 100) throw new MailError('protocol', 'folder must be at most 100 characters')
+  if (/[\u0000-\u001f\u007f]/.test(folder)) {
+    throw new MailError('protocol', 'folder must not contain control characters')
+  }
+  return folder
+}
+
+/** 显式 uid/uids 与筛选条件互斥；两者都不给时拒绝，禁止隐式「归档全部」。 */
+export function validateArchiveArgs(args: Record<string, unknown>): MailArchiveArgs {
+  const hasUid = args.uid !== undefined && args.uid !== null
+  const hasUids = args.uids !== undefined && args.uids !== null
+  const hasFilter = FILTER_FIELDS.some((field) => args[field] !== undefined && args[field] !== null)
+  if (hasUid && hasUids) throw new MailError('protocol', 'uid and uids are mutually exclusive')
+  if ((hasUid || hasUids) && hasFilter) {
+    throw new MailError('protocol', 'uid/uids cannot be combined with search filters')
+  }
+  if (!hasUid && !hasUids && !hasFilter) {
+    throw new MailError('protocol', 'provide uid, uids or at least one search filter')
+  }
+
+  const request: MailArchiveArgs = {}
+  if (hasUid) {
+    const uid = Number(args.uid)
+    if (!Number.isInteger(uid) || uid <= 0) throw new MailError('protocol', 'uid must be a positive integer')
+    request.uid = uid
+  }
+  if (hasUids) {
+    if (!Array.isArray(args.uids)) throw new MailError('protocol', 'uids must be an array of positive integers')
+    const seen: number[] = []
+    for (const item of args.uids) {
+      const uid = Number(item)
+      if (!Number.isInteger(uid) || uid <= 0) {
+        throw new MailError('protocol', 'uids must contain only positive integers')
+      }
+      if (!seen.includes(uid)) seen.push(uid)
+    }
+    if (seen.length === 0) throw new MailError('protocol', 'uids must not be empty')
+    if (seen.length > 50) throw new MailError('protocol', 'uids must contain at most 50 entries')
+    request.uids = seen
+  }
+  if (!hasUid && !hasUids) {
+    Object.assign(request, validateSearchArgs(args))
+  }
+  const folder = validateFolder(args.folder)
+  if (folder !== undefined) request.folder = folder
   return request
 }
 
@@ -231,6 +334,21 @@ function renderRead(result: MailReadResult): string {
   ].join('\n')
 }
 
+const ARCHIVE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    folder: { type: 'string', required: true },
+    moved: { type: 'number', required: true },
+    uids: { type: 'array', required: true, items: { type: 'number' } },
+  },
+} as const
+
+function renderArchive(result: MailArchiveResult): string {
+  if (result.moved === 0) return 'archived: 0 messages（没有匹配的邮件，未移动）'
+  return `已归档 ${result.moved} 封到 ${result.folder}：uid=${result.uids.join(',')}`
+}
+
 export function registerMailTools(ctx: ContextLike, deps: MailToolsDeps = {}): void {
   const registry = ctx.tools
   if (registry === undefined) {
@@ -239,6 +357,9 @@ export function registerMailTools(ctx: ContextLike, deps: MailToolsDeps = {}): v
   const loadConfig = deps.config ?? (() => readMailAccount())
   const doSearch = deps.search ?? (async (request, options) => searchMail(request, options))
   const doRead = deps.read ?? (async (request, options) => readMail(request, options))
+  const doArchive = deps.archive ?? (async (request, options) => archiveMail(request, options))
+  const folderOf = deps.archiveFolder ?? (() => readArchiveFolder())
+  const approverOf = deps.approval ?? (() => ctx.get?.('approval') as ApprovalServiceLike | undefined)
   const doDigest = deps.digest ?? (async (request, options) => {
     const now = deps.now?.() ?? new Date()
     const hours = request.hours ?? 24
@@ -311,9 +432,70 @@ export function registerMailTools(ctx: ContextLike, deps: MailToolsDeps = {}): v
       return doRead(request, { account: accountOf() })
     },
   }))
+
+  registry.register(defineTool({
+    name: 'mail_archive',
+    description: 'Move messages from INBOX to the archive folder. Requires explicit user approval on every call (R2): nothing is moved when approval is missing, rejected or cancelled. Never deletes, sends or marks messages read.',
+    parameters: {
+      uid: { type: 'number', description: 'Single message uid from mail_search.' },
+      uids: {
+        type: 'array',
+        items: { type: 'number' },
+        description: 'Up to 50 message uids from mail_search. Mutually exclusive with uid and filters.',
+      },
+      query: { type: 'string', description: 'Free-text filter; resolved to explicit uids before approval.' },
+      from: { type: 'string', description: 'Sender substring or address.' },
+      subject: { type: 'string', description: 'Subject substring.' },
+      since: { type: 'string', description: 'Only messages on/after this date (YYYY-MM-DD).' },
+      before: { type: 'string', description: 'Only messages before this date (YYYY-MM-DD).' },
+      limit: { type: 'number', description: '1..50, default 20; only used with filters.' },
+      folder: { type: 'string', description: 'Destination folder; defaults to the configured archive folder.' },
+    },
+    output: {
+      schema: ARCHIVE_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderArchive(value) }],
+    },
+    async execute(args, exec) {
+      const request = validateArchiveArgs(args as Record<string, unknown>)
+      const account = accountOf()
+      const folder = request.folder ?? folderOf()
+      const uids = request.uid !== undefined
+        ? [request.uid]
+        : request.uids ?? (await doSearch({
+          ...request.query === undefined ? {} : { query: request.query },
+          ...request.from === undefined ? {} : { from: request.from },
+          ...request.subject === undefined ? {} : { subject: request.subject },
+          ...request.since === undefined ? {} : { since: request.since },
+          ...request.before === undefined ? {} : { before: request.before },
+          limit: request.limit ?? 20,
+        }, { account })).messages.map((message) => message.uid)
+
+      if (uids.length === 0) return { folder, moved: 0, uids: [] }
+
+      const approver = approverOf()
+      if (approver === undefined) {
+        throw new MailError('approval', '邮件归档需要审批，但审批服务未挂载；未移动任何邮件')
+      }
+      const call = exec as ExecutionContextLike | undefined
+      if (call?.agent === undefined) {
+        throw new MailError('approval', '邮件归档需要审批，但当前没有可路由审批的会话；未移动任何邮件')
+      }
+      const outcome = await approver.request({
+        agent: call.agent,
+        toolName: 'mail_archive',
+        callId: call.callId,
+        reason: `mail_archive: ${uids.length} 封 → ${folder}`,
+        ...call.signal === undefined ? {} : { signal: call.signal },
+      })
+      if (outcome !== 'allowed-once') {
+        throw new MailError('approval', `邮件归档未获批准（${outcome}）；未移动任何邮件`)
+      }
+      return doArchive({ uids, folder }, { account })
+    },
+  }))
 }
 
 export function apply(ctx: ContextLike): void {
   registerMailTools(ctx)
-  ctx.logger?.info?.('[mail] read-only IMAP tools registered (mail_search, mail_read, mail_digest)')
+  ctx.logger?.info?.('[mail] IMAP tools registered (mail_search, mail_read, mail_digest, mail_archive)')
 }

@@ -2564,3 +2564,62 @@ worker 看到行已 `cancelled` → 释放资源锁、返回 `skipped:'cancelled
 - 真机验收（2026-11-18，飞书网页版）：停 → 普通消息被拦（任务数 34→34）→ 恢复，通过。
   期间修复停止文件误落 release 目录（服务用户不可写）→ `DSH_WFXM_HALT_FILE=/var/lib/dsh-wfxm/KILL`；
   以及 `status_all` 文案。修复后发布 `2026.11.18-14`。
+
+## Slice BL Spec — J2 邮件归档（R2，2026-11-19）
+
+### 1. 问题
+
+- J2 现有 `mail_search` / `mail_read` / `mail_digest` 全是 R0 只读；「归档」一直标未做。
+- 归档是**写外部系统**（把 INBOX 邮件移到归档夹），必须 R2 审批；不能静默执行，也不能退化成删除。
+
+### 2. 机制
+
+- **配置**：`DSH_WFXM_MAIL_ARCHIVE_FOLDER`，默认 `Archive`；空值回落默认。
+  非 ASCII 夹名在 Python 侧用 IMAP modified UTF-7 编码，避免 `imaplib` 直接报 UnicodeEncodeError。
+- **工具 `mail_archive`（R2，端口 `Mail`，仅 `chat` preset）**：
+  - 目标集合二选一：显式 `uid` / `uids`（1..50），或与 `mail_search` 相同的筛选
+    （`query` / `from` / `subject` / `since` / `before` / `limit`，默认 20、上限 50）。
+    两者同时出现或都不出现 → `protocol` 错误；**禁止隐式「归档全部」**。
+  - 筛选模式先走一次 `searchMail` 冻结 uid（防止审批期间新邮件被卷入），再请求审批。
+  - 审批：`ctx.get('approval').request({ agent, toolName:'mail_archive', callId, reason })`，
+    仅 `allowed-once` 继续；审批服务缺失 / 被拒 / 取消 → 抛 `MailError('approval')`，
+    **邮件一封不动**（fail-closed，AR13）。
+  - 执行：Python `action='archive'`，以**读写**方式打开 INBOX；目标夹不存在则 `CREATE` 后复查；
+    使用 `UID MOVE`。服务器不支持 `MOVE` → `protocol` 错误，**不做 COPY+EXPUNGE 兜底**
+    （避免误删其他客户端已标记删除的邮件）。
+  - 返回 `{ folder, moved, uids }`；目标集合为空时直接返回 `moved: 0`，
+    不请求审批、不产生写操作。
+- **审批桥**：③ 的 `approval/request` 应答器在「已批准 R2/R3 任务子进程」里，
+  除 `svc_*` 外也放行 `mail_archive` → `allowed-once`；其余工具仍 `next()` 交回原策略（默认 fail-closed）。
+
+### 3. 边界
+
+- 只做 INBOX → 归档夹的移动；不删除、不发送、不标已读、不跨账号、不改写正文。
+- 单次最多 50 封；不做定时批量归档，不做「提取待办」。
+- 不新增 schema / 管理面 / 环境变量以外的配置；不注册到 orchestrator 前台。
+- 邮件头与正文仍是不可信数据（AR16），审批 reason 只拼 uid 数量与夹名，不回显正文。
+
+### 4. 验证
+
+- `verify-mail`：
+  - `validateArchiveArgs`：`uid`/`uids`/筛选互斥、0 与 51 拒绝、非整数拒绝；
+  - 目标集合为空 → `moved:0` 且 **不调用** approver；
+  - approver 缺失 / 返回 `rejected` → 抛 `approval` 且 **不调用** python；
+  - `allowed-once` → 仅执行一次，folder 默认与覆盖都正确；
+  - Python `self-test` 覆盖 modified UTF-7 与 uid 列表校验。
+- `verify-approval-bridge`：已批准 R2/R3 任务下 `mail_archive` → `allowed-once`；
+  `mail_search` / 其他工具仍委派。
+- 四门禁（build / `--noEmit` / check-style / verify-all）+ `verify-mail`。
+- 发布 `2026.11.19-15`，重启后 `[startup] 8/8`，`verify-all` 全绿。
+
+### 5. 文件落点
+
+- `plugins/mail/src/config.ts`：`DEFAULT_ARCHIVE_FOLDER`、`readArchiveFolder`
+- `plugins/mail/src/query.ts`：`MailErrorCode` 增 `approval`；`MailArchiveResult`、`archiveMail`
+- `plugins/mail/src/tools.ts`：`validateArchiveArgs`、注册 `mail_archive`、`MAIL_TOOL_RISK.mail_archive='R2'`
+- `plugins/mail/src/index.ts`：导出新增类型与函数
+- `plugins/mail/scripts/mail-query.py`：`archive` action、`encode_mailbox`、`ensure_folder`、`UID MOVE`
+- `plugins/mail/scripts/verify-mail.mjs`：上述用例
+- `plugins/governance/src/index.ts`：审批桥放行 `mail_archive`
+- `plugins/governance/scripts/verify-approval-bridge.mjs`：新增 2 例
+- 文档：`docs/09` J2、`docs/08` J2、`docs/16 §12.50`、`AGENTS.md` Slice BL、根 `tasks.md`

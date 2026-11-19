@@ -1,17 +1,22 @@
 export type { MailAccount, MailConfigOptions, MailConfigResult } from './config.js'
 export {
+  DEFAULT_ARCHIVE_FOLDER,
   DEFAULT_CREDENTIALS_PATH,
   DEFAULT_MAIL_CONFIG_PATH,
+  readArchiveFolder,
   readMailAccount,
   resolveSecretRef,
 } from './config.js'
 export {
   MailError,
+  archiveMail,
   queryMail,
   readMail,
   searchMail,
 } from './query.js'
 export type {
+  MailArchiveRequest,
+  MailArchiveResult,
   MailAttachmentInfo,
   MailErrorCode,
   MailMessageSummary,
@@ -45,8 +50,9 @@ export {
   isIsoDate,
   name,
   registerMailTools,
+  validateArchiveArgs,
   validateDigestArgs,
   validateReadArgs,
   validateSearchArgs,
 } from './tools.js'
-export type { ContextLike, MailToolsDeps } from './tools.js'
+export type { ContextLike, MailArchiveArgs, MailToolsDeps } from './tools.js'

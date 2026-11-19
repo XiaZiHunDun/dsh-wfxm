@@ -10,20 +10,24 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import {
+  DEFAULT_ARCHIVE_FOLDER,
   DEFAULT_CREDENTIALS_PATH,
   MAIL_TOOL_RISK,
   MailError,
+  archiveMail,
   buildMailDigest,
   classifyMail,
   digestDue,
   isIsoDate,
   localDayMinutes,
   parseDigestEnv,
+  readArchiveFolder,
   readDigestState,
   readMailAccount,
   registerMailTools,
   renderDigest,
   searchMail,
+  validateArchiveArgs,
   validateDigestArgs,
   validateReadArgs,
   validateSearchArgs,
@@ -211,14 +215,18 @@ function fakeContext() {
   }
 }
 
-await check('registers exactly three read-only tools', () => {
+await check('registers three read-only tools plus one approved write tool', () => {
   const ctx = fakeContext()
   registerMailTools(ctx)
   const names = ctx.captured.map((tool) => tool.name).sort()
-  return names.length === 3 && names.join(',') === 'mail_digest,mail_read,mail_search'
-    && ctx.captured.every((tool) => String(tool.description).toLowerCase().includes('read-only'))
+  const readOnly = ctx.captured.filter((tool) => tool.name !== 'mail_archive')
+  const archive = ctx.captured.find((tool) => tool.name === 'mail_archive')
+  return names.length === 4 && names.join(',') === 'mail_archive,mail_digest,mail_read,mail_search'
+    && readOnly.every((tool) => String(tool.description).toLowerCase().includes('read-only'))
+    && archive !== undefined
+    && String(archive.description).toLowerCase().includes('approval')
     && MAIL_TOOL_RISK.mail_search === 'R0' && MAIL_TOOL_RISK.mail_read === 'R0'
-    && MAIL_TOOL_RISK.mail_digest === 'R0'
+    && MAIL_TOOL_RISK.mail_digest === 'R0' && MAIL_TOOL_RISK.mail_archive === 'R2'
 })
 
 await check('tools surface a readable error when mail is not configured', async () => {
@@ -465,13 +473,123 @@ await check('digest state survives missing/corrupt files and round-trips', () =>
     && readDigestState(null).lastDate === null
 })
 
+// ---- 归档（BL1） ---------------------------------------------------------------
+await check('archive args require one explicit target form', () => {
+  const okUids = validateArchiveArgs({ uids: [3, 3, 1] })
+  const okFilter = validateArchiveArgs({ since: '2026-11-01', limit: 5 })
+  return rejects(() => validateArchiveArgs({}), 'protocol')
+    && rejects(() => validateArchiveArgs({ uid: 1, uids: [2] }), 'protocol')
+    && rejects(() => validateArchiveArgs({ uid: 1, query: '账单' }), 'protocol')
+    && rejects(() => validateArchiveArgs({ uids: [] }), 'protocol')
+    && rejects(() => validateArchiveArgs({ uids: Array.from({ length: 51 }, (_, index) => index + 1) }), 'protocol')
+    && rejects(() => validateArchiveArgs({ uids: [0] }), 'protocol')
+    && rejects(() => validateArchiveArgs({ uids: [1.5] }), 'protocol')
+    && rejects(() => validateArchiveArgs({ uid: 1, folder: 'bad\nname' }), 'protocol')
+    && okUids.uids.join() === '3,1'
+    && okFilter.limit === 5 && okFilter.since === '2026-11-01'
+    && validateArchiveArgs({ uid: 7, folder: 'Archive/2026' }).folder === 'Archive/2026'
+})
+
+await check('archive folder defaults to Archive and honors the env override', () => {
+  return DEFAULT_ARCHIVE_FOLDER === 'Archive'
+    && readArchiveFolder({}) === 'Archive'
+    && readArchiveFolder({ DSH_WFXM_MAIL_ARCHIVE_FOLDER: '   ' }) === 'Archive'
+    && readArchiveFolder({ DSH_WFXM_MAIL_ARCHIVE_FOLDER: ' 已归档 ' }) === '已归档'
+})
+
+await check('archive passes explicit uids and folder to the interpreter', async () => {
+  const script = join(dir, 'archive-fake.mjs')
+  writeFileSync(script, `
+let input = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => { input += chunk })
+process.stdin.on('end', () => {
+  const payload = JSON.parse(input)
+  console.log(JSON.stringify({
+    ok: true,
+    action: payload.action,
+    folder: payload.request.folder,
+    moved: payload.request.uids.length,
+    uids: payload.request.uids,
+  }))
+})
+`)
+  const result = await archiveMail({ uids: [3, 4], folder: 'Archive/2026' }, { ...queryOptions, scriptPath: script })
+  return result.folder === 'Archive/2026' && result.moved === 2 && result.uids.join() === '3,4'
+})
+
+await check('archive with no matches does not ask for approval or write', async () => {
+  let approvals = 0
+  let archived = 0
+  const ctx = fakeContext()
+  registerMailTools(ctx, {
+    config: () => ({ ok: true, source: 'env', account }),
+    search: async () => ({ mailbox: 'INBOX', total: 0, scanned: 0, localFilter: false, messages: [] }),
+    archive: async () => { archived += 1; return { folder: 'Archive', moved: 1, uids: [1] } },
+    approval: () => ({ request: async () => { approvals += 1; return 'allowed-once' } }),
+  })
+  const tool = ctx.captured.find((item) => item.name === 'mail_archive')
+  const value = await tool.execute({ query: '不存在' }, { agent: {}, callId: 'c1' })
+  return value.moved === 0 && value.uids.length === 0 && value.folder === 'Archive'
+    && approvals === 0 && archived === 0
+})
+
+await check('archive fails closed without approval service or on rejection', async () => {
+  const accountOk = { ok: true, source: 'env', account }
+  const run = async (approval) => {
+    let archived = 0
+    const ctx = fakeContext()
+    registerMailTools(ctx, {
+      config: () => accountOk,
+      archive: async () => { archived += 1; return { folder: 'Archive', moved: 1, uids: [7] } },
+      ...approval === undefined ? {} : { approval },
+    })
+    const tool = ctx.captured.find((item) => item.name === 'mail_archive')
+    try {
+      await tool.execute({ uid: 7 }, { agent: {}, callId: 'c2' })
+      return { threw: false, archived }
+    } catch (error) {
+      return { threw: error instanceof MailError && error.code === 'approval', archived }
+    }
+  }
+  const missing = await run(undefined)
+  const rejected = await run(() => ({ request: async () => 'rejected' }))
+  return missing.threw && missing.archived === 0 && rejected.threw && rejected.archived === 0
+})
+
+await check('archive executes once on allowed-once and echoes folder override', async () => {
+  let calls = 0
+  let seen = null
+  let reason = ''
+  const ctx = fakeContext()
+  registerMailTools(ctx, {
+    config: () => ({ ok: true, source: 'env', account }),
+    archive: async (request) => {
+      calls += 1
+      seen = request
+      return { folder: request.folder, moved: request.uids.length, uids: request.uids }
+    },
+    approval: () => ({
+      request: async (req) => {
+        reason = req.reason
+        return 'allowed-once'
+      },
+    }),
+  })
+  const tool = ctx.captured.find((item) => item.name === 'mail_archive')
+  const value = await tool.execute({ uids: [4, 5], folder: 'Archive/2026' }, { agent: {}, callId: 'c3' })
+  return calls === 1 && seen.uids.join() === '4,5' && seen.folder === 'Archive/2026'
+    && value.moved === 2 && value.folder === 'Archive/2026'
+    && reason.includes('2 封') && reason.includes('Archive/2026')
+})
+
 // ---- Python 自测 ---------------------------------------------------------------
 await check('python backend self-test passes', () => {
   const script = fileURLToPath(new URL('../scripts/mail-query.py', import.meta.url))
   const result = spawnSync('python3', [script], { input: '{"action":"self-test"}', encoding: 'utf8' })
   if (result.status !== 0) return false
   const parsed = JSON.parse(result.stdout)
-  return parsed.ok === true && parsed.checks >= 8
+  return parsed.ok === true && parsed.checks >= 10
 })
 
 // ---- profile 安装脚本 ----------------------------------------------------------

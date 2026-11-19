@@ -12,6 +12,18 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export const DEFAULT_MAIL_CONFIG_PATH = join(homedir(), '.dsh/integrations/dsh-mail/config.json')
+
+/** 归档目标文件夹；不存在时由 IMAP 侧创建。 */
+export const DEFAULT_ARCHIVE_FOLDER = 'Archive'
+
+/**
+ * `DSH_WFXM_MAIL_ARCHIVE_FOLDER` 覆盖归档夹；空值回落默认。
+ * 非 ASCII 名称由 Python 侧编码成 IMAP modified UTF-7。
+ */
+export function readArchiveFolder(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.DSH_WFXM_MAIL_ARCHIVE_FOLDER?.trim()
+  return raw === undefined || raw === '' ? DEFAULT_ARCHIVE_FOLDER : raw
+}
 /**
  * 邮件凭据放在集成目录，**不要**复用 `~/.dsh/.credentials.yaml`：
  * 那是 dsh 自己的凭据库，`refs` 键必须是 POSIX 环境变量名；`mail/163`

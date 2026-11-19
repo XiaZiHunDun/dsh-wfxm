@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import type { MailAccount } from './config.js'
 
-export type MailErrorCode = 'config' | 'auth' | 'network' | 'timeout' | 'protocol' | 'parse' | 'unavailable'
+export type MailErrorCode = 'config' | 'auth' | 'network' | 'timeout' | 'protocol' | 'parse' | 'unavailable' | 'approval'
 
 export class MailError extends Error {
   readonly code: MailErrorCode
@@ -71,6 +71,19 @@ export interface MailReadResult {
   text: string
   truncated: boolean
   attachments: MailAttachmentInfo[]
+}
+
+export interface MailArchiveRequest {
+  /** 要移动的邮件 uid；调用方已冻结目标集合。 */
+  uids: number[]
+  /** 目标归档夹。 */
+  folder: string
+}
+
+export interface MailArchiveResult {
+  folder: string
+  moved: number
+  uids: number[]
 }
 
 export interface QueryMailOptions {
@@ -165,8 +178,8 @@ function runScript(
 }
 
 export async function queryMail(
-  request: MailSearchRequest | MailReadRequest,
-  options: QueryMailOptions & { action: 'search' | 'read' },
+  request: MailSearchRequest | MailReadRequest | MailArchiveRequest,
+  options: QueryMailOptions & { action: 'search' | 'read' | 'archive' },
 ): Promise<Record<string, unknown>> {
   return runScript({ action: options.action, account: options.account, request }, options)
 }
@@ -182,6 +195,18 @@ export async function searchMail(
     scanned: Number(result.scanned ?? 0),
     localFilter: result.localFilter === true,
     messages: Array.isArray(result.messages) ? result.messages as MailMessageSummary[] : [],
+  }
+}
+
+export async function archiveMail(
+  request: MailArchiveRequest,
+  options: QueryMailOptions,
+): Promise<MailArchiveResult> {
+  const result = await queryMail(request, { ...options, action: 'archive' })
+  return {
+    folder: String(result.folder ?? request.folder),
+    moved: Number(result.moved ?? 0),
+    uids: Array.isArray(result.uids) ? result.uids as number[] : [],
   }
 }
 

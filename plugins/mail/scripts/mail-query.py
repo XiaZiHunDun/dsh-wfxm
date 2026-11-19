@@ -8,11 +8,13 @@
 输入：
   {"action":"search","account":{host,port,secure,user,password},"request":{...}}
   {"action":"read","account":{...},"request":{"uid":123,"maxChars":4000}}
+  {"action":"archive","account":{...},"request":{"uids":[1,2],"folder":"Archive"}}
   {"action":"self-test"}
 """
 
 from __future__ import annotations
 
+import base64
 import email
 import email.policy
 import imaplib
@@ -30,6 +32,7 @@ DEFAULT_LIMIT = 20
 MAX_SCAN = 200
 MAX_BODY_CAP = 20000
 DEFAULT_BODY = 4000
+DEFAULT_ARCHIVE_FOLDER = "Archive"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -151,6 +154,81 @@ def has_non_ascii(*values) -> bool:
 
 def quote(value: str) -> str:
     return '"' + str(value).replace('"', '\\"') + '"'
+
+
+def encode_mailbox(name: str) -> bytes:
+    """IMAP modified UTF-7（RFC 3501 §5.1.3）：非 ASCII 夹名不能直接交给 imaplib。"""
+    out: list[str] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        if not buf:
+            return
+        raw = "".join(buf).encode("utf-16-be")
+        encoded = base64.b64encode(raw).decode("ascii").rstrip("=").replace("/", ",")
+        out.append("&" + encoded + "-")
+        buf.clear()
+
+    for char in name:
+        code = ord(char)
+        if 0x20 <= code <= 0x7E:
+            flush()
+            out.append("&-" if char == "&" else char)
+        else:
+            buf.append(char)
+    flush()
+    return "".join(out).encode("ascii")
+
+
+def quote_mailbox(encoded: bytes) -> bytes:
+    return b'"' + encoded.replace(b"\\", b"\\\\").replace(b'"', b'\\"') + b'"'
+
+
+def validate_uids(raw) -> list[int]:
+    if not isinstance(raw, list):
+        raise MailError("protocol", "uids must be a list of positive integers")
+    seen: list[int] = []
+    for item in raw:
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise MailError("protocol", "uids must contain only positive integers")
+        if item <= 0:
+            raise MailError("protocol", "uids must contain only positive integers")
+        if item not in seen:
+            seen.append(item)
+    if not seen:
+        raise MailError("protocol", "uids must not be empty")
+    if len(seen) > MAX_LIMIT:
+        raise MailError("protocol", f"uids must contain at most {MAX_LIMIT} entries")
+    return seen
+
+
+def supports_move(imap) -> bool:
+    try:
+        typ, data = imap.capability()
+    except Exception:
+        return False
+    if typ != "OK":
+        return False
+    for item in data or []:
+        token = item if isinstance(item, bytes) else str(item).encode("ascii", "ignore")
+        if b"MOVE" in token:
+            return True
+    return False
+
+
+def ensure_folder(imap, folder: str, encoded: bytes) -> None:
+    """目标夹不存在时创建并复查；无法确认可用则报错，不做静默降级。"""
+    quoted = quote_mailbox(encoded)
+    typ, _ = imap.select(quoted, readonly=True)
+    if typ == "OK":
+        return
+    try:
+        imap.create(quoted)
+    except imaplib.IMAP4.error:
+        pass
+    typ, data = imap.select(quoted, readonly=True)
+    if typ != "OK":
+        raise MailError("protocol", f"archive folder {folder!r} is not available: {data!r}")
 
 
 def fetch_headers(imap, uids: list[int]) -> list[dict]:
@@ -275,6 +353,23 @@ def read_mail(imap, request: dict) -> dict:
     raise MailError("protocol", f"uid {uid} not found in INBOX")
 
 
+def archive_mail(imap, request: dict) -> dict:
+    """把 INBOX 中显式指定的 uid 移到归档夹；只做 MOVE，不删除、不发送。"""
+    uids = validate_uids(request.get("uids"))
+    folder = str(request.get("folder") or DEFAULT_ARCHIVE_FOLDER)
+    if not supports_move(imap):
+        raise MailError("protocol", "server does not support UID MOVE; refusing to archive by COPY+EXPUNGE")
+    ensure_folder(imap, folder, encode_mailbox(folder))
+    typ, data = imap.select("INBOX", readonly=False)
+    if typ != "OK":
+        raise MailError("protocol", f"cannot open INBOX for archiving: {data!r}")
+    uid_set = ",".join(str(uid) for uid in uids)
+    typ, data = imap.uid("MOVE", uid_set, quote_mailbox(encode_mailbox(folder)))
+    if typ != "OK":
+        raise MailError("protocol", f"UID MOVE failed: {data!r}")
+    return {"folder": folder, "moved": len(uids), "uids": uids}
+
+
 def send_client_id(imap) -> None:
     """163/126 要求客户端先发 IMAP ID，否则 SELECT 返回 Unsafe Login。
 
@@ -330,6 +425,14 @@ def self_test() -> int:
     check("decode header", decode_header_value("=?UTF-8?B?5L2g5aW9?=") == "你好")
     check("imap date", imap_date("2026-11-18") == "18-Nov-2026")
     check("html text", html_to_text("<p>hi<br>there</p>").replace("\n\n", "\n") == "hi\nthere")
+    check("mailbox ascii", encode_mailbox("Archive") == b"Archive")
+    check("mailbox ampersand", encode_mailbox("A&B") == b"A&-B")
+    encoded = encode_mailbox("已归档")
+    payload = encoded[1:-1].replace(b",", b"/")
+    payload += b"=" * (-len(payload) % 4)
+    check("mailbox modified utf-7", encoded.startswith(b"&") and encoded.endswith(b"-")
+          and base64.b64decode(payload).decode("utf-16-be") == "已归档")
+    check("uid list", validate_uids([3, 1, 3]) == [3, 1])
 
     raw = (
         "From: =?UTF-8?B?5byg5LiJ?= <a@example.com>\r\n"
@@ -383,14 +486,19 @@ def main() -> int:
     action = payload.get("action")
     if action == "self-test":
         return self_test()
-    if action not in ("search", "read"):
+    if action not in ("search", "read", "archive"):
         return emit_error("protocol", f"unknown action {action!r}")
 
     imap = None
     try:
         request = payload.get("request") or {}
         imap = connect(payload.get("account") or {})
-        result = search_mail(imap, request) if action == "search" else read_mail(imap, request)
+        if action == "search":
+            result = search_mail(imap, request)
+        elif action == "read":
+            result = read_mail(imap, request)
+        else:
+            result = archive_mail(imap, request)
         print(json.dumps({"ok": True, **result}, ensure_ascii=False))
         return 0
     except MailError as error:
