@@ -1702,3 +1702,49 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 修复 163 IMAP `ID`（`xatom`）、邮件凭据不得写入 dsh 全局凭据库
 - [x] 文档：`docs/08 J2`、`docs/09 J2`、`docs/16 §12.37`、`AGENTS.md Slice BC`
 - [ ] 每日 08:30 自动摘要（需目标会话与调度，待按需摘要稳定后再做）
+
+# Slice BD — 一期结项收口（J2 每日摘要 / 文档对齐，2026-11-19，release `2026.11.19-9`）
+
+## BD1 `@dsh-wfxm/mail` 每日调度
+
+- [x] 新增 `plugins/mail/src/schedule.ts`：`parseDigestEnv` / `localDayMinutes` / `digestDue` / `readDigestState` / `writeDigestState`
+- [x] `parseDigestEnv` fail-fast：`AT` 必须 `HH:MM`，hours 1..168，limit 1..50，时区非法启动即失败
+- [x] 状态文件原子写（`.tmp` + rename），缺失/损坏返回 `lastDate=null`
+- [x] `plugins/mail/src/index.ts` 导出
+- [x] `verify-mail` 31 例（新增 7 例：关闭/解析/越界/显式项/时区/due/状态）
+
+## BD2 宿主每日投递
+
+- [x] `HostMailDigestOptions` + `WfxmHostOptions.mailDigest`
+- [x] `fireDailyDigest()`：到点判定 → 选线程 → 注入/默认 produce → 幂等入 outbox → 写状态
+- [x] 失败退避：无线程 10 分钟、IMAP 失败 15 分钟，均不写状态
+- [x] `HostPumpReport.digest`
+- [x] `verify-host` 62 例（新增 5 例：未到点/到点一次/无线程/停止/失败退避）
+
+## BD3 入口接线
+
+- [x] `scripts/serve.mjs`：`parseDigestEnv` + `mailDigest` + `log('digest', …)`
+- [x] `verify-serve` 14 例（新增 1 例：合法配置出现在日志、非法时间拒绝启动）
+
+## BD4 文档对齐
+
+- [x] `docs/09`：B2 / B4 / C6 / I3 / O3 / J2 行按代码现状改写
+- [x] `docs/09` 新增 §九「一期结项清单」（MVP 37 + 上线门槛 + 一期外）
+- [x] `docs/08` J2 行同步
+- [x] `docs/16` 新增 §12.43
+- [x] `AGENTS.md` Slice BD
+- [x] `tasks.md` 本切片
+
+## BD5 门禁与发布
+
+- [x] `node scripts/build.mjs`
+- [x] `node scripts/build.mjs --noEmit`
+- [x] `node scripts/check-style.mjs`
+- [x] `node scripts/verify-all.mjs`（0 failed）
+- [x] 发布 `2026.11.19-9`、重启、`[startup] 8/8` + `digest` 日志
+
+## BD6 真机验收
+
+- [x] `/etc/dsh-wfxm/env` 设 `DSH_WFXM_MAIL_DIGEST_AT=<下一分钟>`，重启，确认飞书收到摘要
+- [x] 2 分钟内无重复；恢复 `08:30` 重启
+- [x] 提交推送

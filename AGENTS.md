@@ -485,6 +485,11 @@
     每主体固定窗口限流、单条内容上限；拒绝只落 `inbox.status='rejected'` + `route_decisions`，
     静默不回消息；未配对 `/bind` 同样受限流保护。配置 `DSH_WFXM_ADMISSION_*`，
     格式错误启动即失败。验证：`verify-gateway 128`；真机「你好」正常 `routed` 并收到回复，无误拦。
+  - **每日邮件摘要（Slice BD / J2）**：`plugins/mail/src/schedule.ts` 提供 `parseDigestEnv` /
+    `localDayMinutes` / `digestDue` / 状态文件原子读写；宿主 `pump()` 内 `fireDailyDigest()`
+    按显式时区判定「到点且今天未发」，目标会话取 `DSH_WFXM_MAIL_DIGEST_CHAT_ID` 或该渠道最近活跃线程，
+    以 `mail-digest:<date>` 幂等入 outbox。IMAP 失败 / 无线程分别退避 15 / 10 分钟且不写状态；
+    H4 停止期不发送。配置非法启动即失败。验证：`verify-mail 31` / `verify-host 62` / `verify-serve 14`。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

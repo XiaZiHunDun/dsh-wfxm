@@ -29,6 +29,15 @@ export {
 } from './digest.js'
 export type { MailDigestGroup, MailDigestRequest, MailDigestResult } from './digest.js'
 export {
+  DEFAULT_DIGEST_TIME_ZONE,
+  digestDue,
+  localDayMinutes,
+  parseDigestEnv,
+  readDigestState,
+  writeDigestState,
+} from './schedule.js'
+export type { MailDigestConfig, MailDigestState } from './schedule.js'
+export {
   MAIL_TOOL_PORT,
   MAIL_TOOL_RISK,
   apply,

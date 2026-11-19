@@ -19,6 +19,7 @@ export {
 export type {
   HostDispatcherOptions,
   HostIngestResult,
+  HostMailDigestOptions,
   HostProgressOptions,
   HostPumpReport,
   HostWorkerOptions,

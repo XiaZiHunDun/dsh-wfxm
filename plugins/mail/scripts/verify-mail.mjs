@@ -15,7 +15,11 @@ import {
   MailError,
   buildMailDigest,
   classifyMail,
+  digestDue,
   isIsoDate,
+  localDayMinutes,
+  parseDigestEnv,
+  readDigestState,
   readMailAccount,
   registerMailTools,
   renderDigest,
@@ -23,6 +27,7 @@ import {
   validateDigestArgs,
   validateReadArgs,
   validateSearchArgs,
+  writeDigestState,
 } from '../lib/index.js'
 
 let pass = 0
@@ -332,6 +337,102 @@ await check('mail_digest tool executes through the injected port', async () => {
   const value = await tool.execute({ hours: 24, unreadOnly: true })
   const rendered = tool.output.render({}, value)
   return value.total === 1 && rendered[0].text.includes('需要回复 (1)')
+})
+
+// ---- 每日调度（BD1） -----------------------------------------------------------
+await check('digest schedule is off unless AT is set', () => {
+  return parseDigestEnv({}) === null
+    && parseDigestEnv({ DSH_WFXM_MAIL_DIGEST_AT: '' }) === null
+    && parseDigestEnv({ DSH_WFXM_MAIL_DIGEST_AT: 'off' }) === null
+    && parseDigestEnv({ DSH_WFXM_MAIL_DIGEST_AT: '0' }) === null
+})
+
+await check('digest schedule parses defaults and normalizes AT', () => {
+  const config = parseDigestEnv(
+    { DSH_WFXM_MAIL_DIGEST_AT: '8:05' },
+    { statePath: '/tmp/x/state.json' },
+  )
+  return config !== null
+    && config.at === '08:05'
+    && config.channelId === 'feishu'
+    && config.chatId === null
+    && config.hours === 24
+    && config.limit === 20
+    && config.unreadOnly === true
+    && config.timeZone === 'Asia/Shanghai'
+    && config.statePath === '/tmp/x/state.json'
+})
+
+await check('digest schedule rejects a malformed AT and bad ranges', () => {
+  const throws = (env) => {
+    try {
+      parseDigestEnv(env)
+      return false
+    } catch {
+      return true
+    }
+  }
+  return throws({ DSH_WFXM_MAIL_DIGEST_AT: '25:00' })
+    && throws({ DSH_WFXM_MAIL_DIGEST_AT: '8:99' })
+    && throws({ DSH_WFXM_MAIL_DIGEST_AT: '8点' })
+    && throws({ DSH_WFXM_MAIL_DIGEST_AT: '8:30', DSH_WFXM_MAIL_DIGEST_HOURS: '0' })
+    && throws({ DSH_WFXM_MAIL_DIGEST_AT: '8:30', DSH_WFXM_MAIL_DIGEST_HOURS: '169' })
+    && throws({ DSH_WFXM_MAIL_DIGEST_AT: '8:30', DSH_WFXM_MAIL_DIGEST_LIMIT: '51' })
+    && throws({ DSH_WFXM_MAIL_DIGEST_AT: '8:30', DSH_WFXM_MAIL_DIGEST_LIMIT: '1.5' })
+    && throws({ DSH_WFXM_MAIL_DIGEST_AT: '8:30', DSH_WFXM_MAIL_DIGEST_TZ: 'Mars/Base' })
+})
+
+await check('digest schedule honors explicit channel, chat and unread flag', () => {
+  const config = parseDigestEnv({
+    DSH_WFXM_MAIL_DIGEST_AT: '08:30',
+    DSH_WFXM_MAIL_DIGEST_CHANNEL: 'wecom',
+    DSH_WFXM_MAIL_DIGEST_CHAT_ID: 'oc_owner',
+    DSH_WFXM_MAIL_DIGEST_UNREAD: 'false',
+    DSH_WFXM_MAIL_DIGEST_HOURS: '48',
+    DSH_WFXM_MAIL_DIGEST_LIMIT: '5',
+    DSH_WFXM_MAIL_DIGEST_STATE: '/var/lib/x/state.json',
+  })
+  return config !== null
+    && config.channelId === 'wecom'
+    && config.chatId === 'oc_owner'
+    && config.unreadOnly === false
+    && config.hours === 48
+    && config.limit === 5
+    && config.statePath === '/var/lib/x/state.json'
+})
+
+await check('digest local clock uses the explicit timezone', () => {
+  const now = new Date('2026-11-19T00:30:00.000Z')
+  const shanghai = localDayMinutes(now, 'Asia/Shanghai')
+  const utc = localDayMinutes(now, 'UTC')
+  return shanghai.date === '2026-11-19' && shanghai.minutes === 8 * 60 + 30
+    && utc.date === '2026-11-19' && utc.minutes === 30
+})
+
+await check('digest is due only after AT and once per local day', () => {
+  const base = {
+    at: '08:30',
+    lastDate: null,
+    timeZone: 'Asia/Shanghai',
+  }
+  return !digestDue({ ...base, now: new Date('2026-11-19T00:29:00.000Z') })
+    && digestDue({ ...base, now: new Date('2026-11-19T00:30:00.000Z') })
+    && digestDue({ ...base, now: new Date('2026-11-19T01:10:00.000Z') })
+    && !digestDue({ ...base, lastDate: '2026-11-19', now: new Date('2026-11-19T01:10:00.000Z') })
+    && digestDue({ ...base, lastDate: '2026-11-18', now: new Date('2026-11-19T01:10:00.000Z') })
+})
+
+await check('digest state survives missing/corrupt files and round-trips', () => {
+  const statePath = join(dir, 'digest-state.json')
+  const missing = readDigestState(statePath)
+  writeFileSync(statePath, '{not json')
+  const corrupt = readDigestState(statePath)
+  writeDigestState(statePath, { lastDate: '2026-11-19', firedAt: '2026-11-19T00:30:00.000Z' })
+  const written = readDigestState(statePath)
+  return missing.lastDate === null
+    && corrupt.lastDate === null
+    && written.lastDate === '2026-11-19'
+    && readDigestState(null).lastDate === null
 })
 
 // ---- Python 自测 ---------------------------------------------------------------

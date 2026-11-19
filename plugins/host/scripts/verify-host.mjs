@@ -1741,6 +1741,128 @@ await check('H4 3: a restart keeps the stop state and does not claim queued work
   return ok
 })
 
+// ---- Slice BD (J2): 每日摘要 ---------------------------------------------------
+
+const digestConfig = (statePath, produce) => ({
+  at: '08:30',
+  channelId: CHANNEL,
+  statePath,
+  produce,
+})
+
+await check('BD 1: the daily digest does not fire before AT', async () => {
+  let produced = 0
+  const statePath = join(dir, `digest-before-${hostSeq + 1}.json`)
+  const { host, transport } = makeHost({
+    options: {
+      now: () => new Date('2026-11-10T00:29:00.000Z'),
+      mailDigest: digestConfig(statePath, async () => {
+        produced += 1
+        return '邮件摘要'
+      }),
+    },
+  })
+  host.stores.gateway.resolveThread({ channelId: CHANNEL, chatId: CHAT })
+  const report = await host.pump()
+  const ok = report.digest === false
+    && produced === 0
+    && transport.sent.length === 0
+    && !existsSync(statePath)
+  host.close()
+  return ok
+})
+
+await check('BD 2: the digest fires once at AT and is persisted', async () => {
+  let produced = 0
+  const statePath = join(dir, `digest-at-${hostSeq + 1}.json`)
+  const { host, transport } = makeHost({
+    options: {
+      now: () => new Date('2026-11-10T00:30:00.000Z'),
+      mailDigest: digestConfig(statePath, async () => {
+        produced += 1
+        return '邮件摘要：今天 3 封'
+      }),
+    },
+  })
+  const thread = host.stores.gateway.resolveThread({ channelId: CHANNEL, chatId: CHAT })
+  const first = await host.pump()
+  const again = await host.pump()
+  const outbox = host.stores.gateway.findOutboxByDedupe('mail-digest:2026-11-10')
+  const texts = transport.sent.map((item) => item.payload?.text ?? '')
+  const state = JSON.parse(readFileSync(statePath, 'utf8'))
+  const ok = first.digest === true
+    && again.digest === false
+    && produced === 1
+    && texts.filter((text) => text === '邮件摘要：今天 3 封').length === 1
+    && outbox !== null
+    && outbox.threadId === thread.id
+    && outbox.topic === 'say'
+    && state.lastDate === '2026-11-10'
+  host.close()
+  return ok
+})
+
+await check('BD 3: a digest with no target thread stays quiet and does not persist', async () => {
+  const statePath = join(dir, `digest-empty-${hostSeq + 1}.json`)
+  const { host, transport } = makeHost({
+    options: {
+      now: () => new Date('2026-11-10T00:30:00.000Z'),
+      mailDigest: digestConfig(statePath, async () => '邮件摘要'),
+    },
+  })
+  const report = await host.pump()
+  const ok = report.digest === false
+    && transport.sent.length === 0
+    && !existsSync(statePath)
+  host.close()
+  return ok
+})
+
+await check('BD 4: a halted host never sends or persists the digest', async () => {
+  const statePath = join(dir, `digest-halt-${hostSeq + 1}.json`)
+  const haltFile = join(dir, `digest-halt-${hostSeq + 1}`)
+  writeFileSync(haltFile, 'stopped\n')
+  const { host, transport } = makeHost({
+    options: {
+      now: () => new Date('2026-11-10T00:30:00.000Z'),
+      haltFile,
+      mailDigest: digestConfig(statePath, async () => '邮件摘要'),
+    },
+  })
+  host.stores.gateway.resolveThread({ channelId: CHANNEL, chatId: CHAT })
+  const report = await host.pump()
+  const ok = report.digest === false
+    && transport.sent.length === 0
+    && !existsSync(statePath)
+  host.close()
+  return ok
+})
+
+await check('BD 5: an IMAP failure is retried later, not persisted', async () => {
+  const statePath = join(dir, `digest-fail-${hostSeq + 1}.json`)
+  let attempts = 0
+  const { host, transport } = makeHost({
+    options: {
+      now: () => new Date('2026-11-10T00:30:00.000Z'),
+      mailDigest: digestConfig(statePath, async () => {
+        attempts += 1
+        throw new Error('imap down')
+      }),
+    },
+  })
+  host.stores.gateway.resolveThread({ channelId: CHANNEL, chatId: CHAT })
+  const first = await host.pump()
+  const second = await host.pump()
+  const ok = first.digest === false
+    && second.digest === false
+    // 退避期内不重打 IMAP：两次 pump 只尝试一次。
+    && attempts === 1
+    && transport.sent.length === 0
+    && !existsSync(statePath)
+  host.close()
+  return ok
+})
+
 rmSync(dir, { recursive: true, force: true })
 
 console.log(`\nhost: ${pass} passed, ${fail} failed`)

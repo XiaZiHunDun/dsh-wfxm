@@ -126,7 +126,9 @@ export function buildMailDigest(
 function shortDate(value: string): string {
   const at = parseDate(value)
   if (at === null) return value || '(no date)'
-  return new Date(at).toISOString().slice(0, 16).replace('T', ' ')
+  const local = new Date(at)
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  return `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())} ${pad(local.getHours())}:${pad(local.getMinutes())}`
 }
 
 function renderGroup(title: string, items: MailMessageSummary[]): string[] {

@@ -232,6 +232,29 @@ await check('dsh 二进制不可执行即拒绝启动（步 5）', async () => {
   return 'refused at ports'
 })
 
+// ---- 6b. 每日摘要配置（Slice BD） ---------------------------------------------------
+
+await check('每日摘要：合法配置出现在启动日志，非法时间拒绝启动', async () => {
+  const dataDir = tempDir('digest')
+  const okRun = runServe(['--check'], envFor(dataDir, {
+    DSH_WFXM_MAIL_DIGEST_AT: '8:30',
+    DSH_WFXM_MAIL_DIGEST_CHANNEL: 'feishu',
+  }))
+  const okExit = await okRun.done
+  const okOut = okRun.output()
+  assert(okExit.code === 0, `exit=${okExit.code}\n${okOut}`)
+  assert(okOut.includes('digest {"at":"08:30"'), `digest log missing\n${okOut}`)
+
+  const badDir = tempDir('digest-bad')
+  const badRun = runServe(['--check'], envFor(badDir, { DSH_WFXM_MAIL_DIGEST_AT: '8:99' }))
+  const badExit = await badRun.done
+  const badOut = badRun.output()
+  assert(badExit.code === 1, `exit=${badExit.code}\n${badOut}`)
+  assert(badOut.includes('DSH_WFXM_MAIL_DIGEST_AT'), badOut)
+  assert(!existsSync(join(badDir, 'serve.lock')), 'lock not released')
+  return 'valid logged, invalid refused'
+})
+
 // ---- 7. readiness 写不进去（步 8） --------------------------------------------------
 
 await check('readiness 不可写即拒绝启动（步 8）', async () => {

@@ -42,6 +42,17 @@ import {
 } from '@dsh-wfxm/gateway'
 import type { ApprovalLevel, ApprovalStore, GrantStore } from '@dsh-wfxm/governance'
 import { createTaskChangePort, type ChangeStore } from '@dsh-wfxm/changes'
+import {
+  DEFAULT_DIGEST_TIME_ZONE,
+  buildMailDigest,
+  digestDue,
+  localDayMinutes,
+  readDigestState,
+  readMailAccount,
+  renderDigest,
+  searchMail,
+  writeDigestState,
+} from '@dsh-wfxm/mail'
 import { nextDueAt as advanceReminder, type ReminderStore } from '@dsh-wfxm/reminder'
 import {
   createTaskStore,
@@ -86,6 +97,8 @@ export interface HostPumpReport {
   inputRequests: number
   /** Slice AT (J5): 本轮到点并入队的提醒数。 */
   reminders: number
+  /** Slice BD (J2): 本轮是否投递了每日邮件摘要。 */
+  digest: boolean
   receipts: ReceiptRelayReport
   /** Slice R: null when progress notices are disabled (or routing-only host). */
   progress: TaskProgressReport | null
@@ -124,6 +137,26 @@ export interface HostDispatcherOptions {
   owner?: string
   leaseMs?: number
   limit?: number
+}
+
+/**
+ * Slice BD (J2): 每日只读邮件摘要。宿主只负责「到点判定 + 选会话 + 入 outbox」，
+ * 查询由 `@dsh-wfxm/mail` 走只读 IMAP，失败不写状态以便当天重试。
+ */
+export interface HostMailDigestOptions {
+  /** 本地 `HH:MM`（时区见 `timeZone`）。 */
+  at: string
+  channelId: string
+  /** 固定会话；null/省略 = 该渠道 `updated_at` 最新的线程。 */
+  chatId?: string | null
+  hours?: number
+  limit?: number
+  unreadOnly?: boolean
+  timeZone?: string
+  /** 记录「今天已发」的日期；null = 不持久化。 */
+  statePath?: string | null
+  /** 测试注入；生产默认走只读 IMAP 查询。 */
+  produce?: (now: Date) => Promise<string>
 }
 
 /** Slice AS: produced files ride their own topic into the task's thread. */
@@ -187,6 +220,8 @@ export interface WfxmHostOptions {
   approvals?: ApprovalStore | null
   /** Slice AT (J5): reminders store; absent means the front desk cannot set reminders. */
   reminders?: ReminderStore | null
+  /** Slice BD (J2): 每日摘要；null/省略 = 不调度。 */
+  mailDigest?: HostMailDigestOptions | null
   /**
    * Slice AV: ⑦'s change ledger. Absent/null means no rows and no refusals —
    * exactly the pre-AV worker behaviour.
@@ -262,6 +297,24 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * Slice BD: 每日摘要的只读查询。缺配置 / IMAP 失败都抛错，由调用方退避重试；
+ * 邮件主题只作为信息渲染，`renderDigest` 自带「不构成指令」标注。
+ */
+async function defaultDigestText(at: Date, config: HostMailDigestOptions): Promise<string> {
+  const account = readMailAccount()
+  if (!account.ok) throw new Error(account.message)
+  const search = await searchMail({ limit: 200 }, { account: account.account })
+  return renderDigest(buildMailDigest(search, {
+    now: at,
+    request: {
+      hours: config.hours ?? 24,
+      limit: config.limit ?? 20,
+      unreadOnly: config.unreadOnly ?? true,
+    },
+  }))
+}
+
 /** Read a string field off a JSON object payload; anything else is `null`. */
 function payloadString(payload: Json, key: string): string | null {
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null
@@ -280,6 +333,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   const changes = options.changes ?? null
   const restoreWorkspace = options.restoreWorkspace ?? null
   const haltFile = options.haltFile ?? null
+  const mailDigest = options.mailDigest ?? null
+  /** Slice BD: 失败后的内存退避，避免每秒重打 IMAP 或刷日志。 */
+  let digestRetryAt = 0
 
   const ports = createHostPorts({
     tasks,
@@ -657,6 +713,58 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     return fired
   }
 
+  /**
+   * Slice BD (J2): 每日摘要。判定用「到点且今天未发」，所以 08:30 时进程不在、
+   * 09:10 启动也会补发；失败不写状态，退避后当天重试。
+   */
+  async function fireDailyDigest(): Promise<boolean> {
+    if (mailDigest === null) return false
+    // H4: 停止期不产生外发，也不推进状态；恢复后当天仍可补发。
+    if (isHalted()) return false
+    const config = mailDigest
+    const at = now()
+    const timeZone = config.timeZone ?? DEFAULT_DIGEST_TIME_ZONE
+    const local = localDayMinutes(at, timeZone)
+    const lastDate = readDigestState(config.statePath ?? null).lastDate
+    if (!digestDue({ now: at, at: config.at, lastDate, timeZone })) return false
+    if (at.getTime() < digestRetryAt) return false
+
+    const threads = gateway.listThreads({
+      channelId: config.channelId,
+      ...config.chatId === undefined || config.chatId === null ? {} : { chatId: config.chatId },
+    })
+    const thread = threads[threads.length - 1] ?? null
+    if (thread === null) {
+      digestRetryAt = at.getTime() + 10 * 60_000
+      logger?.warn?.(`digest: no target thread on channel ${config.channelId}`)
+      return false
+    }
+
+    let text: string
+    try {
+      text = await (config.produce === undefined ? defaultDigestText(at, config) : config.produce(at))
+    } catch (error) {
+      digestRetryAt = at.getTime() + 15 * 60_000
+      logger?.warn?.(`digest: ${messageOf(error)}`)
+      return false
+    }
+
+    gateway.enqueueOutbox({
+      topic: 'say',
+      payload: { text },
+      threadId: thread.id,
+      dedupeKey: `mail-digest:${local.date}`,
+    })
+    try {
+      writeDigestState(config.statePath ?? null, { lastDate: local.date, firedAt: at.toISOString() })
+    } catch (error) {
+      // outbox 幂等键已兜底，下一轮不会重复发；只留日志。
+      logger?.warn?.(`digest: state write failed: ${messageOf(error)}`)
+    }
+    logger?.info?.(`digest: queued for ${thread.id} (${local.date})`)
+    return true
+  }
+
   async function pump(): Promise<HostPumpReport> {
     // Settle expired approvals first: a task released here produces its receipt
     // in this same tick instead of the next one.
@@ -664,6 +772,8 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     const inputRequests = askForInput()
     // Slice AT: 到期提醒在派发前入队，同一轮就能发出去。
     const remindersFired = fireDueReminders()
+    // Slice BD: 每日摘要同样先入 outbox，再让 dispatcher 在同一轮送出。
+    const digest = await fireDailyDigest()
     const receipts = receiptRelay.pump()
     // Slice R: enqueue progress notices before the dispatcher claims, so a due
     // reminder goes out in this same tick instead of waiting for the next one.
@@ -672,7 +782,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     // learns why the task stopped.
     if (progress !== null) pauseStalled(progress.stalled)
     const dispatch = dispatcher === null ? null : await dispatcher.runOnce()
-    return { expired, inputRequests, reminders: remindersFired, receipts, progress, dispatch }
+    return { expired, inputRequests, reminders: remindersFired, digest, receipts, progress, dispatch }
   }
 
   /**

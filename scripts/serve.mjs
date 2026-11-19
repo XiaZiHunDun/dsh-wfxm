@@ -22,7 +22,7 @@
 
 import { accessSync, constants, existsSync, mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { createDshExecutor } from '@dsh-wfxm/executor'
 import { createChangeStore } from '@dsh-wfxm/changes'
@@ -43,6 +43,7 @@ import {
   summarizeConversationDigest,
 } from '@dsh-wfxm/gateway'
 import { createWfxmHost, createRuleForeground } from '@dsh-wfxm/host'
+import { parseDigestEnv } from '@dsh-wfxm/mail'
 import { createMemoryStore, createProjectLookupPort } from '@dsh-wfxm/knowledge'
 import { createReminderPort, createReminderStore } from '@dsh-wfxm/reminder'
 import {
@@ -256,6 +257,13 @@ async function main() {
           channels: process.env.DSH_WFXM_ADMISSION_CHANNELS ?? 'all',
           rate: process.env.DSH_WFXM_ADMISSION_RATE ?? 'off',
         })
+        // Slice BD (J2): 每日摘要；配置非法在启动期就失败，不静默降级为“没开”。
+        const mailDigest = parseDigestEnv(process.env, {
+          statePath: join(dirname(config.dbPath), 'mail-digest-state.json'),
+        })
+        log('digest', mailDigest === null
+          ? { at: 'off' }
+          : { at: mailDigest.at, channel: mailDigest.channelId, chat: mailDigest.chatId ?? 'latest' })
         // Slice S: deterministic read-only checks for the front desk's quick answers.
         const quickLogWindowMinutes = readInspectionConfig(process.env).thresholds.logWindowMinutes
         host = createWfxmHost({
@@ -270,6 +278,7 @@ async function main() {
           grants: stores.grants,
           policyVersion,
           admission,
+          mailDigest,
           reminders: stores.reminders,
           changes: stores.changes,
           // Startup recovery restores a `dir:` workspace snapshot before the
