@@ -453,6 +453,8 @@
     `begin` 失败即拒绝执行（`change-record-failed`）。host 启动先 `recoverChanges()`（已成功只补账，
     其余按快照/前镜像回滚，失败留痕不重试）再 `worker.recover()`。**不注册** `svc_*` 写工具，
     `kind='service'` 只留表结构（见 [11 §5.4](docs/11-架构锚定.md)、[16 §12.38](docs/16-部署与运行.md)）。
+    **真机（2026-11-19）**：注入 `applying` + 前镜像后重启，`recovery:changes {"rolledBack":1}`，
+    文件按前镜像还原、台账 `rolled_back/done`；清理后再次启动 `0/0/0`。
   - **检索自检（Slice AW / J6）**：`scripts/verify-search.mjs` 断言 headless profile 实际挂载
     `dsh-web-search-deepseek` / `dsh-web-fetch-http` 与 provider/超时；`--live` 才跑真实查询，
     默认不进 CI。文档见 [09 J6](docs/09-能力对照与实现路径.md)。

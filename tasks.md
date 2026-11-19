@@ -1622,6 +1622,8 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 发布 `2026.11.18-11`（`prepare/verify 8/8 → switch → restart`，`active`、`NRestarts=0`）
 - [x] 回写 `spec.md` Slice AV、`.trae/specs/add-change-lifecycle/*`、`AGENTS.md §4`、
       `docs/11 §5.4`、`docs/15 §模块 ⑦`、`docs/16 §12.38`、`docs/06 §六`
+- [x] 真机演练（2026-11-19 维护窗口）：注入 `applying` + 前镜像 → 启动回滚
+      `rolledBack:1`，文件 `MUTATED`→`ORIGINAL`，台账 `rolled_back/done`；清理后 `0/0/0`
 
 # Slice AW–AY — 检索自检 / 项目级授权 / IM 全局停止（2026-11-18，release `2026.11.18-12`）
 
