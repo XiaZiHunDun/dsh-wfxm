@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url'
 import {
   archivePath,
   compare,
+  judgeTrace,
   parseResults,
+  renderBaselineMarkdown,
   renderMarkdown,
   summarize,
   validateRecord,
@@ -42,15 +44,67 @@ function fixtureDir() {
 const taskDoc = JSON.parse(readFileSync(TASKS, 'utf8'))
 const { tasks, errors: taskErrors } = validateTasks(taskDoc)
 
-check('task set: 20 unique tasks, all with prompt and criteria', () => {
+check('task set: 20 unique tasks, all with prompt, criteria and expect', () => {
   assert.deepEqual(taskErrors, [])
   assert.equal(tasks.length, 20)
   assert.equal(new Set(tasks.map((task) => task.id)).size, 20)
   assert.ok(tasks.every((task) => task.prompt.trim() !== '' && task.criteria.trim() !== ''))
+  assert.ok(tasks.every((task) => task.expect !== undefined && typeof task.expect === 'object'))
   const categories = new Set(tasks.map((task) => task.category))
   for (const needed of ['discover', 'status', 'logs', 'inspect', 'report', 'change', 'boundary', 'docker']) {
     assert.ok(categories.has(needed), `缺少类别 ${needed}`)
   }
+})
+
+check('task set validation rejects malformed expect', () => {
+  const bad = validateTasks({
+    version: '1',
+    tasks: [{ id: 'a', prompt: 'x', criteria: 'y', expect: { toolsAny: 'nope', maxSteps: -1 } }],
+  })
+  assert.ok(bad.errors.some((error) => /toolsAny/.test(error)))
+  assert.ok(bad.errors.some((error) => /maxSteps/.test(error)))
+})
+
+check('judgeTrace passes on matching tools/text and fails on forbidden tool', () => {
+  const expect = {
+    toolsAny: ['svc_list'],
+    toolsNone: ['svc_restart'],
+    textIncludesAny: ['systemd', 'docker'],
+    textExcludes: ['已修复'],
+  }
+  assert.deepEqual(
+    judgeTrace(expect, { tools: ['svc_list'], steps: 2, text: 'runtime: systemd' }),
+    { passed: true, reasons: [] },
+  )
+  const bad = judgeTrace(expect, { tools: ['svc_restart'], steps: 9, text: '已修复' })
+  assert.equal(bad.passed, false)
+  assert.ok(bad.reasons.some((reason) => /禁止工具/.test(reason)))
+  assert.ok(bad.reasons.some((reason) => /未包含任一/.test(reason)))
+  assert.ok(bad.reasons.some((reason) => /禁用表述/.test(reason)))
+})
+
+check('judgeTrace fails closed when expect is missing', () => {
+  const verdict = judgeTrace(undefined, { tools: [], steps: 0, text: '' })
+  assert.equal(verdict.passed, false)
+  assert.match(verdict.reasons[0], /未配置 expect/)
+})
+
+check('renderBaselineMarkdown states advisory and includes coverage', () => {
+  const summary = summarize(
+    [{ taskId: 'svc-list-all', group: 'baseline', passed: true, steps: 3, costUsd: 0.01 }],
+    tasks,
+    'baseline',
+  )
+  const text = renderBaselineMarkdown(summary, {
+    tasksVersion: 'v1',
+    tasksCount: 20,
+    generatedAt: 'x',
+    excluded: ['a', 'b'],
+    profile: 'headless',
+  })
+  assert.ok(text.includes('不作发布门槛'))
+  assert.ok(text.includes('1/1 (100.0%)'))
+  assert.ok(text.includes('5.0%'))
 })
 
 check('task set validation catches duplicate id and missing prompt', () => {
@@ -135,6 +189,15 @@ check('renderMarkdown is deterministic', () => {
 check('archivePath is timestamped and label-safe', () => {
   const path = archivePath('/tmp/x', 'A vs B', new Date('2026-11-09T01:02:03.004Z'))
   assert.equal(path, join('/tmp/x', '2026-11-09T01-02-03-004Z-A-vs-B.json'))
+})
+
+check('run.mjs rejects an empty selection after exclusion', () => {
+  const run = spawnSync(process.execPath, [
+    RUN, '--group', 'A', '--cmd', 'true', '--out', join(fixtureDir(), 'x.ndjson'),
+    '--only', 'svc-list-all', '--exclude', 'svc-list-all',
+  ], { encoding: 'utf8' })
+  assert.equal(run.status, 2)
+  assert.match(run.stderr, /没有匹配/)
 })
 
 check('run.mjs executes the runner, passes prompt on stdin and env, writes a record', () => {

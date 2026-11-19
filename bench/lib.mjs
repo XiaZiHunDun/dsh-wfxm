@@ -15,6 +15,27 @@ export function loadTasks(path) {
   return JSON.parse(readFileSync(path, 'utf8'))
 }
 
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string' && item !== '')
+}
+
+/** Optional deterministic rubric: `expect` describes observable traces only. */
+function validateExpect(expect, where, errors) {
+  if (expect === null || typeof expect !== 'object' || Array.isArray(expect)) {
+    errors.push(`${where}.expect 必须是对象`)
+    return
+  }
+  for (const key of ['toolsAny', 'toolsNone', 'textIncludesAll', 'textIncludesAny', 'textExcludes']) {
+    if (expect[key] !== undefined && !isStringArray(expect[key])) {
+      errors.push(`${where}.expect.${key} 必须是非空字符串数组`)
+    }
+  }
+  if (expect.maxSteps !== undefined
+    && (!Number.isInteger(expect.maxSteps) || expect.maxSteps < 0)) {
+    errors.push(`${where}.expect.maxSteps 必须是非负整数`)
+  }
+}
+
 export function validateTasks(doc) {
   const errors = []
   if (doc === null || typeof doc !== 'object') return { tasks: [], errors: ['任务集不是对象'] }
@@ -32,6 +53,7 @@ export function validateTasks(doc) {
     else if (seen.has(task.id)) errors.push(`${where} id 重复: ${task.id}`)
     if (typeof task.prompt !== 'string' || task.prompt === '') errors.push(`${where} 缺少 prompt`)
     if (typeof task.criteria !== 'string' || task.criteria === '') errors.push(`${where} 缺少 criteria`)
+    if (task.expect !== undefined) validateExpect(task.expect, where, errors)
     if (typeof task.id === 'string') seen.add(task.id)
     tasks.push(task)
   }
@@ -126,6 +148,43 @@ export function compare(tasks, records, groupA, groupB) {
   }
 }
 
+/**
+ * Deterministic rubric for M9 baselines. Judges only *observable* evidence
+ * (tool names + final text), never the model's self-report. No model call.
+ *
+ * trace: { tools: string[], steps: number, text: string }
+ */
+export function judgeTrace(expect, trace) {
+  if (expect === undefined || expect === null || typeof expect !== 'object') {
+    return { passed: false, reasons: ['任务未配置 expect 判据'] }
+  }
+  const reasons = []
+  const tools = Array.isArray(trace.tools) ? trace.tools : []
+  const text = typeof trace.text === 'string' ? trace.text : ''
+
+  const any = expect.toolsAny ?? []
+  if (any.length > 0 && !any.some((tool) => tools.includes(tool))) {
+    reasons.push(`未调用必需工具：${any.join(' / ')}`)
+  }
+  for (const tool of expect.toolsNone ?? []) {
+    if (tools.includes(tool)) reasons.push(`调用了禁止工具：${tool}`)
+  }
+  for (const phrase of expect.textIncludesAll ?? []) {
+    if (!text.includes(phrase)) reasons.push(`答复缺少：${phrase}`)
+  }
+  const includesAny = expect.textIncludesAny ?? []
+  if (includesAny.length > 0 && !includesAny.some((phrase) => text.includes(phrase))) {
+    reasons.push(`答复未包含任一：${includesAny.join(' / ')}`)
+  }
+  for (const phrase of expect.textExcludes ?? []) {
+    if (text.includes(phrase)) reasons.push(`答复包含禁用表述：${phrase}`)
+  }
+  if (typeof expect.maxSteps === 'number' && trace.steps > expect.maxSteps) {
+    reasons.push(`步数 ${trace.steps} 超过上限 ${expect.maxSteps}`)
+  }
+  return { passed: reasons.length === 0, reasons }
+}
+
 function signed(value, digits, unit = '') {
   const fixed = value.toFixed(digits)
   if (Number(fixed) === 0) return `0${unit === ' pp' ? ' pp' : ''}`
@@ -156,6 +215,33 @@ export function renderMarkdown(report, meta = {}) {
     if (side.missing.length > 0) lines.push(`- ${side.group} 缺跑：${side.missing.join(', ')}`)
     if (side.errorTaskIds.length > 0) lines.push(`- ${side.group} 执行异常：${side.errorTaskIds.join(', ')}`)
   }
+  return `${lines.join('\n')}\n`
+}
+
+/**
+ * Single-group baseline (M9a). Advisory only: D19-3=B still applies — the
+ * report is archived to observe drift, not to block a release.
+ */
+export function renderBaselineMarkdown(summary, meta = {}) {
+  const lines = [
+    `# 基线报表 — ${summary.group}`,
+    '',
+    `- 任务集：${meta.tasksVersion ?? '?'}（${meta.tasksCount ?? '?'} 项，排除 ${meta.excluded?.length ?? 0} 项）`,
+    `- 生成时间：${meta.generatedAt ?? '?'}`,
+    `- 执行器：${meta.runner ?? '未注明'}`,
+    `- dsh profile：${meta.profile ?? '未注明'}`,
+    '- 归档用途，**不作发布门槛**（D19-3=B）',
+    '',
+    '| 指标 | 值 |',
+    '|---|---|',
+    `| 通过率 | ${summary.passed}/${summary.runs} (${(summary.passRate * 100).toFixed(1)}%) |`,
+    `| 平均步数 | ${summary.avgSteps.toFixed(2)} |`,
+    `| 单任务成本 | $${summary.avgCostUsd.toFixed(4)} |`,
+    `| 覆盖率 | ${(summary.coverage * 100).toFixed(1)}% |`,
+    '',
+  ]
+  if (summary.missing.length > 0) lines.push(`- 缺跑：${summary.missing.join(', ')}`)
+  if (summary.errorTaskIds.length > 0) lines.push(`- 执行异常：${summary.errorTaskIds.join(', ')}`)
   return `${lines.join('\n')}\n`
 }
 

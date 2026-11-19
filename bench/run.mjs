@@ -41,10 +41,11 @@ function main() {
   const cmd = arg('cmd')
   const out = arg('out')
   const only = arg('only')
+  const exclude = arg('exclude')
   const timeout = Number(arg('timeout', '600000'))
 
   if (group === undefined || cmd === undefined || out === undefined) {
-    console.error('用法：node bench/run.mjs --group <A|B> --cmd <命令> --out <ndjson> [--tasks 路径] [--only 任务id] [--timeout 毫秒]')
+    console.error('用法：node bench/run.mjs --group <A|B> --cmd <命令> --out <ndjson> [--tasks 路径] [--only 任务id] [--exclude id1,id2] [--timeout 毫秒]')
     return 2
   }
 
@@ -55,9 +56,13 @@ function main() {
     return 2
   }
 
-  const selected = only === undefined ? tasks : tasks.filter((task) => task.id === only)
+  const excluded = new Set(
+    (exclude ?? '').split(',').map((id) => id.trim()).filter((id) => id !== ''),
+  )
+  const selected = (only === undefined ? tasks : tasks.filter((task) => task.id === only))
+    .filter((task) => !excluded.has(task.id))
   if (selected.length === 0) {
-    console.error(`没有匹配的任务：${only}`)
+    console.error(`没有匹配的任务：${only ?? '（全部被排除）'}`)
     return 2
   }
 
@@ -97,6 +102,9 @@ function main() {
           durationMs: verdict.durationMs ?? Date.now() - began,
           startedAt,
           runner: cmd,
+          // Advisory diagnostics: keep why a task failed and what tools it used.
+          ...(Array.isArray(verdict.reasons) ? { reasons: verdict.reasons } : {}),
+          ...(Array.isArray(verdict.tools) ? { tools: verdict.tools } : {}),
         }
       : {
           // 执行异常按"失败"计入分母，同时保留 error 说明；报表会单独列出异常任务。

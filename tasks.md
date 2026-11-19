@@ -1809,3 +1809,27 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `docs/16 §12.45`
 - [x] `AGENTS.md` Slice BF
 - [x] `tasks.md` 本切片
+
+# Slice BG — M9a 行为基线（2026-11-19，离线工具，无需发布）
+
+## BG1 判据与 runner
+
+- [x] `bench/tasks.json` 20 项全部加确定性 `expect`（工具/关键词/步数上限）
+- [x] `bench/lib.mjs`：`judgeTrace`（无模型判定）、`renderBaselineMarkdown`、`expect` 校验
+- [x] `bench/runner.mjs`：真实 dsh → 解析 NDJSON → 输出判据 JSON（含 reasons/tools/tokens）
+- [x] `bench/run.mjs`：新增 `--exclude`，并保留失败原因
+
+## BG2 基线闭环
+
+- [x] `bench/baseline.mjs`：跑全量、归档 JSON/MD、默认排除两项 `change`
+- [x] 首轮真实基线：16/18（平均 5.78 步，覆盖 100%）
+- [x] 可跟踪摘要：`bench/baselines/2026-11-19.md`
+- [x] `bench/verify` 18 例；`verify-all 47 passed / 0 failed`
+
+## BG3 文档
+
+- [x] `docs/09` M9 行、§9.2 与结论
+- [x] `docs/12` A6 进度
+- [x] `docs/16 §12.46`
+- [x] `AGENTS.md` Slice BG
+- [x] `tasks.md` 本切片

@@ -498,6 +498,11 @@
   - **测试验收约定（Slice BF / C8）**：执行器提示新增 `【验收约定】`——修 bug/改行为必须先复现、
     修后用同一测试或命令证明，并在答复里给出命令与结果；无法自动化时给手工步骤，禁止只说「已修复」。
     无新工具、无迁移。验证：`verify-executor 31`（[16 §12.45](docs/16-部署与运行.md)）。
+  - **M9a 行为基线（Slice BG）**：`bench/runner.mjs` 驱动真实 `dsh --profile headless` 并解析
+    `tool_call` / `step_end` / `final`；`bench/tasks.json` 20 项全部带确定性 `expect`；`bench/baseline.mjs`
+    跑全量并归档（默认排除两项 `change`）。2026-11-19 基线 16/18、平均 5.78 步，摘要进
+    [bench/baselines](bench/baselines/2026-11-19.md)；`bench/verify` 18 例。仍是 advisory，不设门槛
+    （[16 §12.46](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →
