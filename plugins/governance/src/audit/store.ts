@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { canonicalRecord, chainHash, GENESIS_HASH } from './canonical.js'
 import type { AuditFields } from './events.js'
+import { verifyAuditRows, type VerifyResult } from './verify.js'
 
 const MIGRATION_MODULE = 'audit'
 const MIGRATION_VERSION = 1
@@ -53,7 +54,83 @@ export interface AppendResult {
 export interface AuditStore {
   /** Returns null when the same (session_id, session_seq) was already recorded. */
   append(fields: AuditFields): AppendResult | null
+  /** Newest-first page for the read-only admin surface (H3). */
+  query(input?: AuditQueryInput): AuditQueryResult
+  /** Recompute the hash chain over the live database (H3 追溯). */
+  verifyChain(): VerifyResult
   close(): void
+}
+
+export interface AuditQueryInput {
+  actorId?: string
+  action?: string
+  target?: string
+  /** Inclusive ISO lower bound on `ts`. */
+  from?: string
+  /** Exclusive ISO upper bound on `ts`. */
+  to?: string
+  /** 1..500; defaults to 100. */
+  limit?: number
+  /** Cursor: only rows with `seq < beforeSeq`. */
+  beforeSeq?: number
+}
+
+export interface AuditRecord {
+  seq: number
+  id: string
+  sessionId: string | null
+  sessionSeq: number | null
+  ts: string
+  actorId: string | null
+  action: string
+  target: string | null
+  correlationId: string | null
+  payloadDigest: string
+  prevHash: string | null
+  hash: string
+}
+
+export interface AuditQueryResult {
+  rows: AuditRecord[]
+  /** Rows matching the filter, not just this page. */
+  count: number
+  /** Set when older rows exist; pass back as `beforeSeq`. */
+  nextBeforeSeq: number | null
+}
+
+interface AuditRecordRow {
+  seq: number
+  id: string
+  session_id: string | null
+  session_seq: number | null
+  ts: string
+  actor_id: string | null
+  action: string
+  target: string | null
+  correlation_id: string | null
+  payload_digest: string
+  prev_hash: string | null
+  hash: string
+}
+
+const DEFAULT_LIMIT = 100
+const MAX_LIMIT = 500
+
+function toRecord(row: AuditRecordRow): AuditRecord {
+  return {
+    seq: row.seq,
+    id: row.id,
+    sessionId: row.session_id,
+    sessionSeq: row.session_seq,
+    ts: row.ts,
+    actorId: row.actor_id,
+    action: row.action,
+    target: row.target,
+    correlationId: row.correlation_id,
+    payloadDigest: row.payload_digest,
+    prevHash: row.prev_hash,
+    hash: row.hash,
+  }
 }
 
 export function uuidv7(now: number = Date.now()): string {
@@ -139,8 +216,64 @@ export function createAuditStore(dbPath: string): AuditStore {
     return { seq, hash }
   })
 
+  function query(input: AuditQueryInput = {}): AuditQueryResult {
+    const clauses: string[] = []
+    const params: Record<string, string | number> = {}
+    if (input.actorId !== undefined) {
+      clauses.push('actor_id = @actorId')
+      params.actorId = input.actorId
+    }
+    if (input.action !== undefined) {
+      clauses.push('action = @action')
+      params.action = input.action
+    }
+    if (input.target !== undefined) {
+      clauses.push('target = @target')
+      params.target = input.target
+    }
+    if (input.from !== undefined) {
+      clauses.push('ts >= @from')
+      params.from = input.from
+    }
+    if (input.to !== undefined) {
+      clauses.push('ts < @to')
+      params.to = input.to
+    }
+    if (input.beforeSeq !== undefined) {
+      clauses.push('seq < @beforeSeq')
+      params.beforeSeq = input.beforeSeq
+    }
+    const where = clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`
+    const limit = Math.min(MAX_LIMIT, Math.max(1, Math.trunc(input.limit ?? DEFAULT_LIMIT)))
+    const counted = db
+      .prepare(`SELECT COUNT(*) AS n FROM audit_log ${where}`)
+      .get(params) as { n: number }
+    const rows = db
+      .prepare(`SELECT * FROM audit_log ${where} ORDER BY seq DESC LIMIT @limit`)
+      .all({ ...params, limit: limit + 1 }) as AuditRecordRow[]
+    const page = rows.slice(0, limit)
+    const last = page[page.length - 1]
+    return {
+      rows: page.map(toRecord),
+      count: counted.n,
+      nextBeforeSeq: rows.length > limit && last !== undefined ? last.seq : null,
+    }
+  }
+
+  function verifyChain(): VerifyResult {
+    const rows = db
+      .prepare(
+        `SELECT seq, ts, actor_id, action, target, correlation_id, payload_digest, prev_hash, hash
+         FROM audit_log ORDER BY seq`,
+      )
+      .all() as AuditRecordRow[]
+    return verifyAuditRows(rows)
+  }
+
   return {
     append: (fields) => appendTxn.immediate(fields),
+    query,
+    verifyChain,
     close: () => db.close(),
   }
 }

@@ -36,6 +36,7 @@ const SUITES = [
   { name: 'concurrency', file: 'plugins/governance/scripts/verify-concurrency.mjs', ci: true },
   { name: 'grants', file: 'plugins/governance/scripts/verify-grants.mjs', ci: true },
   { name: 'grants-admin', file: 'plugins/governance/scripts/verify-grants-admin.mjs', ci: true },
+  { name: 'audit-admin', file: 'plugins/governance/scripts/verify-audit-admin.mjs', ci: true },
   { name: 'policy', file: 'plugins/governance/scripts/verify-policy.mjs', ci: true },
   // Root cannot be denied by `chmod 000`; the failure is environmental, not a regression.
   { name: 'preimages', file: 'plugins/governance/scripts/verify-preimages.mjs', ci: true, advisoryWhenRoot: true },

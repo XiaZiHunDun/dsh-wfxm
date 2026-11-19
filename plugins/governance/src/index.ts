@@ -17,6 +17,7 @@ import {
   GRANTS_ADMIN_PATH,
   type AdminRoute,
 } from './web/grants-admin.js'
+import { createAuditAdminRoutes, AUDIT_ADMIN_PATH } from './web/audit-admin.js'
 import { createSnapshotStore } from '@dsh-wfxm/snapshot'
 
 export const name = 'dsh-wfxm-governance'
@@ -82,6 +83,8 @@ export type {
   AuditSink,
   GrantsAdminDeps,
 } from './web/grants-admin.js'
+export { AUDIT_ADMIN_PATH, createAuditAdminRoutes } from './web/audit-admin.js'
+export type { AuditAdminDeps } from './web/audit-admin.js'
 
 interface Logger {
   info?(...args: unknown[]): void
@@ -163,27 +166,31 @@ export function apply(ctx: ContextLike): void {
   }
 
   // ③ 管理面（AR26）：只在 Web 渠道挂路由；模型工具面拿不到授予/撤销。
+  const authorize = createBearerAuthorizer({
+    token: process.env.DSH_WFXM_ADMIN_TOKEN ?? null,
+  })
   const adminRoutes = createGrantsAdminRoutes({
     grants,
     audit: store,
     policyVersion: () => policy?.version ?? null,
-    authorize: createBearerAuthorizer({
-      token: process.env.DSH_WFXM_ADMIN_TOKEN ?? null,
-    }),
+    authorize,
   })
+  // H3: read-only audit query over the same admin identity (no model tools).
+  const auditRoutes = createAuditAdminRoutes({ audit: store, authorize })
+  const routes = [...adminRoutes, ...auditRoutes]
   if (typeof ctx.inject !== 'function') {
-    ctx.logger?.warn?.('[governance] no ctx.inject; Grant admin UI not mounted')
+    ctx.logger?.warn?.('[governance] no ctx.inject; Grant/audit admin UI not mounted')
   } else {
     ctx.inject(['webServer'], (webCtx) => {
       // `effect` is cordis' fiber-bound disposal: routes unregister with the
       // injected child fiber instead of a `dispose` event (cordis has none).
       webCtx.effect(() => {
-        const disposers = adminRoutes.map((route) => webCtx.webServer.register(route))
+        const disposers = routes.map((route) => webCtx.webServer.register(route))
         return () => {
           for (const dispose of disposers) dispose()
         }
       })
-      ctx.logger?.info?.(`[governance] Grant admin UI at ${GRANTS_ADMIN_PATH}`)
+      ctx.logger?.info?.(`[governance] Grant admin UI at ${GRANTS_ADMIN_PATH}; audit query at ${AUDIT_ADMIN_PATH}`)
     })
   }
 

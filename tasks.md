@@ -1662,3 +1662,14 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 门禁：`build` / `--noEmit` / `check-style 185 files` / `verify-all 46 passed`
 - [x] 发布 `2026.11.19-1`、重启、`[startup] 8/8`
 - [x] 文档：`docs/09 H6`、`docs/11 §九 AR37`、`docs/15 §三`、`AGENTS.md Slice AZ`
+
+## BA H3 审计查询面
+
+- [x] ④ `audit/store.ts`：`query({actorId,action,target,from,to,limit,beforeSeq})` + `verifyChain()`
+- [x] ④ `audit/verify.ts`：抽出 `verifyAuditRows()`，CLI 与在线查询共用同一套重算逻辑
+- [x] 新增 `web/audit-admin.ts`：`GET /admin/audit`（JSON / HTML 外壳）、`?verify=1`、只读 405
+- [x] `governance/index.ts`：与授予管理面共用 `AdminAuthorizer`，经 `ctx.effect` 挂 3 条路由
+- [x] `verify-audit-admin` 10 例；`verify-grants-admin` 21 例（挂载数 2→3）
+- [x] 门禁：`build` / `--noEmit` / `check-style 187 files` / `verify-all 47 passed`
+- [x] 生产库链校验：384 条 `ok`
+- [x] 文档：`docs/09 H3`、`docs/15 §四`、`docs/16 §12.41`、`AGENTS.md Slice BA`

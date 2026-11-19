@@ -327,7 +327,7 @@ await check('apply() mounts both admin routes through ctx.inject and disposes th
     const { response, body } = await fetch(mounted.base + GRANTS_ADMIN_PATH, {
       headers: { accept: 'application/json', authorization: 'Bearer mount-token' },
     }).then(async (res) => ({ response: res, body: await res.json().catch(() => ({})) }))
-    return registered.length === 2
+    return registered.length === 3
       && registered.some((route) => route.kind === 'exact' && route.path === GRANTS_ADMIN_PATH)
       && registered.some((route) => route.kind === 'prefix' && route.path === GRANTS_ADMIN_PATH)
       && response.status === 200

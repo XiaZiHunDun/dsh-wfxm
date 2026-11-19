@@ -20,6 +20,36 @@ interface AuditRow {
   hash: string
 }
 
+/** Shared by the CLI verifier and the online store (`verifyChain`). */
+export function verifyAuditRows(rows: AuditRow[]): VerifyResult {
+  let expectedPrev = GENESIS_HASH
+  let expectedSeq = 1
+  for (const row of rows) {
+    if (row.seq !== expectedSeq) {
+      return { ok: false, checked: expectedSeq - 1, reason: `seq gap: expected ${expectedSeq}, got ${row.seq}`, badSeq: row.seq }
+    }
+    if ((row.prev_hash ?? '') !== expectedPrev) {
+      return { ok: false, checked: expectedSeq - 1, reason: `prev_hash mismatch`, badSeq: row.seq }
+    }
+    const canonical = canonicalRecord({
+      seq: row.seq,
+      ts: row.ts,
+      actorId: row.actor_id,
+      action: row.action,
+      target: row.target,
+      correlationId: row.correlation_id,
+      payloadDigest: row.payload_digest,
+    })
+    const recomputed = chainHash(expectedPrev, canonical)
+    if (recomputed !== row.hash) {
+      return { ok: false, checked: expectedSeq - 1, reason: `hash mismatch`, badSeq: row.seq }
+    }
+    expectedPrev = row.hash
+    expectedSeq += 1
+  }
+  return { ok: true, checked: rows.length }
+}
+
 /** Recompute the chain from seq = 1; any mismatch means the chain is broken. */
 export function verifyAuditChain(dbPath: string): VerifyResult {
   const db = new DatabaseConstructor(dbPath)
@@ -30,33 +60,7 @@ export function verifyAuditChain(dbPath: string): VerifyResult {
          FROM audit_log ORDER BY seq`,
       )
       .all() as AuditRow[]
-
-    let expectedPrev = GENESIS_HASH
-    let expectedSeq = 1
-    for (const row of rows) {
-      if (row.seq !== expectedSeq) {
-        return { ok: false, checked: expectedSeq - 1, reason: `seq gap: expected ${expectedSeq}, got ${row.seq}`, badSeq: row.seq }
-      }
-      if ((row.prev_hash ?? '') !== expectedPrev) {
-        return { ok: false, checked: expectedSeq - 1, reason: `prev_hash mismatch`, badSeq: row.seq }
-      }
-      const canonical = canonicalRecord({
-        seq: row.seq,
-        ts: row.ts,
-        actorId: row.actor_id,
-        action: row.action,
-        target: row.target,
-        correlationId: row.correlation_id,
-        payloadDigest: row.payload_digest,
-      })
-      const recomputed = chainHash(expectedPrev, canonical)
-      if (recomputed !== row.hash) {
-        return { ok: false, checked: expectedSeq - 1, reason: `hash mismatch`, badSeq: row.seq }
-      }
-      expectedPrev = row.hash
-      expectedSeq += 1
-    }
-    return { ok: true, checked: rows.length }
+    return verifyAuditRows(rows)
   } finally {
     db.close()
   }
