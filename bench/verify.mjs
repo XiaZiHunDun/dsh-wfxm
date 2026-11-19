@@ -5,20 +5,27 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  DEFAULT_THRESHOLDS,
+  aggregateRounds,
   archivePath,
   compare,
+  compareBaseline,
   judgeTrace,
   parseResults,
+  renderAggregateMarkdown,
   renderBaselineMarkdown,
   renderMarkdown,
+  renderRegressMarkdown,
   summarize,
   validateRecord,
   validateTasks,
+  validateThresholds,
 } from './lib.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RUN = join(HERE, 'run.mjs')
 const REPORT = join(HERE, 'report.mjs')
+const REGRESS = join(HERE, 'regress.mjs')
 const TASKS = join(HERE, 'tasks.json')
 
 let pass = 0
@@ -189,6 +196,90 @@ check('renderMarkdown is deterministic', () => {
 check('archivePath is timestamped and label-safe', () => {
   const path = archivePath('/tmp/x', 'A vs B', new Date('2026-11-09T01:02:03.004Z'))
   assert.equal(path, join('/tmp/x', '2026-11-09T01-02-03-004Z-A-vs-B.json'))
+})
+
+const roundRecords = [
+  { taskId: 'svc-list-all', group: 'r1', passed: true, steps: 2, costUsd: 0 },
+  { taskId: 'svc-list-all', group: 'r2', passed: false, steps: 4, costUsd: 0 },
+  { taskId: 'svc-status-managed', group: 'r1', passed: true, steps: 3, costUsd: 0 },
+  { taskId: 'svc-status-managed', group: 'r2', passed: true, steps: 5, costUsd: 0 },
+]
+
+check('aggregateRounds reports per-task pass rates and overall', () => {
+  const aggregate = aggregateRounds(roundRecords, tasks)
+  assert.equal(aggregate.rounds, 2)
+  assert.equal(aggregate.runs, 4)
+  assert.equal(aggregate.passed, 3)
+  assert.equal(aggregate.coverage, 2 / 20)
+  const task = aggregate.tasks.find((item) => item.taskId === 'svc-list-all')
+  assert.deepEqual(
+    { runs: task.runs, passed: task.passed, passRate: task.passRate, avgSteps: task.avgSteps },
+    { runs: 2, passed: 1, passRate: 0.5, avgSteps: 3 },
+  )
+  const text = renderAggregateMarkdown(aggregate, { tasksVersion: 'v1', tasksCount: 20 })
+  assert.ok(text.includes('不稳定任务：svc-list-all'))
+  assert.ok(text.includes('| svc-status-managed | 2/2 | 4.00 |'))
+})
+
+check('compareBaseline flags overall drop and task collapse, ignores noise', () => {
+  const reference = {
+    rounds: 2,
+    passRate: 0.9,
+    coverage: 1,
+    tasks: [{ taskId: 'svc-list-all', runs: 2, passed: 2, passRate: 1 }],
+  }
+  const current = {
+    rounds: 2,
+    passRate: 0.7,
+    coverage: 1,
+    tasks: [{ taskId: 'svc-list-all', runs: 2, passed: 0, passRate: 0 }],
+  }
+  const bad = compareBaseline(reference, current, DEFAULT_THRESHOLDS)
+  assert.equal(bad.pass, false)
+  assert.ok(bad.regressions.some((item) => item.kind === 'overall'))
+  assert.ok(bad.regressions.some((item) => item.kind === 'task'))
+  const same = compareBaseline(reference, reference, DEFAULT_THRESHOLDS)
+  assert.equal(same.pass, true)
+  assert.deepEqual(same.regressions, [])
+  const single = compareBaseline(reference, { ...reference, rounds: 1 }, DEFAULT_THRESHOLDS)
+  assert.ok(single.warnings.some((warning) => /少于建议/.test(warning)))
+})
+
+check('validateThresholds rejects impossible values and keeps defaults', () => {
+  const bad = validateThresholds({ maxPassRateDropPp: 'x', minRounds: 0 })
+  assert.ok(bad.errors.some((error) => /maxPassRateDropPp/.test(error)))
+  assert.ok(bad.errors.some((error) => /minRounds/.test(error)))
+  const good = validateThresholds({ maxPassRateDropPp: 5 })
+  assert.equal(good.thresholds.maxPassRateDropPp, 5)
+  assert.equal(good.thresholds.minRounds, DEFAULT_THRESHOLDS.minRounds)
+})
+
+check('regress.mjs is advisory by default and exits 3 with --enforce', () => {
+  const dir = fixtureDir()
+  const reference = join(dir, 'reference.json')
+  const current = join(dir, 'current.json')
+  writeFileSync(reference, JSON.stringify({
+    aggregate: {
+      rounds: 2,
+      passRate: 0.9,
+      coverage: 1,
+      tasks: [{ taskId: 'svc-list-all', runs: 2, passed: 2, passRate: 1 }],
+    },
+  }))
+  writeFileSync(current, JSON.stringify({
+    aggregate: {
+      rounds: 2,
+      passRate: 0.7,
+      coverage: 1,
+      tasks: [{ taskId: 'svc-list-all', runs: 2, passed: 0, passRate: 0 }],
+    },
+  }))
+  const advisory = spawnSync(process.execPath, [REGRESS, '--reference', reference, '--current', current], { encoding: 'utf8' })
+  assert.equal(advisory.status, 0, advisory.stderr)
+  assert.ok(advisory.stdout.includes('退化'))
+  assert.ok(renderRegressMarkdown({ pass: false, regressions: [{ kind: 'task', detail: 'x' }], warnings: [] }).includes('[task] x'))
+  const enforced = spawnSync(process.execPath, [REGRESS, '--reference', reference, '--current', current, '--enforce'], { encoding: 'utf8' })
+  assert.equal(enforced.status, 3)
 })
 
 check('run.mjs rejects an empty selection after exclusion', () => {

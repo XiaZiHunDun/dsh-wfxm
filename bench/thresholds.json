@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "note": "M9b 回归阈值。默认不是发布门槛；加 --enforce 才让 regress.mjs 以非零码阻断。",
+  "maxPassRateDropPp": 10,
+  "maxCoverageDropPp": 5,
+  "taskHighWater": 1,
+  "taskCollapse": 0,
+  "minRounds": 2
+}

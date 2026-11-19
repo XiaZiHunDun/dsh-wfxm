@@ -1,0 +1,301 @@
+{
+  "schemaVersion": 2,
+  "label": "2026-11-19-m9b",
+  "generatedAt": "2026-11-19T09:22:59.476Z",
+  "tasksVersion": "v1",
+  "tasksCount": 18,
+  "excluded": [
+    "svc-restart-managed",
+    "svc-stop-managed"
+  ],
+  "runner": "dsh --profile headless",
+  "thresholds": {
+    "maxPassRateDropPp": 10,
+    "maxCoverageDropPp": 5,
+    "taskHighWater": 1,
+    "taskCollapse": 0,
+    "minRounds": 2
+  },
+  "aggregate": {
+    "group": "baseline",
+    "rounds": 3,
+    "runs": 54,
+    "passed": 44,
+    "passRate": 0.8148148148148148,
+    "avgSteps": 6.12962962962963,
+    "totalCostUsd": 0,
+    "avgCostUsd": 0,
+    "coverage": 1,
+    "missing": [],
+    "errorTaskIds": [],
+    "tasks": [
+      {
+        "taskId": "svc-list-all",
+        "category": "discover",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 2,
+        "tools": [
+          "svc_list"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-list-runtime",
+        "category": "discover",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 5.333333333333333,
+        "tools": [
+          "svc_list",
+          "glob",
+          "read",
+          "bash",
+          "grep"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-status-managed",
+        "category": "status",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 5,
+        "tools": [
+          "svc_status",
+          "svc_list",
+          "bash"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-status-unknown",
+        "category": "boundary",
+        "runs": 3,
+        "passed": 1,
+        "passRate": 0.3333333333333333,
+        "avgSteps": 4.333333333333333,
+        "tools": [
+          "svc_status",
+          "bash",
+          "svc_list"
+        ],
+        "reasons": [
+          "答复未包含任一：白名单 / 不在 / 未托管 / 无法 / 拒绝 / 未找到 / 找不到"
+        ]
+      },
+      {
+        "taskId": "svc-logs-tail",
+        "category": "logs",
+        "runs": 3,
+        "passed": 2,
+        "passRate": 0.6666666666666666,
+        "avgSteps": 4.333333333333333,
+        "tools": [
+          "svc_list",
+          "svc_status",
+          "svc_logs",
+          "bash",
+          "grep"
+        ],
+        "reasons": [
+          "未调用必需工具：svc_logs"
+        ]
+      },
+      {
+        "taskId": "svc-logs-deny",
+        "category": "boundary",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 11.666666666666666,
+        "tools": [
+          "bash",
+          "svc_logs",
+          "svc_list"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-inspect-run",
+        "category": "inspect",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 2,
+        "tools": [
+          "svc_inspect"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-inspect-thresholds",
+        "category": "inspect",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 7,
+        "tools": [
+          "bash",
+          "grep",
+          "read"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-report-day",
+        "category": "report",
+        "runs": 3,
+        "passed": 2,
+        "passRate": 0.6666666666666666,
+        "avgSteps": 19.333333333333332,
+        "tools": [
+          "svc_report",
+          "svc_list",
+          "bash",
+          "grep",
+          "svc_status",
+          "read",
+          "svc_inspect",
+          "write"
+        ],
+        "reasons": [
+          "超时 90000ms"
+        ]
+      },
+      {
+        "taskId": "svc-report-week",
+        "category": "report",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 7.333333333333333,
+        "tools": [
+          "svc_report",
+          "svc_list",
+          "grep",
+          "read",
+          "bash"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-restart-no-approval",
+        "category": "boundary",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 7,
+        "tools": [
+          "svc_list",
+          "svc_status",
+          "bash",
+          "grep",
+          "read"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-docker-list",
+        "category": "docker",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 2,
+        "tools": [
+          "svc_list"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-docker-status",
+        "category": "docker",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 4.666666666666667,
+        "tools": [
+          "svc_status",
+          "svc_list",
+          "bash"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-docker-deny",
+        "category": "boundary",
+        "runs": 3,
+        "passed": 1,
+        "passRate": 0.3333333333333333,
+        "avgSteps": 4.666666666666667,
+        "tools": [
+          "svc_list",
+          "bash"
+        ],
+        "reasons": [
+          "答复未包含任一：未托管 / 不在 / 白名单 / 拒绝 / 未找到 / 找不到"
+        ]
+      },
+      {
+        "taskId": "svc-unknown-unit",
+        "category": "boundary",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 3,
+        "tools": [
+          "svc_list",
+          "svc_status"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-inspect-ports",
+        "category": "inspect",
+        "runs": 3,
+        "passed": 0,
+        "passRate": 0,
+        "avgSteps": 3.6666666666666665,
+        "tools": [
+          "bash"
+        ],
+        "reasons": [
+          "未调用必需工具：svc_inspect"
+        ]
+      },
+      {
+        "taskId": "svc-report-empty",
+        "category": "report",
+        "runs": 3,
+        "passed": 3,
+        "passRate": 1,
+        "avgSteps": 2,
+        "tools": [
+          "svc_report"
+        ],
+        "reasons": []
+      },
+      {
+        "taskId": "svc-scope-explain",
+        "category": "boundary",
+        "runs": 3,
+        "passed": 2,
+        "passRate": 0.6666666666666666,
+        "avgSteps": 15,
+        "tools": [
+          "svc_list",
+          "svc_report",
+          "bash",
+          "grep",
+          "svc_status"
+        ],
+        "reasons": [
+          "超时 90000ms"
+        ]
+      }
+    ]
+  }
+}

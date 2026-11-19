@@ -1833,3 +1833,26 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `docs/16 §12.46`
 - [x] `AGENTS.md` Slice BG
 - [x] `tasks.md` 本切片
+
+# Slice BH — M9b 多轮基线与回归门禁（2026-11-19，离线工具，无需发布）
+
+## BH1 多轮聚合
+
+- [x] `bench/lib.mjs`：`aggregateRounds` / `renderAggregateMarkdown` / `compareBaseline` / `renderRegressMarkdown`
+- [x] `bench/thresholds.json`：整体通过率、覆盖率、任务坍塌、最小轮数
+- [x] `bench/baseline.mjs --rounds N` + `--write-reference`
+- [x] `bench/regress.mjs`：默认 advisory，`--enforce` 退化退出 3
+
+## BH2 用例
+
+- [x] `bench/verify` 22 例（聚合 / 阈值 / 回归 / CLI）
+- [x] `scripts/verify-all.mjs` 全绿
+
+## BH3 真实基线与文档
+
+- [x] 3 轮真实基线（44/54，81.5%）并生成 `bench/baselines/reference.json`
+- [x] `docs/09` M9 行与 §9.2
+- [x] `docs/12` A6 进度
+- [x] `docs/16 §12.47`
+- [x] `AGENTS.md` Slice BH
+- [x] `tasks.md` 本切片

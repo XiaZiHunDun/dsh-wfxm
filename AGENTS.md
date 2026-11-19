@@ -503,6 +503,10 @@
     跑全量并归档（默认排除两项 `change`）。2026-11-19 基线 16/18、平均 5.78 步，摘要进
     [bench/baselines](bench/baselines/2026-11-19.md)；`bench/verify` 18 例。仍是 advisory，不设门槛
     （[16 §12.46](docs/16-部署与运行.md)）。
+  - **M9b 回归门禁（Slice BH）**：`baseline.mjs --rounds N` 聚合每任务通过率；`thresholds.json`
+    定义整体通过率 / 覆盖率 / 任务坍塌阈值；`regress.mjs` 对比 `bench/baselines/reference.json`，
+    默认 advisory，`--enforce` 时退化退出 3。参考基线由 `--write-reference` 生成。
+    `bench/verify` 22 例（[16 §12.47](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →
