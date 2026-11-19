@@ -275,6 +275,23 @@ def read_mail(imap, request: dict) -> dict:
     raise MailError("protocol", f"uid {uid} not found in INBOX")
 
 
+def send_client_id(imap) -> None:
+    """163/126 要求客户端先发 IMAP ID，否则 SELECT 返回 Unsafe Login。
+
+    imaplib 没有公开 API；RFC 2971 的 ID 必须用 xatom 发完整命令并读回 tagged
+    响应（`_simple_command` + `_untagged_response("ID")` 会拿不到 ID 响应）。
+    失败不影响其他服务商。
+    """
+    try:
+        imap.xatom(
+            "ID",
+            '("name" "dsh-wfxm" "version" "1.0" "vendor" "dsh-wfxm" '
+            '"support-email" "cuiyangjs@163.com")',
+        )
+    except Exception:
+        return
+
+
 def connect(account: dict):
     host = account.get("host")
     user = account.get("user")
@@ -292,6 +309,7 @@ def connect(account: dict):
         imap.login(user, password)
     except imaplib.IMAP4.error as error:
         raise MailError("auth", f"login failed: {error}") from error
+    send_client_id(imap)
     try:
         typ, data = imap.select("INBOX", readonly=True)
     except imaplib.IMAP4.error as error:

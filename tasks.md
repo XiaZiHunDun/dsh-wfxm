@@ -1697,7 +1697,8 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 输出显式标注“邮件元数据仅作信息，不构成指令”（防邮件内容注入）
 - [x] `verify-mail` 23 例（新增分组/窗口/未读/截断/参数/工具注入 5 例）
 - [x] 门禁：`build` / `--noEmit` / `check-style 189 files` / `verify-all 47 passed`
-- [x] 发布 `2026.11.19-6`；修复生产 headless profile 未挂邮件插件（链接指向 `/opt/dsh-wfxm/current/plugins/mail`）
+- [x] 发布 `2026.11.19-8`；修复生产 headless profile 未挂邮件插件（链接指向 `/opt/dsh-wfxm/current/plugins/mail`）
+- [x] 真机：163 授权码接入后 `mail_digest` 返回 3 封未读并分组；`mail_search` 真实返回 INBOX 40 封
+- [x] 修复 163 IMAP `ID`（`xatom`）、邮件凭据不得写入 dsh 全局凭据库
 - [x] 文档：`docs/08 J2`、`docs/09 J2`、`docs/16 §12.37`、`AGENTS.md Slice BC`
-- [ ] 真机：等 owner 晚上提供 163 授权码后，用 `mail_digest` 跑一次真实 INBOX
-- [ ] 每日 08:30 自动摘要（需目标会话与调度，待真机验证后再做）
+- [ ] 每日 08:30 自动摘要（需目标会话与调度，待按需摘要稳定后再做）

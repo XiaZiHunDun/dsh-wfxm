@@ -2,8 +2,9 @@
  * 邮件账号配置（J1）。
  *
  * 与飞书凭据同一个 seam：`~/.dsh/integrations/dsh-mail/config.json` 里只放
- * `secretRef`，真正的授权码在 `~/.dsh/.credentials.yaml` 的 `refs:` 下。
- * 环境变量（`DSH_WFXM_MAIL_*`）优先，便于临时排查与测试。
+ * `secretRef`，真正的授权码在 `~/.dsh/integrations/dsh-mail/credentials.yaml`
+ * 的 `refs:` 下。**不要**写进 dsh 的 `~/.dsh/.credentials.yaml`。
+ * 环境变量（`DSH_WFXM_MAIL_*`）优先，生产推荐走 `/etc/dsh-wfxm/env`。
  */
 
 import { readFileSync } from 'node:fs'
@@ -11,7 +12,12 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export const DEFAULT_MAIL_CONFIG_PATH = join(homedir(), '.dsh/integrations/dsh-mail/config.json')
-export const DEFAULT_CREDENTIALS_PATH = join(homedir(), '.dsh/.credentials.yaml')
+/**
+ * 邮件凭据放在集成目录，**不要**复用 `~/.dsh/.credentials.yaml`：
+ * 那是 dsh 自己的凭据库，`refs` 键必须是 POSIX 环境变量名；`mail/163`
+ * 这类带 `/` 的 ref 会让整份凭据库解析失败，连带 LLM key 失效。
+ */
+export const DEFAULT_CREDENTIALS_PATH = join(homedir(), '.dsh/integrations/dsh-mail/credentials.yaml')
 
 export interface MailAccount {
   host: string

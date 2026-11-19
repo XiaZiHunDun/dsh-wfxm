@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import {
+  DEFAULT_CREDENTIALS_PATH,
   MAIL_TOOL_RISK,
   MailError,
   buildMailDigest,
@@ -239,6 +240,11 @@ await check('tools return structured data when configured', async () => {
   const searched = await search.execute({ limit: 2 })
   const readResult = await read.execute({ uid: 9 })
   return searched.total === 1 && readResult.uid === 9 && readResult.text === 'body'
+})
+
+await check('mail credentials live beside the integration, not in dsh credential store', () => {
+  return DEFAULT_CREDENTIALS_PATH.endsWith('/.dsh/integrations/dsh-mail/credentials.yaml')
+    && !DEFAULT_CREDENTIALS_PATH.endsWith('/.dsh/.credentials.yaml')
 })
 
 await check('mail_digest groups metadata into reply/action/fyi', () => {
