@@ -1701,7 +1701,7 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 真机：163 授权码接入后 `mail_digest` 返回 3 封未读并分组；`mail_search` 真实返回 INBOX 40 封
 - [x] 修复 163 IMAP `ID`（`xatom`）、邮件凭据不得写入 dsh 全局凭据库
 - [x] 文档：`docs/08 J2`、`docs/09 J2`、`docs/16 §12.37`、`AGENTS.md Slice BC`
-- [ ] 每日 08:30 自动摘要（需目标会话与调度，待按需摘要稳定后再做）
+- [x] 每日 08:30 自动摘要（Slice BD：宿主 pump 调度 + 状态文件 + outbox 幂等键，2026-11-19 真机）
 
 # Slice BD — 一期结项收口（J2 每日摘要 / 文档对齐，2026-11-19，release `2026.11.19-9`）
 
