@@ -12,6 +12,7 @@ export type {
   ForegroundHandler,
   ForegroundInput,
   ForegroundOutcome,
+  MailTodoRequest,
   OrchestratorForegroundOptions,
   ReminderPort,
   ReminderView,
@@ -20,6 +21,7 @@ export {
   DEFAULT_LIVE_STATUSES,
   NON_TEXT_REPLY,
   createOrchestratorForeground,
+  matchMailTodoRequest,
 } from './foreground.js'
 export type { ConversationTurn, DecisionContextInput, ReminderPromptItem } from './prompt.js'
 export { buildDecisionPrompt } from './prompt.js'

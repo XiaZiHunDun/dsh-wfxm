@@ -55,6 +55,7 @@ const {
   createSdkDecisionRunner,
   defaultPatchPath,
   defaultSdkPatchPath,
+  matchMailTodoRequest,
   matchQuickRequest,
   parseDecision,
   parseQuickRequest,
@@ -107,7 +108,7 @@ function makeTransport() {
 }
 
 /** One fresh host + DB per case; the foreground is built by the host's factory. */
-function makeHost({ decide, fallback, logger, foreground, probe, checks, withReminders = true } = {}) {
+function makeHost({ decide, fallback, logger, foreground, probe, checks, mailTodos, withReminders = true, duplicateWindowMs } = {}) {
   hostSeq += 1
   const dbPath = join(dir, `orchestrator-${hostSeq}.sqlite`)
   const transport = makeTransport()
@@ -122,6 +123,7 @@ function makeHost({ decide, fallback, logger, foreground, probe, checks, withRem
     },
     transport,
     now,
+    ...duplicateWindowMs === undefined ? {} : { duplicateWindowMs },
     ...reminders === null ? {} : { reminders },
     ...foreground === undefined
       ? {
@@ -135,6 +137,7 @@ function makeHost({ decide, fallback, logger, foreground, probe, checks, withRem
             logger: logger ?? null,
             ...probe === undefined ? {} : { probe },
             ...checks === undefined ? {} : { checks },
+            ...mailTodos === undefined ? {} : { mailTodos },
             ...reminders === null ? {} : { reminders: createReminderPort(reminders, now), now },
           }),
         }
@@ -1234,6 +1237,93 @@ await check('prompt carries time and pending reminders only when enabled', () =>
     && enabled.includes('"action":"remind"')
     && !disabled.includes('当前时间')
     && !disabled.includes('"action":"remind"')
+})
+
+await check('mail_todos defaults to 48h and accepts 1..168 only', () => {
+  const defaults = parseDecision('{"action":"mail_todos"}', { todosEnabled: true })
+  const explicit = parseDecision('{"action":"mail_todos","hours":12}', { todosEnabled: true })
+  const zero = parseDecision('{"action":"mail_todos","hours":0}', { todosEnabled: true })
+  const far = parseDecision('{"action":"mail_todos","hours":169}', { todosEnabled: true })
+  const disabled = parseDecision('{"action":"mail_todos"}', {})
+  return defaults.ok && defaults.decision.action === 'mail_todos' && defaults.decision.hours === 48
+    && explicit.ok && explicit.decision.hours === 12
+    && !zero.ok && zero.reason === 'invalid-todo-hours'
+    && !far.ok && far.reason === 'invalid-todo-hours'
+    && !disabled.ok && disabled.reason === 'todos-unavailable'
+})
+
+await check('prompt exposes mail_todos only when the port is mounted', () => {
+  const enabled = buildDecisionPrompt({ text: '邮件里有什么待办', todosEnabled: true })
+  const disabled = buildDecisionPrompt({ text: '邮件里有什么待办' })
+  return enabled.includes('"action":"mail_todos"')
+    && enabled.includes('从邮件提取待办')
+    && !disabled.includes('"action":"mail_todos"')
+})
+
+await check('a mail_todos turn replies directly without creating a task', async () => {
+  const seen = []
+  const { host, transport, calls } = makeHost({
+    decide: async () => '{"action":"mail_todos","hours":72}',
+    mailTodos: async ({ hours }) => {
+      seen.push(hours)
+      return '邮件待办（最近 72 小时，扫描 5 封）\n1. 回复报价邮件'
+    },
+  })
+  await pair(host)
+  // 不含「待办」字样，走模型决策路径；确定性匹配由下一个用例覆盖。
+  await say(host, '帮我看看邮箱')
+  await host.pump()
+  const texts = transport.sent.map((item) => item.payload?.text ?? '')
+  return seen.length === 1
+    && seen[0] === 72
+    && calls.length === 0
+    && texts.some((text) => text.startsWith('邮件待办（最近 72 小时'))
+})
+
+await check('matchMailTodoRequest picks the window and ignores side-effect phrasing', () => {
+  const def = matchMailTodoRequest('从邮件里提取待办')
+  const week = matchMailTodoRequest('从邮件里提取最近 7 天的待办')
+  const hours = matchMailTodoRequest('看看邮件里最近 12 小时要处理的事')
+  const weekWord = matchMailTodoRequest('邮件里这一周有什么待办')
+  const clamp = matchMailTodoRequest('邮箱里最近 30 天的待办')
+  return def !== null && def.hours === 48
+    && week !== null && week.hours === 168
+    && hours !== null && hours.hours === 12
+    && weekWord !== null && weekWord.hours === 168
+    && clamp !== null && clamp.hours === 168
+    && matchMailTodoRequest('把邮件归档') === null
+    && matchMailTodoRequest('发邮件给张三') === null
+    && matchMailTodoRequest('提醒我处理邮件') === null
+    && matchMailTodoRequest('今天天气怎么样') === null
+})
+
+await check('repeating a mail-todo request calls the port again, not the model', async () => {
+  let decided = 0
+  const seen = []
+  const { host, transport, calls } = makeHost({
+    // 真机复现是「同一句话再发一次」；关掉内容去重窗口才能覆盖这条路径。
+    duplicateWindowMs: 0,
+    decide: async () => {
+      decided += 1
+      return '{"action":"reply","text":"刚查过最近 7 天的邮件，没有提取到明确待办。"}'
+    },
+    mailTodos: async ({ hours }) => {
+      seen.push(hours)
+      return `邮件待办（最近 ${hours} 小时，扫描 7 封）\n1. 完成在线测评`
+    },
+  })
+  await pair(host)
+  await say(host, '从邮件里提取最近 7 天的待办')
+  await host.pump()
+  await say(host, '从邮件里提取最近 7 天的待办')
+  await host.pump()
+  const texts = transport.sent.map((item) => item.payload?.text ?? '')
+  return seen.length === 2
+    && seen.every((hours) => hours === 168)
+    && decided === 0
+    && calls.length === 0
+    && texts.filter((text) => text.includes('完成在线测评')).length === 2
+    && !texts.some((text) => text.includes('刚查过'))
 })
 
 await check('a remind turn stores it and acks with a local time', async () => {

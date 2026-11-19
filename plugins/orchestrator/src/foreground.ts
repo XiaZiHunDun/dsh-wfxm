@@ -130,6 +130,11 @@ export interface OrchestratorForegroundOptions {
   checks?: QuickChecks | null
   /** Slice AT (J5): 提醒端口；缺失时前台不提供提醒动作。 */
   reminders?: ReminderPort | null
+  /**
+   * Slice BN (J2): 邮件待办提取端口（只读取数 + 一次模型提取）。
+   * 返回已渲染的回复文本；null 表示没有可读取的邮件。
+   */
+  mailTodos?: ((input: { hours: number }) => Promise<string | null>) | null
   /** 可注入时钟（测试与提醒的相对时间换算）。 */
   now?: () => Date
 }
@@ -138,6 +143,54 @@ interface LiveTask {
   id: string
   status: string
   intent: string
+}
+
+/** 「从邮件里提取最近 7 天的待办」这类明确请求；hours 已夹到 1..168。 */
+export interface MailTodoRequest {
+  hours: number
+}
+
+const MAIL_WORD = /(邮件|邮箱|收件箱|\binbox\b|\bmail\b)/i
+const TODO_WORD = /(待办|待处理|要处理|需要处理|待跟进|要做的事|该处理|to[- ]?do)/i
+/** 带副作用的邮件操作交给模型/执行者，不在这里劫持。 */
+const MAIL_TODO_BLOCK = /(归档|删除|移除|清空|发送|发出|发一封|转发|退订|提醒)/
+
+/** 默认回看 48 小时，与 `mail_todos` 的默认值一致。 */
+const DEFAULT_MATCH_HOURS = 48
+const MAX_MATCH_HOURS = 168
+
+function matchHours(text: string): number {
+  const days = /([0-9]+|[一两三四五六七])\s*(?:天|日)/.exec(text)
+  if (days !== null) return clampHours(toNumber(days[1]) * 24)
+  const hours = /([0-9]+|[一两三四五六七])\s*(?:个)?(?:小时|钟头|h\b)/i.exec(text)
+  if (hours !== null) return clampHours(toNumber(hours[1]))
+  if (/(一周|一个星期|一星期|最近一周|本周)/.test(text)) return MAX_MATCH_HOURS
+  return DEFAULT_MATCH_HOURS
+}
+
+function toNumber(raw: string): number {
+  const digits = Number(raw)
+  if (Number.isInteger(digits)) return digits
+  const numerals: Record<string, number> = { 一: 1, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7 }
+  return numerals[raw] ?? 0
+}
+
+function clampHours(value: number): number {
+  if (!Number.isFinite(value) || value < 1) return 1
+  return value > MAX_MATCH_HOURS ? MAX_MATCH_HOURS : Math.floor(value)
+}
+
+/**
+ * 确定性识别「从邮件提取待办」。
+ *
+ * 模型在多轮对话里会把上一轮的回答当成答案（真机复现：重复同一请求只回
+ * 「刚查过…」而不调用端口），所以命中这条窄句式时直接走端口，不经过决策
+ * 模型。只认「邮件 + 待办/要处理」，带归档/发送/提醒等副作用词一律不拦截。
+ */
+export function matchMailTodoRequest(text: string): MailTodoRequest | null {
+  if (!MAIL_WORD.test(text) || !TODO_WORD.test(text)) return null
+  if (MAIL_TODO_BLOCK.test(text)) return null
+  return { hours: matchHours(text) }
 }
 
 function liveTaskOn(tasks: TaskStore, threadId: string, liveStatuses: readonly string[]): LiveTask | null {
@@ -157,6 +210,7 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
   const logger = options.logger ?? null
   const quickAnswer = createQuickAnswer({ tasks, probe: options.probe ?? null, checks: options.checks ?? null })
   const reminders = options.reminders ?? null
+  const mailTodos = options.mailTodos ?? null
   const clock = options.now ?? (() => new Date())
 
   /** Rule-shaped actions, so a model decision and a fallback look the same. */
@@ -202,6 +256,23 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
     return { ...outcome, note }
   }
 
+  /** Slice BN: 只读提取，直接回话，不建任务、不写邮箱。 */
+  async function runMailTodos(threadId: string, hours: number): Promise<ForegroundOutcome> {
+    if (mailTodos === null) {
+      return { action: 'reply', text: '邮件待办提取暂不可用。', threadId, note: 'mail-todos-unavailable' }
+    }
+    try {
+      const replyText = await mailTodos({ hours })
+      if (replyText === null || replyText.trim() === '') {
+        return { action: 'reply', text: '没有读取到可提取的邮件。', threadId, note: 'mail-todos-empty' }
+      }
+      return { action: 'reply', text: replyText, threadId, note: 'mail-todos' }
+    } catch (error) {
+      logger?.warn?.(`mail todos failed: ${error instanceof Error ? error.message : String(error)}`)
+      return { action: 'reply', text: '邮件待办提取失败，请稍后再试。', threadId, note: 'mail-todos-failed' }
+    }
+  }
+
   return async ({ result, text, history }) => {
     if (result.target.kind !== 'orchestrator') {
       return { action: 'none', reason: `target:${result.target.kind}` }
@@ -227,6 +298,12 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
       }
     }
 
+    // Slice BN: a repeated "提取邮件待办" must hit the port again. Letting the
+    // decision model see the previous answer made it reply "刚查过…" instead of
+    // re-reading the mailbox (真机复现), so this narrow shape bypasses the model.
+    const mailRequest: MailTodoRequest | null = mailTodos === null ? null : matchMailTodoRequest(trimmed)
+    if (mailRequest !== null) return runMailTodos(thread.id, mailRequest.hours)
+
     const live = liveTaskOn(tasks, thread.id, liveStatuses)
     const nowAt = clock()
     // 本轮只读一次：prompt 里的序号与取消时用的是同一份列表。
@@ -238,6 +315,7 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
       ...history === undefined ? {} : { history },
       now: nowAt,
       remindersEnabled: reminders !== null,
+      todosEnabled: mailTodos !== null,
       reminders: pendingReminders.map((item, index) => ({
         index: index + 1,
         when: item.when,
@@ -253,6 +331,7 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
         liveTask: live !== null,
         now: nowAt,
         remindersEnabled: reminders !== null,
+        todosEnabled: mailTodos !== null,
         ...options.maxReplyChars === undefined ? {} : { maxReplyChars: options.maxReplyChars },
         ...options.maxIntentChars === undefined ? {} : { maxIntentChars: options.maxIntentChars },
       })
@@ -329,6 +408,9 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
         threadId: thread.id,
       }
     }
+
+    // Slice BN (J2): 只读提取，直接回话，不建任务、不写邮箱。
+    if (decision.action === 'mail_todos') return runMailTodos(thread.id, decision.hours)
 
     // A second task on the same thread would fight the live owner slot (#9), so
     // a work request while something is live is delivered as an input instead.

@@ -20,6 +20,7 @@ export type Decision =
   | { action: 'remind'; at: string; text: string; repeat: DecisionRepeat }
   | { action: 'reminders' }
   | { action: 'cancel_remind'; index: number }
+  | { action: 'mail_todos'; hours: number }
 
 export type DecisionParse =
   | { ok: true; decision: Decision }
@@ -36,6 +37,8 @@ export interface ParseDecisionOptions {
   now?: Date
   /** 前台是否挂了提醒端口；未挂时三种提醒动作一律视为未知。 */
   remindersEnabled?: boolean
+  /** 前台是否挂了邮件待办端口；未挂时 `mail_todos` 视为未知。 */
+  todosEnabled?: boolean
 }
 
 export const DEFAULT_MAX_REPLY_CHARS = 4_000
@@ -47,6 +50,9 @@ export const DEFAULT_MAX_REMINDER_CHARS = 200
 export const MAX_REMINDER_AHEAD_MS = 366 * 86_400_000
 /** 列表最多展示 20 条，序号也以此为上限。 */
 export const MAX_REMINDER_INDEX = 20
+/** 邮件待办默认回看 48 小时；最多一周。 */
+export const DEFAULT_TODO_HOURS = 48
+export const MAX_TODO_HOURS = 168
 
 /** Strip fences / prose and return the outermost JSON object, or null. */
 export function extractJsonObject(raw: string): string | null {
@@ -167,6 +173,19 @@ export function parseDecision(raw: string, options: ParseDecisionOptions = {}): 
       return { ok: false, reason: 'invalid-reminder-index' }
     }
     return { ok: true, decision: { action: 'cancel_remind', index: raw } }
+  }
+
+  // 邮件待办同理：没有取数/提取能力就不允许模型"决定"这个动作。
+  if (action === 'mail_todos') {
+    if (options.todosEnabled !== true) return { ok: false, reason: 'todos-unavailable' }
+    const raw = record.hours
+    if (raw === undefined || raw === null || raw === '') {
+      return { ok: true, decision: { action: 'mail_todos', hours: DEFAULT_TODO_HOURS } }
+    }
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > MAX_TODO_HOURS) {
+      return { ok: false, reason: 'invalid-todo-hours' }
+    }
+    return { ok: true, decision: { action: 'mail_todos', hours: raw } }
   }
 
   return { ok: false, reason: 'unknown-action' }

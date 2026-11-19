@@ -46,6 +46,19 @@ export {
 } from './schedule.js'
 export type { MailDigestConfig, MailDigestState } from './schedule.js'
 export {
+  MAX_TODO_ITEMS,
+  MAX_TODO_TEXT,
+  buildTodoExtractionPrompt,
+  parseMailTodos,
+  renderMailTodos,
+} from './todos.js'
+export type {
+  MailTodoItem,
+  MailTodoSource,
+  RenderTodosOptions,
+  TodoPromptInput,
+} from './todos.js'
+export {
   MAIL_TOOL_PORT,
   MAIL_TOOL_RISK,
   apply,

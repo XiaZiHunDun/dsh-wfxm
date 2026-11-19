@@ -534,6 +534,13 @@
     邮件插件新增只读 `action='count'`，`serve.mjs` 注入 `verify.mailFolderCount`（未配置 → 不注入），
     tasks 迁移 v10 放宽 `task_assertions.kind`。**边界**：v1 只复核「归档夹可读且非空」，不逐 uid 溯源。
     `verify-risk 16` / `verify-tasks 119` / `verify-mail 39`（[16 §12.51](docs/16-部署与运行.md)）。
+  - **J2 从邮件提取待办（Slice BN）**：决策动作 `mail_todos`（`hours` 默认 48、1..168；端口未挂载拒绝）；
+    前台直接 `reply` 不建任务。排除自动发件人后按时间取前 6 封、正文 ≤1200 字，用**独立 headless** runner
+    提取，严格解析 `{"todos":[...]}`（去重、≤10 条、不合格即失败），回复标注「仅作参考」。
+    只读、不写邮箱、不持久化待办、不自动建提醒；每日摘要仍是确定性分组。
+    `matchMailTodoRequest` 在模型之前拦截「邮件 + 待办/要处理」（含 7 天/12 小时换算，副作用词不拦截），
+    重复发送同一请求也会重读邮箱（真机复现模型会复用上一轮回答）。
+    `verify-mail 42` / `verify-orchestrator 71`（[16 §12.52](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

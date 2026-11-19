@@ -44,7 +44,19 @@ import {
   summarizeConversationDigest,
 } from '@dsh-wfxm/gateway'
 import { createWfxmHost, createRuleForeground } from '@dsh-wfxm/host'
-import { countMailFolder, parseDigestEnv, readArchiveFolder, readMailAccount } from '@dsh-wfxm/mail'
+import {
+  buildMailDigest,
+  buildTodoExtractionPrompt,
+  countMailFolder,
+  isAutomatedSender,
+  parseDigestEnv,
+  parseMailTodos,
+  readArchiveFolder,
+  readMail,
+  readMailAccount,
+  renderMailTodos,
+  searchMail,
+} from '@dsh-wfxm/mail'
 import { createMemoryStore, createProjectLookupPort } from '@dsh-wfxm/knowledge'
 import { createReminderPort, createReminderStore } from '@dsh-wfxm/reminder'
 import {
@@ -149,6 +161,7 @@ async function main() {
   let host = null
   let channel = null
   let decideRunner = null
+  let todoRunner = null
   let transport = null
   let patrol = null
   let stopping = false
@@ -352,9 +365,63 @@ async function main() {
               .warm()
               .then(() => log('front:warm', config.decideRunner))
               .catch((error) => log('front:warn', `warm failed: ${error instanceof Error ? error.message : String(error)}`))
+            // Slice BN (J2): 邮件待办提取。取数与正文读取都在这里完成，
+            // 只在用户明确要求时跑一次独立的 headless 会话；不建任务、不写邮箱。
+            const mailAccount = readMailAccount()
+            let mailTodos = null
+            if (!mailAccount.ok) {
+              log('mail:todos', 'disabled (mail not configured)')
+            } else {
+              const todoRunnerRef = createDecisionRunner({
+                kind: 'headless',
+                timeoutMs: config.decideTimeoutMs,
+                logger: { warn: (message) => log('mail:todos:warn', message) },
+              })
+              todoRunner = todoRunnerRef
+              mailTodos = async ({ hours }) => {
+                const now = new Date()
+                const since = new Date(now.getTime() - hours * 3_600_000).toISOString().slice(0, 10)
+                const search = await searchMail({ since, limit: 50 }, { account: mailAccount.account })
+                const digest = buildMailDigest(search, { now, request: { hours, limit: 50 } })
+                // 待办提取不依赖确定性分组：模型负责判断，这里只排除自动发件人，
+                // 再按时间倒序取前 6 封（否则「回复/处理」关键词没命中的真待办会被漏掉）。
+                const picks = [...digest.groups.reply, ...digest.groups.action, ...digest.groups.fyi]
+                  .filter((message) => !isAutomatedSender(message.from))
+                  .sort((left, right) => Date.parse(right.date) - Date.parse(left.date))
+                  .slice(0, 6)
+                const sources = []
+                for (const message of picks) {
+                  try {
+                    const body = await readMail(
+                      { uid: message.uid, maxChars: 1_500 },
+                      { account: mailAccount.account },
+                    )
+                    sources.push({
+                      uid: message.uid,
+                      from: message.from,
+                      subject: message.subject,
+                      date: message.date,
+                      text: body.text,
+                    })
+                  } catch (error) {
+                    log('mail:todos:warn', `read uid=${message.uid} failed: ${error instanceof Error ? error.message : String(error)}`)
+                  }
+                }
+                if (sources.length === 0) {
+                  return renderMailTodos([], { windowHours: hours, scanned: digest.total })
+                }
+                const raw = await todoRunnerRef(buildTodoExtractionPrompt({ windowHours: hours, sources }))
+                const items = parseMailTodos(raw)
+                if (items === null) throw new Error('todo extraction output was not a valid list')
+                log('mail:todos', `ok (${sources.length} mails, ${items.length} todos)`)
+                return renderMailTodos(items, { windowHours: hours, scanned: digest.total })
+              }
+              log('mail:todos', 'enabled (headless)')
+            }
             return createOrchestratorForeground({
               tasks,
               decide: runner,
+              ...(mailTodos === null ? {} : { mailTodos }),
               probe: createResourceProbe({ runner: spawnRunner }),
               checks: {
                 unitStatus: async (unit) => {
@@ -880,6 +947,7 @@ async function main() {
     }
     try {
       await decideRunner?.close()
+      await todoRunner?.close()
     } catch (error) {
       log('shutdown:warn', `decision runner close failed: ${error instanceof Error ? error.message : String(error)}`)
     }
