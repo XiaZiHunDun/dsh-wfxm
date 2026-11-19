@@ -469,6 +469,10 @@
     支持 actor/action/target/时间窗、游标分页与 `?verify=1` 哈希链校验；与授予管理面共用
     `DSH_WFXM_ADMIN_TOKEN`，不注册模型工具（AR26）。验证：`verify-audit-admin 10` /
     `verify-grants-admin 21`（挂载 3 条路由）。
+  - **入站准入（Slice BB / H2）**：① `admission` 在去重之后、分诊之前做渠道 allowlist、
+    每主体固定窗口限流、单条内容上限；拒绝只落 `inbox.status='rejected'` + `route_decisions`，
+    静默不回消息；未配对 `/bind` 同样受限流保护。配置 `DSH_WFXM_ADMISSION_*`，
+    格式错误启动即失败。验证：`verify-gateway 128`。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

@@ -13,6 +13,8 @@ import {
   apply,
   controlTask,
   createGatewayStore,
+  createAdmission,
+  parseAdmissionEnv,
   createOutboxDispatcher,
   createReceiptRelay,
   createTaskProgressRelay,
@@ -638,6 +640,96 @@ await check('an unpaired identity is stored, silently rejected and audited', asy
     && stored.errorCode === 'unpaired'
     && stored.chatId === 'chat_ing'
     && stored.threadId === null
+})
+
+await check('H2: a channel outside the allowlist is rejected before routing', async () => {
+  const gateStore = createGatewayStore(join(dir, 'admission-channel.sqlite'))
+  const gateOwner = gateStore.createActor({ kind: 'owner', displayName: 'Owner' })
+  gateStore.bindChannel({ actorId: gateOwner.id, channelId: 'cli_ok', externalUserId: 'open_gate' })
+  const admission = createAdmission({ allowedChannels: ['cli_ok'] })
+  const blocked = await ingestInbound({ store: gateStore, admission }, {
+    channelId: 'cli_bad',
+    msgId: 'evt_gate_channel',
+    externalUserId: 'open_gate',
+    content: { text: 'open the pod bay doors' },
+    chatId: 'chat_gate',
+  })
+  const allowed = await ingestInbound({ store: gateStore, admission }, {
+    channelId: 'cli_ok',
+    msgId: 'evt_gate_ok',
+    externalUserId: 'open_gate',
+    content: { text: '你好' },
+    chatId: 'chat_gate',
+  })
+  const stored = gateStore.getInbox(blocked.inbox.id)
+  return blocked.bypassReason === 'channel-not-allowed'
+    && blocked.target.kind === 'none'
+    && blocked.disposition.action === 'ignore'
+    && blocked.disposition.reason.startsWith('admission:')
+    && stored.status === 'rejected'
+    && stored.errorCode === 'channel-not-allowed'
+    && allowed.bypassReason === null
+    && allowed.target.kind === 'orchestrator'
+})
+
+await check('H2: a per-subject rate limit stops the third message in the window', async () => {
+  const gateStore = createGatewayStore(join(dir, 'admission-rate.sqlite'))
+  const gateOwner = gateStore.createActor({ kind: 'owner', displayName: 'Owner' })
+  gateStore.bindChannel({ actorId: gateOwner.id, channelId: 'cli_rate', externalUserId: 'open_rate' })
+  const admission = createAdmission({ rateLimit: { max: 2, windowMs: 60_000 } })
+  const send = (msgId, text) => ingestInbound({ store: gateStore, admission }, {
+    channelId: 'cli_rate',
+    msgId,
+    externalUserId: 'open_rate',
+    content: { text },
+    chatId: 'chat_rate',
+  })
+  const first = await send('evt_rate_1', '第一条')
+  const second = await send('evt_rate_2', '第二条')
+  const third = await send('evt_rate_3', '第三条')
+  const stored = gateStore.getInbox(third.inbox.id)
+  return first.bypassReason === null
+    && second.bypassReason === null
+    && third.bypassReason === 'rate-limited'
+    && third.target.kind === 'none'
+    && stored.status === 'rejected'
+    && stored.errorCode === 'rate-limited'
+    && stored.actorId === gateOwner.id
+})
+
+await check('H2: an oversized payload is rejected before triage', async () => {
+  const gateStore = createGatewayStore(join(dir, 'admission-size.sqlite'))
+  const gateOwner = gateStore.createActor({ kind: 'owner', displayName: 'Owner' })
+  gateStore.bindChannel({ actorId: gateOwner.id, channelId: 'cli_size', externalUserId: 'open_size' })
+  const admission = createAdmission({ maxContentChars: 64 })
+  const blocked = await ingestInbound({ store: gateStore, admission }, {
+    channelId: 'cli_size',
+    msgId: 'evt_size',
+    externalUserId: 'open_size',
+    content: { text: 'x'.repeat(200) },
+    chatId: 'chat_size',
+  })
+  const stored = gateStore.getInbox(blocked.inbox.id)
+  return blocked.bypassReason === 'content-too-large'
+    && blocked.target.kind === 'none'
+    && stored.errorCode === 'content-too-large'
+})
+
+await check('H2: admission env parsing is explicit and fails closed on typos', () => {
+  const parsed = parseAdmissionEnv({
+    DSH_WFXM_ADMISSION_CHANNELS: 'feishu, cli ',
+    DSH_WFXM_ADMISSION_RATE: '3/1000',
+    DSH_WFXM_ADMISSION_MAX_CHARS: '128',
+  })
+  const empty = parseAdmissionEnv({})
+  assert.throws(() => parseAdmissionEnv({ DSH_WFXM_ADMISSION_RATE: '30' }), /30\/60000/)
+  assert.throws(() => parseAdmissionEnv({ DSH_WFXM_ADMISSION_MAX_CHARS: '-1' }), /positive integer/)
+  return parsed.allowedChannels.join() === 'feishu,cli'
+    && parsed.rateLimit.max === 3
+    && parsed.rateLimit.windowMs === 1000
+    && parsed.maxContentChars === 128
+    && empty.allowedChannels === undefined
+    && empty.rateLimit === undefined
 })
 
 await check('an unpaired /bind claims the code and binds; a wrong code stays a silent reject', async () => {

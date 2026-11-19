@@ -35,7 +35,13 @@ import {
   loadFeishuCredentials,
 } from '@dsh-wfxm/feishu'
 import { createApprovalStore, createGrantStore, loadPolicy } from '@dsh-wfxm/governance'
-import { inboundText, redactedText, summarizeConversationDigest } from '@dsh-wfxm/gateway'
+import {
+  createAdmission,
+  inboundText,
+  parseAdmissionEnv,
+  redactedText,
+  summarizeConversationDigest,
+} from '@dsh-wfxm/gateway'
 import { createWfxmHost, createRuleForeground } from '@dsh-wfxm/host'
 import { createMemoryStore, createProjectLookupPort } from '@dsh-wfxm/knowledge'
 import { createReminderPort, createReminderStore } from '@dsh-wfxm/reminder'
@@ -243,6 +249,13 @@ async function main() {
         // re-verification rejects grants issued under a different version.
         const policyVersion = loadPolicy()?.version ?? null
         log('policy', { version: policyVersion })
+        // H2: fail the service at boot on a malformed admission config rather
+        // than silently running without a gate.
+        const admission = createAdmission(parseAdmissionEnv(process.env))
+        log('admission', {
+          channels: process.env.DSH_WFXM_ADMISSION_CHANNELS ?? 'all',
+          rate: process.env.DSH_WFXM_ADMISSION_RATE ?? 'off',
+        })
         // Slice S: deterministic read-only checks for the front desk's quick answers.
         const quickLogWindowMinutes = readInspectionConfig(process.env).thresholds.logWindowMinutes
         host = createWfxmHost({
@@ -256,6 +269,7 @@ async function main() {
           approvals: stores.approvals,
           grants: stores.grants,
           policyVersion,
+          admission,
           reminders: stores.reminders,
           changes: stores.changes,
           // Startup recovery restores a `dir:` workspace snapshot before the

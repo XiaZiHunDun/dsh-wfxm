@@ -39,6 +39,7 @@ import {
   type TaskControlReport,
 } from './task-control.js'
 import { wakeTask, type GrantCheckPort, type TaskWakePort, type WakeReport } from './wake.js'
+import type { AdmissionPort } from './admission.js'
 import {
   listProjectChoices,
   parseProjectCommand,
@@ -124,6 +125,9 @@ export type BypassReason =
   | 'task-anchor'
   | 'ambiguous-task'
   | 'ambiguous-project'
+  | 'channel-not-allowed'
+  | 'rate-limited'
+  | 'content-too-large'
 
 export type RouteTarget =
   | { kind: 'orchestrator'; sessionKind: 'orchestrator' }
@@ -204,6 +208,8 @@ export interface IngestDeps {
   approval?: ApprovalAnswerPort | null
   /** Host-composed read onto ③/⑤ for the read-only "details" button. */
   approvalDetails?: ApprovalDetailPort | null
+  /** H2: channel allowlist / per-subject rate limit / payload cap. Absent = allow. */
+  admission?: AdmissionPort | null
   /**
    * Slice AO.1: identical plain-text messages in one thread inside this window
    * are treated as duplicates (default 60s, `0` disables). Guards against a
@@ -327,6 +333,39 @@ function tryConsumePairingCode(store: GatewayStore, input: IngestInboundInput): 
     return actor
   } catch {
     return null
+  }
+}
+
+/**
+ * H2: admission refusals still land in the inbox and `route_decisions` (audit),
+ * but never reach triage, the model, or an outbox reply.
+ */
+function admissionRejection(
+  store: GatewayStore,
+  inbox: InboxItem,
+  code: 'channel-not-allowed' | 'rate-limited' | 'content-too-large',
+  reason: string,
+  actor: Actor | null,
+  thread: ThreadRecord | null,
+): IngestResult {
+  const rejected = store.updateInboxStatus(inbox.id, 'rejected', code)
+  const disposition = store.appendRouteDecision({
+    triggerId: rejected.id,
+    action: 'ignore',
+    reason: `admission: ${reason}`,
+    threadId: thread?.id ?? null,
+  })
+  return {
+    inbox: rejected,
+    duplicate: false,
+    actor,
+    thread,
+    intent: null,
+    target: { kind: 'none' },
+    bypassReason: code,
+    disposition,
+    followUp: null,
+    error: null,
   }
 }
 
@@ -577,6 +616,24 @@ export async function ingestInbound(
     })
     if (stored.duplicate) return duplicateResult(store, stored.inbox)
 
+    // H2: limit/flood control applies before a pairing code can be claimed.
+    const gate = deps.admission?.check({
+      channelId: input.channelId,
+      subject: input.externalUserId ?? 'anonymous',
+      content: input.content,
+      now,
+    })
+    if (gate !== undefined && !gate.admit) {
+      return admissionRejection(
+        store,
+        stored.inbox,
+        gate.code ?? 'channel-not-allowed',
+        gate.reason ?? 'admission refused',
+        null,
+        null,
+      )
+    }
+
     // docs/14 §四: an unpaired identity may claim a one-time pairing code with
     // `/bind <code>`. Any failure (unknown / expired / consumed code) falls
     // through to the same silent reject — the channel must not learn whether
@@ -675,6 +732,25 @@ export async function ingestInbound(
       followUp: null,
       error: null,
     }
+  }
+
+  // H2: channel allowlist, per-actor rate limit and payload cap run before
+  // triage; a refusal is audited and never reaches the model.
+  const gate = deps.admission?.check({
+    channelId: input.channelId,
+    subject: resolved.actor.id,
+    content: input.content,
+    now,
+  })
+  if (gate !== undefined && !gate.admit) {
+    return admissionRejection(
+      store,
+      inbox,
+      gate.code ?? 'channel-not-allowed',
+      gate.reason ?? 'admission refused',
+      resolved.actor,
+      thread,
+    )
   }
 
   let intent: TriageIntent

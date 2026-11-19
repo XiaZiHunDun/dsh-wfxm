@@ -1673,3 +1673,14 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 门禁：`build` / `--noEmit` / `check-style 187 files` / `verify-all 47 passed`
 - [x] 生产库链校验：384 条 `ok`
 - [x] 文档：`docs/09 H3`、`docs/15 §四`、`docs/16 §12.41`、`AGENTS.md Slice BA`
+
+## BB H2 入站准入加固
+
+- [x] 新增 `gateway/src/admission.ts`：渠道 allowlist、每主体固定窗口限流、内容上限
+- [x] `ingest.ts`：去重后、分诊前检查；拒绝落 `inbox.rejected` + `route_decisions`，新增 3 个 bypass 原因
+- [x] 未配对 `/bind` 也受限流保护（主体 = `external_user_id`）
+- [x] host `admission` 选项与 `serve.mjs` 的 `parseAdmissionEnv`（格式错误启动即失败）
+- [x] `verify-gateway` 128 例（新增渠道/限流/超大/环境解析 4 例）
+- [x] 门禁：`build` / `--noEmit` / `check-style 188 files` / `verify-all 47 passed`
+- [x] 生产 `/etc/dsh-wfxm/env` 配置渠道与限流，重启确认 `admission` 日志
+- [x] 文档：`docs/09 H2`、`docs/11 §5.3`、`docs/15 §二`、`docs/16 §12.42`、`AGENTS.md Slice BB`

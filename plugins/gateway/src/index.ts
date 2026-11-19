@@ -154,6 +154,19 @@ export type {
   WakeSkipReason,
 } from './wake.js'
 export { WAKE_ACTION, wakeTask } from './wake.js'
+export type {
+  AdmissionCheckInput,
+  AdmissionDecision,
+  AdmissionOptions,
+  AdmissionPolicy,
+  AdmissionPort,
+  AdmissionRejectCode,
+} from './admission.js'
+export {
+  DEFAULT_MAX_CONTENT_CHARS,
+  createAdmission,
+  parseAdmissionEnv,
+} from './admission.js'
 export type { DispatchReport, OutboxDispatcher, OutboxDispatcherOptions } from './dispatcher.js'
 export { createOutboxDispatcher } from './dispatcher.js'
 export type {

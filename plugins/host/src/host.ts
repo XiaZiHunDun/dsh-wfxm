@@ -38,6 +38,7 @@ import {
   type RunningTaskSnapshot,
   type SpillPort,
   type TaskProgressReport,
+  type AdmissionPort,
 } from '@dsh-wfxm/gateway'
 import type { ApprovalLevel, ApprovalStore, GrantStore } from '@dsh-wfxm/governance'
 import { createTaskChangePort, type ChangeStore } from '@dsh-wfxm/changes'
@@ -180,6 +181,8 @@ export interface WfxmHostOptions {
   grants?: GrantStore | null
   /** AR37: current policy version; wake re-verification rejects drift. */
   policyVersion?: string | number | null
+  /** H2: channel allowlist / rate limit / payload cap; null = allow everything. */
+  admission?: AdmissionPort | null
   /** ③'s approval store; without it approval cards cannot be issued or answered. */
   approvals?: ApprovalStore | null
   /** Slice AT (J5): reminders store; absent means the front desk cannot set reminders. */
@@ -727,6 +730,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         project: ports.project,
         approval: approvals === null ? null : ports.approvalAnswer,
         approvalDetails: approvals === null ? null : ports.approvalDetail,
+        ...options.admission === undefined || options.admission === null
+          ? {}
+          : { admission: options.admission },
         ...options.duplicateWindowMs === undefined
           ? {}
           : { duplicateWindowMs: options.duplicateWindowMs },
