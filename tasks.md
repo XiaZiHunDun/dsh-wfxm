@@ -2096,4 +2096,24 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 
 - [x] ~~BP0：开通飞书 `calendar:calendar:readonly` + `calendar:calendar`~~ —— 改为服务器自管后不再需要
 
-# Slice BQ — J4 会前提醒（待排期）
+# Slice BQ — J4 会前提醒
+
+## BQ1 存储与扫描
+
+- [x] `calendar_events` 增列 `reminded_at`，迁移 module=calendar v2（旧库原地升级）
+- [x] `listStartingSoon({nowMs, leadMs})`：`(now, now+lead]` 且未提醒
+- [x] `markReminded(id, at)` 幂等；改期清空 `reminded_at`
+
+## BQ2 提醒巡检
+
+- [x] `createCalendarReminderPatrol`：60s 一轮、提前 10 分钟、最新 live owner binding 推送
+- [x] 双层去重：`reminded_at` + outbox `dedupeKey=calendar-reminder:<id>`
+- [x] 无绑定 / 入队失败不标记，下轮重试；`lead=0` 关闭
+- [x] `serve.mjs` 启动/停止接线；`DSH_WFXM_CALENDAR_REMINDER_MINUTES` / `_INTERVAL_SECONDS`
+
+## BQ3 用例与发布
+
+- [x] `verify-calendar` 17 → 23 例（窗口/幂等/升级/文本/无绑定/失败/关闭/改期）
+- [ ] 四门禁全绿并发布（`2026.11.20-4`）
+- [ ] 真机：创建 10+ 分钟后开始的事件 → 收到一次提醒 → 不重复
+- [ ] 提交推送（ailearn）

@@ -9,6 +9,19 @@ export type {
   StoredCalendarEvent,
 } from './store.js'
 export {
+  DEFAULT_REMINDER_INTERVAL_MS,
+  DEFAULT_REMINDER_LEAD_MINUTES,
+  createCalendarReminderPatrol,
+  formatCalendarReminder,
+} from './reminders.js'
+export type {
+  CalendarReminderBinding,
+  CalendarReminderGateway,
+  CalendarReminderLogger,
+  CalendarReminderPatrol,
+  CalendarReminderPatrolOptions,
+} from './reminders.js'
+export {
   MAX_DESCRIPTION,
   MAX_SUMMARY,
   MAX_VIEW_DAYS,

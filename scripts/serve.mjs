@@ -28,6 +28,7 @@ import { createDshExecutor } from '@dsh-wfxm/executor'
 import { createChangeStore } from '@dsh-wfxm/changes'
 import {
   countCalendarEvents,
+  createCalendarReminderPatrol,
   createCalendarStore,
   renderCalendarView,
   viewCalendar,
@@ -173,6 +174,7 @@ async function main() {
   let transport = null
   let patrol = null
   let calendarStore = null
+  let calendarReminder = null
   let stopping = false
   let seq = 0
 
@@ -657,7 +659,40 @@ async function main() {
 
   host.start()
   startPatrol()
+  startCalendarReminders()
   log('ready', { pid: process.pid, channel: config.channel })
+
+  /**
+   * Slice BQ: 会前提醒。独立于巡检 patrol，按分钟级扫描本机日程；
+   * `DSH_WFXM_CALENDAR_REMINDER_MINUTES=0` 可关闭。
+   */
+  function startCalendarReminders() {
+    const leadMinutes = Number(process.env.DSH_WFXM_CALENDAR_REMINDER_MINUTES ?? 10)
+    const intervalSeconds = Number(process.env.DSH_WFXM_CALENDAR_REMINDER_INTERVAL_SECONDS ?? 60)
+    if (!Number.isFinite(leadMinutes) || leadMinutes <= 0) {
+      log('calendar:reminder', 'disabled (DSH_WFXM_CALENDAR_REMINDER_MINUTES=0)')
+      return
+    }
+    const intervalMs = Number.isFinite(intervalSeconds) && intervalSeconds > 0
+      ? intervalSeconds * 1000
+      : 60_000
+    try {
+      calendarReminder = createCalendarReminderPatrol({
+        store: calendarStore,
+        gateway: host.stores.gateway,
+        leadMinutes,
+        intervalMs,
+        logger: {
+          info: (message) => log('calendar:reminder', message),
+          warn: (message) => log('calendar:reminder:warn', message),
+        },
+      })
+      calendarReminder.start()
+      log('calendar:reminder', `enabled (lead=${leadMinutes}m, every=${intervalMs / 1000}s)`)
+    } catch (error) {
+      log('calendar:reminder:warn', `failed to start: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
 
   /**
    * G2/G3: the host ticks, svcops inspects, module ⑥ (outbox) delivers. Patrol
@@ -977,6 +1012,11 @@ async function main() {
       await todoRunner?.close()
     } catch (error) {
       log('shutdown:warn', `decision runner close failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    try {
+      calendarReminder?.stop()
+    } catch (error) {
+      log('shutdown:warn', `calendar reminder stop failed: ${error instanceof Error ? error.message : String(error)}`)
     }
     try {
       patrol?.stop()

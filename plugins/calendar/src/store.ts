@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
 
 const MIGRATION_MODULE = 'calendar'
-const MIGRATION_VERSION = 1
+const MIGRATION_VERSION = 2
 
 const MIGRATIONS_DDL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   PRIMARY KEY (module)
 );
 `
+
+/** v2：会前提醒只发一次，用 `reminded_at` 做库级去重。 */
+const CALENDAR_V2_DDL = 'ALTER TABLE calendar_events ADD COLUMN reminded_at TEXT'
 
 const CALENDAR_DDL = `
 CREATE TABLE IF NOT EXISTS calendar_events (
@@ -52,6 +55,7 @@ export interface StoredCalendarEvent {
   location: string
   createdAt: string
   updatedAt: string
+  remindedAt: string | null
 }
 
 export interface CalendarEventWrite {
@@ -72,9 +76,13 @@ export interface CalendarEventPatch {
 
 export interface CalendarStore {
   listEvents(range: { startMs: number; endMs: number }): StoredCalendarEvent[]
+  /** 即将开始且尚未提醒的事件（`start_ms` 在 (now, now+lead] 内）。 */
+  listStartingSoon(options: { nowMs: number; leadMs: number }): StoredCalendarEvent[]
   getEvent(eventId: string): StoredCalendarEvent | null
   createEvent(input: CalendarEventWrite): StoredCalendarEvent
   updateEvent(eventId: string, input: CalendarEventPatch): StoredCalendarEvent | null
+  /** 标记已提醒；已提醒过或未知 id 返回 false。 */
+  markReminded(eventId: string, at?: string): boolean
   close(): void
 }
 
@@ -89,6 +97,7 @@ interface Row {
   location: string | null
   created_at: string
   updated_at: string
+  reminded_at: string | null
 }
 
 function toEvent(row: Row): StoredCalendarEvent {
@@ -103,6 +112,7 @@ function toEvent(row: Row): StoredCalendarEvent {
     location: row.location ?? '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    remindedAt: row.reminded_at,
   }
 }
 
@@ -119,10 +129,12 @@ function migrate(db: Database): void {
   const row = db
     .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
     .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  if ((row?.version ?? 0) >= MIGRATION_VERSION) return
+  const version = row?.version ?? 0
+  if (version >= MIGRATION_VERSION) return
 
   db.transaction(() => {
-    db.exec(CALENDAR_DDL)
+    if (version < 1) db.exec(CALENDAR_DDL)
+    if (version < 2) db.exec(CALENDAR_V2_DDL)
     db.prepare('DELETE FROM schema_migrations WHERE module = ?').run(MIGRATION_MODULE)
     db.prepare('INSERT INTO schema_migrations (module, version, applied_at) VALUES (?, ?, ?)')
       .run(MIGRATION_MODULE, MIGRATION_VERSION, new Date().toISOString())
@@ -158,6 +170,15 @@ export function createCalendarStore(dbPath: string = defaultCalendarDbPath()): C
       return rows.map(toEvent)
     },
 
+    listStartingSoon({ nowMs, leadMs }) {
+      const rows = db.prepare(`
+        SELECT * FROM calendar_events
+        WHERE reminded_at IS NULL AND start_ms > ? AND start_ms <= ?
+        ORDER BY start_ms ASC, created_at ASC
+      `).all(nowMs, nowMs + leadMs) as Row[]
+      return rows.map(toEvent)
+    },
+
     getEvent(eventId) {
       const row = selectById.get(eventId) as Row | undefined
       return row === undefined ? null : toEvent(row)
@@ -176,6 +197,7 @@ export function createCalendarStore(dbPath: string = defaultCalendarDbPath()): C
         location: input.location ?? null,
         created_at: now,
         updated_at: now,
+        reminded_at: null,
       }
       insert.run({
         id: event.id,
@@ -197,6 +219,7 @@ export function createCalendarStore(dbPath: string = defaultCalendarDbPath()): C
       if (current === undefined) return null
       const startAt = input.start ?? current.start_at
       const endAt = input.end ?? current.end_at
+      const rescheduled = input.start !== undefined || input.end !== undefined
       const updated: Row = {
         ...current,
         summary: input.summary ?? current.summary,
@@ -207,11 +230,13 @@ export function createCalendarStore(dbPath: string = defaultCalendarDbPath()): C
         end_ms: Date.parse(endAt),
         location: input.location ?? current.location,
         updated_at: new Date().toISOString(),
+        // 改期后允许重新提醒；只改标题/地点不重置。
+        reminded_at: rescheduled ? null : current.reminded_at,
       }
       db.prepare(`
         UPDATE calendar_events
         SET summary = ?, description = ?, start_at = ?, end_at = ?,
-            start_ms = ?, end_ms = ?, location = ?, updated_at = ?
+            start_ms = ?, end_ms = ?, location = ?, updated_at = ?, reminded_at = ?
         WHERE id = ?
       `).run(
         updated.summary,
@@ -222,9 +247,18 @@ export function createCalendarStore(dbPath: string = defaultCalendarDbPath()): C
         updated.end_ms,
         updated.location,
         updated.updated_at,
+        updated.reminded_at,
         eventId,
       )
       return toEvent(updated)
+    },
+
+    markReminded(eventId, at) {
+      const stamp = at ?? new Date().toISOString()
+      const result = db.prepare(
+        'UPDATE calendar_events SET reminded_at = ? WHERE id = ? AND reminded_at IS NULL',
+      ).run(stamp, eventId)
+      return result.changes > 0
     },
 
     close() {

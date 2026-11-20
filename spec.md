@@ -2919,3 +2919,43 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
 - `scripts/{serve,dev-web,e2e-smoke,verify-live}.mjs`（store 与断言端口、worker 库路径）
 - `scripts/install-calendar-profile.mjs`（把工具挂进 worker profile）
 - 文档：`docs/08` J4、`docs/09` J4、`docs/16 §12.54`、`AGENTS.md`、`tasks.md`、本文件
+
+---
+
+# Slice BQ Spec — J4 会前提醒（2026-11-20）
+
+> 状态：**已实施**。复用本地日程库与现有出站通道，不新建通知设施。
+
+## 1. 目标
+
+事件开始前 `leadMinutes`（默认 10 分钟）给 owner 推一条飞书文本；同一事件只提醒一次。
+
+## 2. 机制
+
+- **存储**：`calendar_events` 增列 `reminded_at`（`schema_migrations.module='calendar'` v2）；
+  旧库启动时原地 `ALTER TABLE` 升级。
+- **扫描**：`listStartingSoon({nowMs, leadMs})` 取
+  `reminded_at IS NULL AND start_ms > now AND start_ms <= now + lead`，按开始时间升序。
+- **推送**：`createCalendarReminderPatrol` 每 `intervalMs`（默认 60s）跑一轮：
+  - 取最新 live binding 的 `externalUserId`；无绑定 → 不标记、下轮重试（不静默丢）。
+  - `enqueueOutbox({topic:'say', payload:{text, openId}, dedupeKey:'calendar-reminder:<id>'})`
+    成功后写 `reminded_at`；入队失败不标记。
+- **文本**：「提醒：还有 N 分钟开始「标题」（09:00 开始，地点：…）」；N 向上取整，最小 1。
+- **改期**：更新 `start`/`end` 时清空 `reminded_at`，允许重新提醒；只改标题/地点不重置。
+- **配置**：
+  - `DSH_WFXM_CALENDAR_REMINDER_MINUTES`（默认 10；`0` 关闭）
+  - `DSH_WFXM_CALENDAR_REMINDER_INTERVAL_SECONDS`（默认 60）
+- **生命周期**：`serve.mjs` 在 `host.start()` 后启动，`shutdown` 时 `stop()`；
+  定时器 `unref()`，不阻塞退出。
+
+## 3. 边界
+
+- 只提醒「尚未开始」的事件；服务停机跨过提醒窗口时不补发（不制造过期提醒）。
+- 全局一个提前量，不做 per-event 自定义；不做免打扰时段；v1 只推给最新 owner binding。
+- 不新增工具、不建任务、不改前台决策；提醒是宿主后台行为。
+
+## 4. 验证
+
+- `verify-calendar`：窗口边界 `(now, now+lead]`、`reminded_at` 幂等、v1→v2 原地升级、
+  文本渲染、无绑定不标记、入队失败不标记、`lead<=0` 关闭、改期重置。
+- 真机：创建 10+ 分钟后开始的事件 → 到时收到一条提醒；同事件不重复。

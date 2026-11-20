@@ -554,8 +554,10 @@
     `calendar_update`（R2，工具内审批）；前台 `calendar_view`（days 1..31）与
     `matchCalendarViewRequest` 确定性直答；建/改意图升 R2 + `calendar_event`，
     tasks 迁移 **v12**；宿主启动时把 `DSH_WFXM_DB` 传给 worker 保证读写同库。
-    会前提醒留 BQ。`verify-calendar 17` / `verify-risk 23` / `verify-tasks 125` /
-    `verify-orchestrator 79`（[16 §12.54](docs/16-部署与运行.md)）。
+    会前提醒（BQ）：宿主每 60s 扫本地库，开始前 10 分钟推一次，
+    `reminded_at` + outbox dedupeKey 双层去重（`DSH_WFXM_CALENDAR_REMINDER_MINUTES=0` 关闭）。
+    `verify-calendar 23` / `verify-risk 23` / `verify-tasks 125` /
+    `verify-orchestrator 79`（[16 §12.54](docs/16-部署与运行.md) / [§12.55](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

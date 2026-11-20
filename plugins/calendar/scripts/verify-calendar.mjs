@@ -36,8 +36,10 @@ const {
   CalendarError,
   countCalendarEvents,
   createCalendarEvent,
+  createCalendarReminderPatrol,
   createCalendarStore,
   defaultCalendarDbPath,
+  formatCalendarReminder,
   formatEventTime,
   registerCalendarTools,
   renderCalendarView,
@@ -337,6 +339,186 @@ await check('risk: calendar writes need approval, reads do not', () => {
   return tools.get('calendar_events') !== undefined
     && tools.get('calendar_create') !== undefined
     && tools.get('calendar_update') !== undefined
+})
+
+// -- 会前提醒（Slice BQ） ---------------------------------------------------------------
+
+await check('reminder: starting-soon window is (now, now+lead], unreminded only', () => {
+  const scoped = createCalendarStore(join(tempRoot, 'soon.sqlite'))
+  const near = createCalendarEvent({
+    summary: '近',
+    start: '2026-11-20T10:09:00+08:00',
+    end: '2026-11-20T11:00:00+08:00',
+  }, { store: scoped })
+  const edge = createCalendarEvent({
+    summary: '边界',
+    start: '2026-11-20T10:10:00+08:00',
+    end: '2026-11-20T11:00:00+08:00',
+  }, { store: scoped })
+  createCalendarEvent({
+    summary: '太远',
+    start: '2026-11-20T10:11:00+08:00',
+    end: '2026-11-20T11:00:00+08:00',
+  }, { store: scoped })
+  createCalendarEvent({
+    summary: '已开始',
+    start: '2026-11-20T09:59:00+08:00',
+    end: '2026-11-20T11:00:00+08:00',
+  }, { store: scoped })
+
+  const found = scoped.listStartingSoon({ nowMs: CLOCK.getTime(), leadMs: 10 * 60_000 })
+  assert.deepEqual(found.map((event) => event.summary), ['近', '边界'])
+  assert.equal(scoped.markReminded(near.eventId), true)
+  assert.equal(scoped.markReminded(near.eventId), false)
+  assert.equal(scoped.markReminded('evt_missing'), false)
+  const after = scoped.listStartingSoon({ nowMs: CLOCK.getTime(), leadMs: 10 * 60_000 })
+  assert.deepEqual(after.map((event) => event.summary), ['边界'])
+  assert.equal(scoped.getEvent(edge.eventId)?.remindedAt, null)
+
+  // 改期后重新允许提醒；只改标题不重置。
+  scoped.markReminded(edge.eventId)
+  updateCalendarEvent({ eventId: edge.eventId, summary: '边界（改）' }, { store: scoped })
+  assert.notEqual(scoped.getEvent(edge.eventId)?.remindedAt, null)
+  updateCalendarEvent({ eventId: edge.eventId, start: '2026-11-20T10:30:00+08:00' }, { store: scoped })
+  assert.equal(scoped.getEvent(edge.eventId)?.remindedAt, null)
+  scoped.close()
+  return true
+})
+
+await check('reminder: v1 database is upgraded in place with reminded_at', async () => {
+  const { default: DatabaseConstructor } = await import('better-sqlite3')
+  const legacyPath = join(tempRoot, 'legacy.sqlite')
+  const legacy = new DatabaseConstructor(legacyPath)
+  legacy.exec(`
+    CREATE TABLE schema_migrations (module TEXT NOT NULL, version INTEGER NOT NULL, applied_at TEXT NOT NULL, PRIMARY KEY (module));
+    CREATE TABLE calendar_events (
+      id TEXT PRIMARY KEY, summary TEXT NOT NULL, description TEXT,
+      start_at TEXT NOT NULL, end_at TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL,
+      location TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+  `)
+  legacy.prepare('INSERT INTO schema_migrations VALUES (?, ?, ?)').run('calendar', 1, '2026-11-20T00:00:00.000Z')
+  legacy.prepare(`INSERT INTO calendar_events VALUES ('evt_legacy','旧会','', '2026-11-20T09:00:00+08:00','2026-11-20T10:00:00+08:00', ?, ?,'', '2026-11-20T00:00:00.000Z','2026-11-20T00:00:00.000Z')`)
+    .run(Date.parse('2026-11-20T09:00:00+08:00'), Date.parse('2026-11-20T10:00:00+08:00'))
+  legacy.close()
+
+  const upgraded = createCalendarStore(legacyPath)
+  const event = upgraded.getEvent('evt_legacy')
+  assert.equal(event?.summary, '旧会')
+  assert.equal(event?.remindedAt, null)
+  upgraded.close()
+
+  const check = new DatabaseConstructor(legacyPath, { readonly: true })
+  const version = check.prepare('SELECT version FROM schema_migrations WHERE module = ?').get('calendar').version
+  const columns = check.prepare('PRAGMA table_info(calendar_events)').all().map((column) => column.name)
+  check.close()
+  return version === 2 && columns.includes('reminded_at')
+})
+
+await check('reminder: text names the title, start time and venue', () => {
+  const event = {
+    eventId: 'evt_1',
+    summary: '周会',
+    description: '',
+    startAt: '2026-11-20T10:05:00+08:00',
+    endAt: '2026-11-20T11:00:00+08:00',
+    startMs: Date.parse('2026-11-20T10:05:00+08:00'),
+    endMs: Date.parse('2026-11-20T11:00:00+08:00'),
+    location: '会议室 A',
+    createdAt: '',
+    updatedAt: '',
+    remindedAt: null,
+  }
+  const text = formatCalendarReminder(event, CLOCK.getTime())
+  return text === '提醒：还有 5 分钟开始「周会」（10:05 开始，地点：会议室 A）'
+})
+
+await check('reminder patrol: queues once, marks the row, and retries without a binding', () => {
+  const scoped = createCalendarStore(join(tempRoot, 'patrol.sqlite'))
+  const created = createCalendarEvent({
+    summary: '周会',
+    start: '2026-11-20T10:05:00+08:00',
+    end: '2026-11-20T11:00:00+08:00',
+  }, { store: scoped })
+  const sent = []
+  const bindings = []
+  const gateway = {
+    listBindings: () => bindings,
+    enqueueOutbox: (input) => {
+      sent.push(input)
+      return { id: `out_${sent.length}` }
+    },
+  }
+  const warnings = []
+  const patrol = createCalendarReminderPatrol({
+    store: scoped,
+    gateway,
+    leadMinutes: 10,
+    now,
+    logger: { warn: (message) => warnings.push(message) },
+  })
+
+  assert.equal(patrol.runOnce(), 0)
+  assert.equal(warnings.length, 1)
+  assert.equal(scoped.getEvent(created.eventId)?.remindedAt, null)
+
+  bindings.push({ externalUserId: 'ou_owner' })
+  assert.equal(patrol.runOnce(), 1)
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].dedupeKey, `calendar-reminder:${created.eventId}`)
+  assert.match(sent[0].payload.text, /还有 5 分钟开始「周会」/)
+  assert.equal(scoped.getEvent(created.eventId)?.remindedAt, CLOCK.toISOString())
+
+  assert.equal(patrol.runOnce(), 0)
+  assert.equal(sent.length, 1)
+  patrol.stop()
+  scoped.close()
+  return true
+})
+
+await check('reminder patrol: an enqueue failure leaves the event unmarked', () => {
+  const scoped = createCalendarStore(join(tempRoot, 'patrol-fail.sqlite'))
+  const created = createCalendarEvent({
+    summary: '周会',
+    start: '2026-11-20T10:05:00+08:00',
+    end: '2026-11-20T11:00:00+08:00',
+  }, { store: scoped })
+  const patrol = createCalendarReminderPatrol({
+    store: scoped,
+    gateway: {
+      listBindings: () => [{ externalUserId: 'ou_owner' }],
+      enqueueOutbox: () => { throw new Error('outbox down') },
+    },
+    leadMinutes: 10,
+    now,
+  })
+  assert.equal(patrol.runOnce(), 0)
+  assert.equal(scoped.getEvent(created.eventId)?.remindedAt, null)
+  scoped.close()
+  return true
+})
+
+await check('reminder patrol: lead <= 0 disables the scan', () => {
+  const scoped = createCalendarStore(join(tempRoot, 'patrol-off.sqlite'))
+  createCalendarEvent({
+    summary: '周会',
+    start: '2026-11-20T10:05:00+08:00',
+    end: '2026-11-20T11:00:00+08:00',
+  }, { store: scoped })
+  const sent = []
+  const patrol = createCalendarReminderPatrol({
+    store: scoped,
+    gateway: {
+      listBindings: () => [{ externalUserId: 'ou_owner' }],
+      enqueueOutbox: (input) => { sent.push(input); return { id: 'x' } },
+    },
+    leadMinutes: 0,
+    now,
+  })
+  assert.equal(patrol.runOnce(), 0)
+  assert.equal(sent.length, 0)
+  scoped.close()
+  return true
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
