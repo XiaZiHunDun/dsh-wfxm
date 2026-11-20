@@ -1,99 +1,110 @@
-# dsh-wfxm — 基于 DeepSeek Harness 的迁移工作区
+# dsh-wfxm — 基于 DeepSeek Harness 的服务器 AI 管家
 
-> **状态**：规划阶段，尚无代码
-> **建立日期**：2026-10-15
-> **本目录性质**：分析与规划工作区。后续基于 dsh 的开发在此进行。
+> **状态**：一期已结项（2026-11-20）。MVP 37/37、上线门槛 7/7；生产运行 `2026.11.20-6`（飞书主通道）。
+> **入口**：AI 编码工具先读 [AGENTS.md](AGENTS.md)；文档导航见 [docs/README.md](docs/README.md)。
 
 ## 一句话
 
-WFXM（Butler v5）的治理资产与中文产品语义，迁移到 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）之上；现有 iLink 微信客户端作为 P1 兜底通道复用。
+把 WFXM（Butler v5）的治理资产与中文产品语义，迁移到 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）之上，
+通过飞书驱动的、面向自有服务器的、多项目并行开发 + 运维 + 生活管家。
 
----
+**做**：dsh 当执行引擎，飞书长连接为主通道（微信仅 P1 兜底），治理与产品语义写成 dsh 插件。
+**不做**：fork dsh / dsh-im；不做 sidecar 过渡；不重写 iLink 协议层。
 
-## 决策摘要
+## 仓库结构
 
-**做**：dsh 当执行引擎，主通道用社区插件 `xmanrui/dsh-im` 的**飞书长连接**（微信 P1 兜底），Butler 的治理与中文产品语义写成 dsh 插件。
-**不做**：fork dsh 或 dsh-im；不做 sidecar 过渡；不重写 iLink 协议层（除非将来决定改微信体验）。
+```
+dsh-wfxm/
+├── AGENTS.md               AI 编码入口：必读表、硬约束、逐片变更记录
+├── README.md               本文件
+├── spec.md / tasks.md      逐片（Slice）设计与验收记录
+├── docs/                   01–18 设计、架构、契约与运维文档（索引见 docs/README.md）
+├── plugins/                16 个插件（TypeScript，各自 tsconfig + 独立验证套件）
+│   ├── gateway/            ① 入站、配对、去重、路由决策
+│   ├── orchestrator/       ⑤ 前台决策（reply / task / ask / approval）
+│   ├── tasks/              ⑤ 任务、隔离、合并、irreversible 检测
+│   ├── host/               dsh 运行时接线与前台循环
+│   ├── governance/         ②③④ 判级 / 审批 / 审计（哈希链）
+│   ├── executor/           执行器提示与指令层级
+│   ├── feishu/             飞书通道（长连接、卡片）
+│   ├── knowledge/          ⑥ 记忆与项目注册
+│   ├── svcops/             ⑦ 服务/端口/磁盘巡检
+│   ├── snapshot/           前置快照
+│   ├── notify/             ntfy 通道
+│   ├── redact/             出口脱敏
+│   ├── reminder/           提醒
+│   ├── calendar/           服务器自管日程 + 会前提醒
+│   ├── mail/               邮件检索/摘要/发送
+│   └── changes/            变更记录
+├── scripts/                构建、验证、发布、备份、项目与隔离运维
+├── bench/                  评测基线与回归
+├── config/                 运行配置（项目白名单等）
+└── deploy/                 systemd / polkit / sudoers / journald
+```
 
-## 关键数字
+## 常用命令
 
-| | WFXM (Butler) | dsh |
-|---|---|---|
-| 规模 | 含测试 625 文件 / 87,273 行；不含测试 304 文件 / 42,276 行（口径见 [09 §三](docs/09-能力对照与实现路径.md)） | ~977,000 行 TS / 4,662 文件 / 57 包组 |
-| 测试 | 321 test files | 1,644 `.spec.ts` |
-| 成熟度 | 172 ship / 30 个 sub-cycle | v0.2.1-alpha.3（源码快照；**运行锁 `0.2.1-rc.2`**），**明文承诺会破坏兼容** |
-| 安全审计 | 30 cycle 加固，5 条门禁全绿 | **`SAFETY.md`：未审计，不得视为 production-ready** |
+```bash
+# 构建与类型检查（本机依赖已就绪，不重复跑 pnpm）
+node scripts/build.mjs
+node scripts/build.mjs --noEmit
 
-## 文档索引
+# 全量验证（48 套件；preimages 为 advisory）
+node scripts/check-style.mjs
+node scripts/verify-all.mjs
 
-**产品侧与实现侧分开，两篇各自是 SSOT，不要互相反推。**
+# 本地运行
+node scripts/serve.mjs
 
-完整导航见 **[docs/README.md](docs/README.md)**。
+# 发布（生产）
+node scripts/release.mjs prepare --version <ver>
+node scripts/release.mjs verify  --version <ver>
+node scripts/release.mjs switch  --version <ver>
+systemctl restart dsh-wfxm
 
-**分层导航**（产品 / 实现 / 桥 / 机制 / 接入 / 数据 / 部署 / Agent / 定位 / 架构 / 选型）
+# 项目登记（自动推导 prepareCmd / rulesDoc）
+node scripts/projects.mjs add --name <name> --root <path>
+node scripts/projects.mjs list --json
 
-| 层 | 文档 | 角色 |
-|---|---|---|
-| **产品侧** | **[08-产品能力构想](docs/08-产品能力构想.md)** | **产品该有什么 —— 122 项能力（A1-O3）：A-I 开发运维 + J 生活 + K 协议 + L 可替换 + M 保障 + N 工程化 + O 核心机制** |
-| 实现侧 | **[07-dsh 能力盘点与覆盖评估](docs/07-dsh能力盘点与覆盖评估.md)** | dsh 提供什么、缺什么（六层能力栈 + 证据） |
-| 桥 | **[09-能力对照与实现路径](docs/09-能力对照与实现路径.md)** | **✅ 已写** —— 08 的 122 项逐条判定 + 工程量分级 + 对 01-08 的复核修正 |
-| 核心机制 | **[13-核心能力方案](docs/13-核心能力方案.md)** | **📝 方案稿** —— 对话与记忆不乱 / 任务成功率的机制设计，以及 RAG、图库、A2A 的取舍 |
-| 接入 | **[14-飞书接入方案](docs/14-飞书接入方案.md)** | **📝 方案稿** —— 长连接（免公网）、配对、卡片审批、插件剖面、冒烟验收清单 |
-| 数据与契约 | **[15-数据与契约](docs/15-数据与契约.md)** | **📝 设计稿** —— 表归属与唯一写者、端口签名、契约测试骨架、迁移规则 |
-| 部署与运行 | **[16-部署与运行](docs/16-部署与运行.md)** | **📝 设计稿** —— 目录布局、systemd/polkit 细粒度授权、八步启动自检、蓝绿回滚、备份还原 |
-| Agent 侧 | **[17-Agent 侧设计](docs/17-Agent侧设计.md)** | **📝 设计稿** —— 5 个 preset（含 `orchestrator` 前台）、提示六块、工具清单与粒度、skill 划分、子代理上限、S1 规则集、Verifier 断言 |
-| 定位 | **[10-产品定位与功能设计决策](docs/10-产品定位与功能设计决策.md)** | **📝 建议稿** —— 双域定位 + 四个闭环 + 21 条设计决策 + 浏览器/邮箱/沙箱分析 |
-| 架构 | **[11-架构锚定](docs/11-架构锚定.md)** | **✅ 定稿 v2.1** —— 内核 7 模块 / 端口 / 适配器、三个客户端、六个生命周期、端到端场景、数据所有权、AR1–AR37 不变量（AR25 唯一 `orchestrator` 前台，AR8 并发写隔离，AR35–AR37 线程/订阅；**与选型无关**） |
-| 选型 | **[12-技术栈选型](docs/12-技术栈选型.md)** | **✅ 定稿 v1** —— 骨架 15 项已定、插件 8 项只定验收门槛、**0 项待 owner**（环境基线：普通 Linux + 可出网）；版本矩阵随冒烟增长 |
+# 任务隔离
+node scripts/isolation.mjs status <taskId>
+node scripts/isolation.mjs release <taskId> --reason abandoned
 
-**其余文档**（按主题）
+# 备份与演练
+node scripts/backup.mjs
+node scripts/restore-drill.mjs
+```
 
-| 文档 | 内容 | 什么时候读 |
-|---|---|---|
-| [01-决策背景与现状](docs/01-决策背景与现状.md) | 为什么迁、dsh 是什么、三条硬约束 | 了解背景 |
-| [02-dsh-能力对照](docs/02-dsh-能力对照.md) | Butler 每一项技术能力在 dsh 里有没有对等物 | 评估技术工作量时 |
-| [03-渠道选型](docs/03-渠道选型.md) | 渠道实例实测：社区插件调研 + **渠道 × 客户端矩阵**；渠道定义见 11 §2.2 | 装渠道前 |
-| [04-WFXM-资产盘点](docs/04-WFXM-资产盘点.md) | Butler 的资产/负债分类 | 规划迁移优先级时 |
-| [05-落地路线](docs/05-落地路线.md) | 分步路线 | 开工前 |
-| [06-风险与待验证](docs/06-风险与待验证.md) | 已知风险、代码绕不过去的前提 | 做决策前 |
-| [18-Super-agent 对照与改进建议](docs/18-Super-agent对照与改进建议.md) | **建议稿** —— Super-agent 对照、A 类可吸收 13 条、B 类 4 条（B1/B4 已生效、B2/B3 待拍板）、C 类不吸收、D18-1..7；**C 方案已回写 v2，B1/B4 生效 v2.1** | 决定是否吸收线程/主动性/守望/并发写时 |
+> 生产上以 `dshwfxm` 用户执行，并在命令前加 `DSH_WFXM_DB=/var/lib/dsh-wfxm/ops.sqlite`；
+> 完整步骤见 [16 §七](docs/16-部署与运行.md)。
 
-> ⚠️ **不要用 07（实现侧）反推产品设计。** 那会把"实现有什么"当成"产品该有什么"——
-> 这正是本项目早期走过的弯路（01-06 正是在错误框架下写的）。
+## 文档导航
 
-## 产品定位一句话
+| 目的地 | 文档 |
+|---|---|
+| 产品该有什么 | [08-产品能力构想](docs/08-产品能力构想.md) |
+| 实现判定 / 一期结项 | [09-能力对照与实现路径](docs/09-能力对照与实现路径.md) |
+| 架构与不变量 | [11-架构锚定](docs/11-架构锚定.md) |
+| 数据表与端口契约 | [15-数据与契约](docs/15-数据与契约.md) |
+| 部署 / 发布 / 备份 / 排障 | [16-部署与运行](docs/16-部署与运行.md) |
+| Agent preset / 提示 / 工具 | [17-Agent 侧设计](docs/17-Agent侧设计.md) |
+| 全部文档索引 | [docs/README.md](docs/README.md) |
 
-**通过飞书（微信兜底）驱动的、面向自己服务器的、能多项目并行开发的自主开发 + 运维管家。**
-
-对标 Claude Code / Cursor 的完整体验，但从手机发起；多项目并发不互相干扰。
-详见 [08](docs/08-产品能力构想.md)。
-
-## 相关位置
+## 生产位置
 
 | 路径 | 内容 |
 |---|---|
-| `/home/ailearn/projects/WFXM` | Butler 源码仓库（迁移源，main 已全绿） |
-| `/home/ailearn/githubpro/deepseek-harness` | dsh 源码 `v0.2.1-alpha.3`（只读参考；**运行锁 `0.2.1-rc.2`**） |
-| `/home/ailearn/githubpro/cordis` | Cordis 内核源码（dsh 的插件框架底座） |
+| `/opt/dsh-wfxm/current` | 当前发布（`releases/` 蓝绿软链） |
+| `/var/lib/dsh-wfxm/ops.sqlite` | 运行库（任务、审批、审计、日程、项目） |
+| `/var/lib/dsh-wfxm/projects/` | 登记项目的工作副本与 worktree |
+| `/etc/dsh-wfxm/` | 环境与凭据（`env` 为 `0640 root:dshwfxm`） |
+| `/var/backups/dsh-wfxm/` | 备份归档与 `.sha256` |
 
-## 当前待办
+迁移参考源码（只读）：`/home/ailearn/projects/WFXM`、`/home/ailearn/githubpro/deepseek-harness`、`/home/ailearn/githubpro/cordis`。
 
-**设计侧（下一步的主要工作）**
+## 下一步
 
-- [x] **写 `09-能力对照与实现路径`** —— 把 08 的 122 项能力逐条标为
-      「dsh 直接可用 / 需适配 / 需自建 / 换方案」，产出缺口清单、工程量分级与复核修正 ✅
-- [x] **owner 拍板阻塞开工的决策点** —— #1 自主配比、#2 限域、#4 管家进第一版 **均已定**；
-      #5 / #6 由环境基线 + 运行时探测消解（默认最小安全集），**开工阻塞项清零**
-- [ ] 定 E4（同项目并行编辑）的策略：dsh 已提供 `withFileLock` 跨进程锁原语
-      （见 [09 §六·修正 1](docs/09-能力对照与实现路径.md)），要定的是**锁粒度与冲突退让语义**
-
-**实施侧**
-
-- [ ] **Step 0**：搭 Node 24 LTS / pnpm 11.28.5 隔离环境（本机 22.13 / 9.15 不满足 dsh）
-- [ ] **Step 2 第一步（冒烟）**：装 `dsh-im@5.7.0`，跑通**飞书长连接**链路（`dsh-im-gateway` 仅当飞书长连接/卡片不达标时再评估）
-- [ ] **首批验收条件**：**V1 多项目并行不打架**、**V3 对话不再劣化**
-      （**V2 顺带观察即可，不构成分叉点** → [09 §四](docs/09-能力对照与实现路径.md)）
-- [ ] **冒烟与后续验收项**：V4 resume / V5 长任务进度 / V6 审批闭环 / V7 入站准入 / V8 全域执行 / V9 定时 / V10 服务起停
-
-**已知必然不达标**：V5 长任务进度 → 进 Step 3；**V7 飞书已通过**（`allowlist` 已配并实测），微信仅 P1 出站兜底
-- [ ] 立项「服务/进程管理」（dsh 和 Butler 都没有，是「管家」目标的最大空白）
+一期外清单（明确未做，见 [09 §9.3](docs/09-能力对照与实现路径.md)）：
+A8 语音转写、G4 建议、G5 记忆维护、O1 领域路由、O2 事实体检、
+N2 文档漂移检测、N6 生成物治理、N8 契约版本化、M8 预算硬限制、M10 供应链治理、微信 P1 兜底。
+二期范围从这份清单里选，先定范围与验收口径再动手。
