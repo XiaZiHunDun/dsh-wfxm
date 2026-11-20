@@ -2089,8 +2089,8 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 四门禁全绿（verify-all 48/48，advisory 仅既有 preimages）
 - [x] 文档：`docs/08` J4、`docs/09` J4（会前提醒待做）、`docs/16 §12.54`、`AGENTS.md`
 - [x] 发布并重启（`2026.11.20-3`，`[startup] 8/8`、`active`、`NRestarts=0`；生产库已建 `calendar_events` v1；headless profile 已挂 `@dsh-wfxm/calendar`）
-- [ ] 真机：查看日程 → 创建日程 R2 卡 → 批准 → 再次查看能看到事件
-- [ ] 提交推送（ailearn）
+- [x] 真机：查看 0 个 → 创建日程 R2 卡（`28xu2h73d9`）→ 批准 → `succeeded`，`calendar_event` 断言 pass（observed=1）→ 再次查看显示「测试会议」
+- [x] 提交推送（ailearn）
 
 ## 已废弃
 
