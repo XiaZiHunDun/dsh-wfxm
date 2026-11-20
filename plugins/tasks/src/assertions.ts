@@ -219,6 +219,19 @@ export function prepareAssertion(
       if (folder !== undefined) spec.folder = folder
       return { kind: kind as AssertionKind, spec }
     }
+    case 'calendar_event': {
+      // Counts events on the app-owned calendar inside a future window; the
+      // adapter owns calendar discovery, so no id/host parameters live here.
+      const minCount = raw.minCount === undefined ? 1 : raw.minCount
+      if (typeof minCount !== 'number' || !Number.isInteger(minCount) || minCount < 1 || minCount > 10_000) {
+        invalid('calendar_event.minCount must be an integer in 1..10000')
+      }
+      const windowDays = raw.windowDays === undefined ? 7 : raw.windowDays
+      if (typeof windowDays !== 'number' || !Number.isInteger(windowDays) || windowDays < 1 || windowDays > 31) {
+        invalid('calendar_event.windowDays must be an integer in 1..31')
+      }
+      return { kind: 'calendar_event', spec: { minCount, windowDays } }
+    }
   }
   return invalid('unreachable assertion kind')
 }

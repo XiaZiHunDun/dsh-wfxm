@@ -56,6 +56,12 @@ export interface VerifyContext {
     folder: string | null,
     purpose?: 'archive' | 'sent' | 'drafted',
   ) => Promise<{ folder: string; count: number } | null>
+  /**
+   * Adapter hook for `calendar_event`: count events on the app-owned calendar
+   * from now through `windowDays`. Returning null = undecidable (calendar not
+   * created, missing scope, API error).
+   */
+  calendarEventCount?: (windowDays: number) => Promise<number | null>
   /** Adapter hook for `page_contains` (Browser). */
   browserContains?: (input: { url: string; selector: string; expect: string }) => Promise<boolean | null>
   /** Adapter hook for `git_diff_matches`; defaults to a read-only `git diff`. */
@@ -307,6 +313,28 @@ export async function evaluateAssertion(
           expected,
           observed: observed.count,
         },
+      }
+    }
+
+    case 'calendar_event': {
+      const expected = Number(spec.minCount ?? 1)
+      const windowDays = Number(spec.windowDays ?? 7)
+      if (context.calendarEventCount === undefined) {
+        return {
+          status: 'skipped',
+          evidence: { evaluator: 'calendar_event', windowDays, reason: 'no Calendar adapter mounted' },
+        }
+      }
+      const observed = await context.calendarEventCount(windowDays)
+      if (observed === null || !Number.isFinite(observed)) {
+        return {
+          status: 'skipped',
+          evidence: { evaluator: 'calendar_event', windowDays, observed: 'unavailable', transient: true },
+        }
+      }
+      return {
+        status: observed >= expected ? 'pass' : 'fail',
+        evidence: { evaluator: 'calendar_event', windowDays, expected, observed },
       }
     }
 

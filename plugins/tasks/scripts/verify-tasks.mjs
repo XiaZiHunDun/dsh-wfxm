@@ -117,7 +117,7 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     && names.includes('task_inputs')
     && names.includes('task_checkpoints')
     && names.includes('resource_locks')
-    && version.version === 11
+    && version.version === 12
     && ['input_tokens', 'output_tokens', 'cost_usd'].every((column) => columns.includes(column))
     && objects.includes('ux_task_events_seq')
     && objects.includes('task_events_no_update')
@@ -200,7 +200,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     && keptTask.taskRef === null
     && fresh.taskRef !== null
     && fresh.taskRef.length === 10
-    && version.version === 11
+    && version.version === 12
     && keptTask.isolation === 'serial'
     && fresh.isolation === 'serial'
     && fresh.worktreePath === null
@@ -400,6 +400,35 @@ await check('mail_sent / mail_drafted survive the v11 CHECK constraint on real r
   }
   const kinds = store.listAssertions(task.id).map((row) => row.kind).sort()
   return kinds.join(',') === 'mail_drafted,mail_sent'
+})
+
+await check('calendar_event takes defaults and rejects out-of-range windows', () => {
+  const prepared = prepareAssertions([{ kind: 'calendar_event' }])
+  const custom = prepareAssertions([{ kind: 'calendar_event', minCount: 2, windowDays: 30 }])
+  let badDays = false
+  let badCount = false
+  try {
+    prepareAssertions([{ kind: 'calendar_event', windowDays: 32 }])
+  } catch {
+    badDays = true
+  }
+  try {
+    prepareAssertions([{ kind: 'calendar_event', minCount: 0 }])
+  } catch {
+    badCount = true
+  }
+  return prepared.length === 1 && prepared[0].kind === 'calendar_event'
+    && prepared[0].spec.minCount === 1 && prepared[0].spec.windowDays === 7
+    && custom[0].spec.minCount === 2 && custom[0].spec.windowDays === 30
+    && badDays && badCount
+})
+
+await check('calendar_event survives the v12 CHECK constraint on real rows', () => {
+  const task = store.createTask({ intent: 'calendar row', riskLevel: 'R2' })
+  for (const prepared of prepareAssertions([{ kind: 'calendar_event' }])) {
+    store.addAssertion(task.id, prepared)
+  }
+  return store.listAssertions(task.id).map((row) => row.kind).join(',') === 'calendar_event'
 })
 
 await check('duplicate assertions are rejected', () => {
@@ -1780,6 +1809,33 @@ await check('mail_sent / mail_drafted use the Sent/Drafts purpose and pass/fail/
     && unavailable.status === 'skipped' && unavailable.evidence.transient === true
     && noAdapter.status === 'skipped'
     && seen[0][0] === null && seen[0][1] === 'sent'
+})
+
+await check('calendar_event counts a future window and skips without an adapter', async () => {
+  const windows = []
+  const pass = await evaluateAssertion(
+    { kind: 'calendar_event', spec: { minCount: 1, windowDays: 7 } },
+    {
+      calendarEventCount: async (windowDays) => {
+        windows.push(windowDays)
+        return 2
+      },
+    },
+  )
+  const empty = await evaluateAssertion(
+    { kind: 'calendar_event', spec: { minCount: 1, windowDays: 7 } },
+    { calendarEventCount: async () => 0 },
+  )
+  const unavailable = await evaluateAssertion(
+    { kind: 'calendar_event', spec: { minCount: 1, windowDays: 7 } },
+    { calendarEventCount: async () => null },
+  )
+  const noAdapter = await evaluateAssertion({ kind: 'calendar_event', spec: { minCount: 1, windowDays: 7 } })
+  return pass.status === 'pass' && pass.evidence.observed === 2
+    && empty.status === 'fail'
+    && unavailable.status === 'skipped' && unavailable.evidence.transient === true
+    && noAdapter.status === 'skipped'
+    && windows[0] === 7
 })
 
 await check('R2 mail archive completes only when the Mail probe is mounted', async () => {

@@ -72,8 +72,17 @@ check('mail_send is allowed once by the task-level approval', send === 'allowed-
 const draft = await answer({ toolName: 'mail_draft', arguments: {} }, passThrough)
 check('mail_draft is allowed once by the task-level approval', draft === 'allowed-once' && delegated === 1, String(draft))
 
+const create = await answer({ toolName: 'calendar_create', arguments: {} }, passThrough)
+check('calendar_create is allowed once by the task-level approval', create === 'allowed-once' && delegated === 1, String(create))
+
+const update = await answer({ toolName: 'calendar_update', arguments: {} }, passThrough)
+check('calendar_update is allowed once by the task-level approval', update === 'allowed-once' && delegated === 1, String(update))
+
+const readCalendar = await answer({ toolName: 'calendar_events', arguments: {} }, passThrough)
+check('calendar_events still falls through (read-only)', readCalendar === 'denied' && delegated === 2, String(readCalendar))
+
 const search = await answer({ toolName: 'mail_search', arguments: {} }, passThrough)
-check('mail_search still falls through', search === 'denied' && delegated === 2, String(search))
+check('mail_search still falls through', search === 'denied' && delegated === 3, String(search))
 
 // ---- R1 / 无任务：不注册，闸门保持原样 ---------------------------------------
 

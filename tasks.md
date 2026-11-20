@@ -2061,3 +2061,37 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 发布并重启（`2026.11.20-1`，`[startup] 8/8`）
 - [x] 真机：草稿 R2 一次确认 → `mail_drafted=pass`（Drafts 1）；发送 R3 两次确认 → `mail_sent=pass`（已发送 4），邮箱收到测试邮件（2026-11-20）
 - [x] 提交推送（ailearn）
+
+# Slice BP — J4 飞书应用日历（2026-11-20）
+
+## BP0 前置
+
+- [ ] owner 在开放平台开通 `calendar:calendar:readonly` + `calendar:calendar` 并发布版本
+- [ ] 复测 `GET /calendar/v4/calendars` 返回 `code=0`
+
+## BP1 日历插件与工具
+
+- [x] `plugins/calendar` 骨架：凭据复用 `loadFeishuCredentials`，SDK calendar v4 客户端
+- [x] 日历解析：`DSH_WFXM_CALENDAR_ID` → summary「dsh 日程」→ 未创建
+- [x] `calendar_events`（R0）、`calendar_create`（R2）、`calendar_update`（R2），工具内审批
+- [x] scope 缺失映射为可读 `calendar-scope` 错误；时间必须带偏移
+- [x] `CALENDAR_TOOL_RISK`；governance 已批准白名单加入两个写工具
+
+## BP2 风险、断言与前台
+
+- [x] `isCalendarWriteIntent` → R2 + `calendar_event`；只读/问句不升级
+- [x] 断言 `calendar_event`（minCount/windowDays）与只读端口；tasks 迁移 v12
+- [x] 决策动作 `calendar_view`（days 1..31，默认 7）+ `matchCalendarViewRequest` 确定性拦截
+- [x] prompt：查看日程 → `calendar_view`；创建/修改必须带标题与起止时间，缺字段 reply 补充
+- [x] 执行者指令层级补日历三要素
+
+## BP3 用例、发布与真机
+
+- [x] `verify-calendar` 新增；`verify-risk` / `verify-tasks` / `verify-orchestrator` / `verify-approval-bridge` 补用例
+- [x] 四门禁全绿（verify-all 48/48，advisory 仅既有 preimages）
+- [x] 文档：`docs/08` J4、`docs/09` J4（会前提醒待做）、`docs/16 §12.54`、`AGENTS.md`
+- [x] 发布并重启（`2026.11.20-2`，`[startup] 8/8`、`active`、`NRestarts=0`；headless profile 已挂 `@dsh-wfxm/calendar`）
+- [ ] 真机：查看日程 → 创建日程 R2 卡 → 批准 → 「dsh 日程」出现事件（**待 BP0 scope 开通**）
+- [x] 提交（`1506f3c`）；推送被网络阻断（GitHub 443 超时），恢复后 `git push origin main`
+
+# Slice BQ — J4 会前提醒（待排期）

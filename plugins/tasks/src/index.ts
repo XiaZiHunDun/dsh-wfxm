@@ -39,7 +39,7 @@ export {
 export type { AssertionValidationOptions, PreparedAssertion } from './assertions.js'
 export { MAX_ASSERTIONS, prepareAssertion, prepareAssertions } from './assertions.js'
 export type { RiskPlan } from './risk.js'
-export { isMailArchiveIntent, isMailDraftIntent, isMailSendIntent, managedUnitFor, planTaskRisk } from './risk.js'
+export { isCalendarWriteIntent, isMailArchiveIntent, isMailDraftIntent, isMailSendIntent, managedUnitFor, planTaskRisk } from './risk.js'
 export type { TaskDigest, TaskDigestCounts, TaskDigestWindow } from './digest.js'
 export { summarizeTaskDigest } from './digest.js'
 export type {

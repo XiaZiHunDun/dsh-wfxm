@@ -3,12 +3,15 @@ export {
   DEFAULT_MAX_INTENT_CHARS,
   DEFAULT_MAX_REMINDER_CHARS,
   DEFAULT_MAX_REPLY_CHARS,
+  DEFAULT_CALENDAR_DAYS,
+  MAX_CALENDAR_DAYS,
   MAX_REMINDER_AHEAD_MS,
   MAX_REMINDER_INDEX,
   extractJsonObject,
   parseDecision,
 } from './decision.js'
 export type {
+  CalendarViewRequest,
   ForegroundHandler,
   ForegroundInput,
   ForegroundOutcome,
@@ -21,6 +24,7 @@ export {
   DEFAULT_LIVE_STATUSES,
   NON_TEXT_REPLY,
   createOrchestratorForeground,
+  matchCalendarViewRequest,
   matchMailTodoRequest,
 } from './foreground.js'
 export type { ConversationTurn, DecisionContextInput, ReminderPromptItem } from './prompt.js'

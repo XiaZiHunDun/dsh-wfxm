@@ -1,0 +1,5 @@
+# dsh-wfxm calendar bundle layer (J4: app-owned Feishu calendar).
+# Inserted into a profile by `dsh plugin --profile <name> add ./plugins/calendar`.
+- insert:
+    - id: dsh-wfxm-calendar
+      name: '@dsh-wfxm/calendar'

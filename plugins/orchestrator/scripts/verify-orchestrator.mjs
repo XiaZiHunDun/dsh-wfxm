@@ -55,6 +55,7 @@ const {
   createSdkDecisionRunner,
   defaultPatchPath,
   defaultSdkPatchPath,
+  matchCalendarViewRequest,
   matchMailTodoRequest,
   matchQuickRequest,
   parseDecision,
@@ -108,7 +109,7 @@ function makeTransport() {
 }
 
 /** One fresh host + DB per case; the foreground is built by the host's factory. */
-function makeHost({ decide, fallback, logger, foreground, probe, checks, mailTodos, withReminders = true, duplicateWindowMs } = {}) {
+function makeHost({ decide, fallback, logger, foreground, probe, checks, mailTodos, calendarView, withReminders = true, duplicateWindowMs } = {}) {
   hostSeq += 1
   const dbPath = join(dir, `orchestrator-${hostSeq}.sqlite`)
   const transport = makeTransport()
@@ -138,6 +139,7 @@ function makeHost({ decide, fallback, logger, foreground, probe, checks, mailTod
             ...probe === undefined ? {} : { probe },
             ...checks === undefined ? {} : { checks },
             ...mailTodos === undefined ? {} : { mailTodos },
+            ...calendarView === undefined ? {} : { calendarView },
             ...reminders === null ? {} : { reminders: createReminderPort(reminders, now), now },
           }),
         }
@@ -1353,6 +1355,98 @@ await check('repeating a mail-todo request calls the port again, not the model',
     && calls.length === 0
     && texts.filter((text) => text.includes('完成在线测评')).length === 2
     && !texts.some((text) => text.includes('刚查过'))
+})
+
+await check('calendar_view defaults to 7 days, accepts 1..31 only, and needs the port', () => {
+  const defaults = parseDecision('{"action":"calendar_view"}', { calendarEnabled: true })
+  const explicit = parseDecision('{"action":"calendar_view","days":2}', { calendarEnabled: true })
+  const zero = parseDecision('{"action":"calendar_view","days":0}', { calendarEnabled: true })
+  const far = parseDecision('{"action":"calendar_view","days":32}', { calendarEnabled: true })
+  const disabled = parseDecision('{"action":"calendar_view"}', {})
+  return defaults.ok && defaults.decision.action === 'calendar_view' && defaults.decision.days === 7
+    && explicit.ok && explicit.decision.days === 2
+    && !zero.ok && zero.reason === 'invalid-calendar-days'
+    && !far.ok && far.reason === 'invalid-calendar-days'
+    && !disabled.ok && disabled.reason === 'calendar-unavailable'
+})
+
+await check('prompt exposes calendar_view only when the port is mounted', () => {
+  const enabled = buildDecisionPrompt({ text: '明天有什么日程', calendarEnabled: true })
+  const disabled = buildDecisionPrompt({ text: '明天有什么日程' })
+  return enabled.includes('"action":"calendar_view"')
+    && enabled.includes('calendar_view')
+    && !disabled.includes('"action":"calendar_view"')
+})
+
+await check('matchCalendarViewRequest maps today/tomorrow/week/N days and blocks writes', () => {
+  const today = matchCalendarViewRequest('今天有什么日程')
+  const tomorrow = matchCalendarViewRequest('看看明天的日程')
+  const week = matchCalendarViewRequest('本周的日程安排')
+  const three = matchCalendarViewRequest('未来3天有哪些日程')
+  const fallback = matchCalendarViewRequest('看看日程')
+  return today !== null && today.days === 1
+    && tomorrow !== null && tomorrow.days === 2
+    && week !== null && week.days === 7
+    && three !== null && three.days === 3
+    && fallback !== null && fallback.days === 7
+    && matchCalendarViewRequest('帮我创建一个日程') === null
+    && matchCalendarViewRequest('明天上午安排一个会议') === null
+    && matchCalendarViewRequest('看看日程，顺便提醒我') === null
+    && matchCalendarViewRequest('今天天气怎么样') === null
+})
+
+await check('a calendar_view turn replies directly without creating a task', async () => {
+  const seen = []
+  const { host, transport, calls } = makeHost({
+    decide: async () => '{"action":"calendar_view","days":2}',
+    calendarView: async ({ days }) => {
+      seen.push(days)
+      return '日历：dsh 日程；2026-11-20 起 2 天，共 1 个日程\n1. 明天 09:00 | 周会'
+    },
+  })
+  await pair(host)
+  // 不含确定性关键词，走模型决策路径。
+  await say(host, '帮我看看最近有什么要参加的会议')
+  await host.pump()
+  const texts = transport.sent.map((item) => item.payload?.text ?? '')
+  return seen.length === 1
+    && seen[0] === 2
+    && calls.length === 0
+    && texts.some((text) => text.startsWith('日历：dsh 日程'))
+})
+
+await check('the deterministic calendar matcher bypasses the model', async () => {
+  let decided = 0
+  const seen = []
+  const { host, transport, calls } = makeHost({
+    decide: async () => {
+      decided += 1
+      return '{"action":"task","intent":"查看日程","risk":"R0"}'
+    },
+    calendarView: async ({ days }) => {
+      seen.push(days)
+      return '日历：dsh 日程；今天没有安排'
+    },
+  })
+  await pair(host)
+  await say(host, '今天有什么日程')
+  await host.pump()
+  const texts = transport.sent.map((item) => item.payload?.text ?? '')
+  return decided === 0 && calls.length === 0
+    && seen[0] === 1
+    && texts.some((text) => text.includes('今天没有安排'))
+})
+
+await check('a missing app calendar asks the owner instead of failing silently', async () => {
+  const { host, transport } = makeHost({
+    decide: async () => '{"action":"calendar_view","days":7}',
+    calendarView: async () => null,
+  })
+  await pair(host)
+  await say(host, '帮我看看最近的会议安排')
+  await host.pump()
+  const texts = transport.sent.map((item) => item.payload?.text ?? '')
+  return texts.some((text) => text.includes('尚未创建「dsh 日程」'))
 })
 
 await check('a remind turn stores it and acks with a local time', async () => {

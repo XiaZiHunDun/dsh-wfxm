@@ -548,6 +548,14 @@
     tasks 迁移 **v11**；governance 已批准任务白名单加入 `mail_draft`/`mail_send`。
     v1 单收件人纯文本、无附件；`verify-mail 46` / `verify-risk 20` / `verify-tasks 122` /
     `verify-orchestrator 73`（[16 §12.53](docs/16-部署与运行.md)）。
+  - **J4 飞书应用日历（Slice BP）**：新增 `@dsh-wfxm/calendar`；应用身份（tenant_access_token）
+    只读写应用自有的「dsh 日程」，不读个人主日历、不发邀请、不删除。`calendar_events`（R0）/
+    `calendar_create`（R2）/ `calendar_update`（R2，工具内审批）；日历解析
+    `DSH_WFXM_CALENDAR_ID` → summary（默认 `dsh 日程`）→ 写操作新建。前台 `calendar_view`
+    （days 1..31）与 `matchCalendarViewRequest` 确定性直答；建/改意图升 R2 + `calendar_event`，
+    tasks 迁移 **v12**。缺 scope（`99991672`）统一报可读 `calendar-scope`。会前提醒留 BQ。
+    `verify-calendar 21` / `verify-risk 23` / `verify-tasks 125` / `verify-orchestrator 79`
+    （[16 §12.54](docs/16-部署与运行.md)）。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

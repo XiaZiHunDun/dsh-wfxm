@@ -39,6 +39,7 @@ export type AssertionKind =
   | 'mail_archived'
   | 'mail_sent'
   | 'mail_drafted'
+  | 'calendar_event'
 
 export type AssertionStatus = 'pending' | 'pass' | 'fail' | 'skipped'
 
@@ -251,6 +252,7 @@ export const ASSERTION_KINDS: readonly AssertionKind[] = [
   'mail_archived',
   'mail_sent',
   'mail_drafted',
+  'calendar_event',
 ]
 
 /**

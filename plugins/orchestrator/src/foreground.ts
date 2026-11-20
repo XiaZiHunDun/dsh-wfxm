@@ -135,6 +135,11 @@ export interface OrchestratorForegroundOptions {
    * 返回已渲染的回复文本；null 表示没有可读取的邮件。
    */
   mailTodos?: ((input: { hours: number }) => Promise<string | null>) | null
+  /**
+   * Slice BP (J4): 应用日历只读端口，返回已渲染的回复文本；
+   * null 表示日历尚未创建。异常由前台转成可读话术。
+   */
+  calendarView?: ((input: { days: number }) => Promise<string | null>) | null
   /** 可注入时钟（测试与提醒的相对时间换算）。 */
   now?: () => Date
 }
@@ -193,6 +198,65 @@ export function matchMailTodoRequest(text: string): MailTodoRequest | null {
   return { hours: matchHours(text) }
 }
 
+/** 「今天/明天/本周有什么日程」这类只读请求；days 已夹到 1..31。 */
+export interface CalendarViewRequest {
+  days: number
+}
+
+const CALENDAR_WORD = /(日程|日历|calendar)/i
+const CALENDAR_VIEW_WORD = /(查看|看看|看一下|看下|有什么|有哪些|多少|哪些|忙不忙|空不空|安排|日程表|议程|排期)/i
+/** 写意图/副作用词：交给模型与执行者，不在这里劫持。 */
+const CALENDAR_WRITE_PATTERN =
+  /(创建|新建|建立|添加|加一个|加个|建一个|建个|约|定在|定到|定个|定一个|修改|改成|更新|调整|推迟|提前|删除|取消|提醒)|安排[^。；;，,]{0,6}(?:会|会议|日程|日历)/
+const MULTI_CLAUSE = /[，,。；;]|然后|顺便|再帮我/
+const DEFAULT_CALENDAR_DAYS = 7
+const MAX_CALENDAR_DAYS = 31
+
+const NUMERALS: Record<string, number> = {
+  一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+}
+
+function numeral(raw: string): number {
+  const digits = Number(raw)
+  if (Number.isInteger(digits)) return digits
+  if (raw.length === 1) return NUMERALS[raw] ?? 0
+  return 0
+}
+
+function clampDays(value: number): number {
+  if (!Number.isFinite(value) || value < 1) return 1
+  return value > MAX_CALENDAR_DAYS ? MAX_CALENDAR_DAYS : Math.floor(value)
+}
+
+function calendarDays(text: string): number {
+  const days = /([0-9]+|[一二两三四五六七八九十]+)\s*(?:天|日)/.exec(text)
+  if (days !== null) return clampDays(numeral(days[1]))
+  const weeks = /([0-9]+|[一二两三四五六七八九十]+)\s*(?:个)?(?:周|星期)/.exec(text)
+  if (weeks !== null) return clampDays(numeral(weeks[1]) * 7)
+  if (/(今天|今日)/.test(text)) return 1
+  if (/(明天|明日)/.test(text)) return 2
+  if (/(后天)/.test(text)) return 3
+  if (/(本周|这周|本星期|这星期)/.test(text)) return 7
+  return DEFAULT_CALENDAR_DAYS
+}
+
+/**
+ * 确定性识别「看看日程」这类只读请求。
+ *
+ * 只认「日历/日程 + 查看词」的短句；写意图（建/加/改/约/安排会议/取消/
+ * 提醒）一律不拦截，交给模型与执行者。误判的代价不对称：误直答会答错，
+ * 误交模型只是慢一点。
+ */
+export function matchCalendarViewRequest(text: string): CalendarViewRequest | null {
+  const trimmed = text.trim()
+  if (trimmed === '' || trimmed.length > 40) return null
+  if (MULTI_CLAUSE.test(trimmed)) return null
+  if (!CALENDAR_WORD.test(trimmed)) return null
+  if (!CALENDAR_VIEW_WORD.test(trimmed)) return null
+  if (CALENDAR_WRITE_PATTERN.test(trimmed)) return null
+  return { days: calendarDays(trimmed) }
+}
+
 function liveTaskOn(tasks: TaskStore, threadId: string, liveStatuses: readonly string[]): LiveTask | null {
   const bindings = tasks.listTaskThreads({ threadId, liveOnly: true })
   for (const binding of bindings) {
@@ -211,6 +275,7 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
   const quickAnswer = createQuickAnswer({ tasks, probe: options.probe ?? null, checks: options.checks ?? null })
   const reminders = options.reminders ?? null
   const mailTodos = options.mailTodos ?? null
+  const calendarView = options.calendarView ?? null
   const clock = options.now ?? (() => new Date())
 
   /** Rule-shaped actions, so a model decision and a fallback look the same. */
@@ -273,6 +338,28 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
     }
   }
 
+  /** Slice BP (J4): 只读日程，直接回话，不建任务、不写日历。 */
+  async function runCalendarView(threadId: string, days: number): Promise<ForegroundOutcome> {
+    if (calendarView === null) {
+      return { action: 'reply', text: '日程读取暂不可用。', threadId, note: 'calendar-unavailable' }
+    }
+    try {
+      const replyText = await calendarView({ days })
+      if (replyText === null || replyText.trim() === '') {
+        return {
+          action: 'reply',
+          text: '尚未创建「dsh 日程」日历；请先在飞书中创建并订阅。',
+          threadId,
+          note: 'calendar-missing',
+        }
+      }
+      return { action: 'reply', text: replyText, threadId, note: 'calendar-view' }
+    } catch (error) {
+      logger?.warn?.(`calendar view failed: ${error instanceof Error ? error.message : String(error)}`)
+      return { action: 'reply', text: '日程读取失败，请稍后再试。', threadId, note: 'calendar-view-failed' }
+    }
+  }
+
   return async ({ result, text, history }) => {
     if (result.target.kind !== 'orchestrator') {
       return { action: 'none', reason: `target:${result.target.kind}` }
@@ -298,6 +385,10 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
       }
     }
 
+    // Slice BP (J4): 「看看日程」是只读视图，交给端口直答，不跑模型。
+    const calendarRequest = calendarView === null ? null : matchCalendarViewRequest(trimmed)
+    if (calendarRequest !== null) return runCalendarView(thread.id, calendarRequest.days)
+
     // Slice BN: a repeated "提取邮件待办" must hit the port again. Letting the
     // decision model see the previous answer made it reply "刚查过…" instead of
     // re-reading the mailbox (真机复现), so this narrow shape bypasses the model.
@@ -316,6 +407,7 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
       now: nowAt,
       remindersEnabled: reminders !== null,
       todosEnabled: mailTodos !== null,
+      calendarEnabled: calendarView !== null,
       reminders: pendingReminders.map((item, index) => ({
         index: index + 1,
         when: item.when,
@@ -332,6 +424,7 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
         now: nowAt,
         remindersEnabled: reminders !== null,
         todosEnabled: mailTodos !== null,
+        calendarEnabled: calendarView !== null,
         ...options.maxReplyChars === undefined ? {} : { maxReplyChars: options.maxReplyChars },
         ...options.maxIntentChars === undefined ? {} : { maxIntentChars: options.maxIntentChars },
       })
@@ -411,6 +504,9 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
 
     // Slice BN (J2): 只读提取，直接回话，不建任务、不写邮箱。
     if (decision.action === 'mail_todos') return runMailTodos(thread.id, decision.hours)
+
+    // Slice BP (J4): 只读日程，直接回话，不建任务、不写日历。
+    if (decision.action === 'calendar_view') return runCalendarView(thread.id, decision.days)
 
     // A second task on the same thread would fight the live owner slot (#9), so
     // a work request while something is live is delivered as an input instead.

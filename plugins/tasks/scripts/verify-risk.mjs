@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict'
 
-const { isMailArchiveIntent, isMailDraftIntent, isMailSendIntent, managedUnitFor, planTaskRisk } = await import('../lib/index.js')
+const { isCalendarWriteIntent, isMailArchiveIntent, isMailDraftIntent, isMailSendIntent, managedUnitFor, planTaskRisk } = await import('../lib/index.js')
 
 let pass = 0
 let fail = 0
@@ -154,6 +154,39 @@ check('发送/草稿的问句与否定不升级', () => {
   }
   for (const text of ['看看草稿箱', '草稿夹里有几封', '列出草稿']) {
     assert.equal(planTaskRisk(text, 'R1').risk, 'R1', text)
+  }
+  return true
+})
+
+check('「创建日程」升 R2，并带 calendar_event 断言', () => {
+  const plan = planTaskRisk('创建日程｜标题：周会｜开始：2026-11-21T09:00:00+08:00｜结束：2026-11-21T10:00:00+08:00', 'R1')
+  assert.equal(plan.risk, 'R2')
+  assert.deepEqual(plan.reasons, ['calendar-write'])
+  assert.deepEqual(plan.assertions.map((item) => item.kind), ['calendar_event'])
+  assert.equal(plan.assertions[0].spec.minCount, 1)
+  assert.equal(plan.assertions[0].spec.windowDays, 7)
+  assert.equal(isCalendarWriteIntent('把明天的日程改到下午'), true)
+  assert.equal(isCalendarWriteIntent('安排一个会议'), false)
+  return true
+})
+
+check('「安排一个日程/约个日程」也升级', () => {
+  assert.equal(planTaskRisk('明天上午安排一个日程', 'R1').risk, 'R2')
+  assert.equal(planTaskRisk('帮我约明天下午的日程', 'R1').risk, 'R2')
+  return true
+})
+
+check('日程只读与问句不升级', () => {
+  for (const text of [
+    '查看今天的日程',
+    '看看这周有什么安排',
+    '明天有日程吗',
+    '今天有几个会议',
+    '日程里有哪些事情',
+    '不要创建日程',
+  ]) {
+    assert.equal(planTaskRisk(text, 'R1').risk, 'R1', text)
+    assert.equal(isCalendarWriteIntent(text), false, text)
   }
   return true
 })

@@ -21,6 +21,7 @@ export type Decision =
   | { action: 'reminders' }
   | { action: 'cancel_remind'; index: number }
   | { action: 'mail_todos'; hours: number }
+  | { action: 'calendar_view'; days: number }
 
 export type DecisionParse =
   | { ok: true; decision: Decision }
@@ -39,6 +40,8 @@ export interface ParseDecisionOptions {
   remindersEnabled?: boolean
   /** 前台是否挂了邮件待办端口；未挂时 `mail_todos` 视为未知。 */
   todosEnabled?: boolean
+  /** 前台是否挂了日历读取端口；未挂时 `calendar_view` 视为未知。 */
+  calendarEnabled?: boolean
 }
 
 export const DEFAULT_MAX_REPLY_CHARS = 4_000
@@ -53,6 +56,9 @@ export const MAX_REMINDER_INDEX = 20
 /** 邮件待办默认回看 48 小时；最多一周。 */
 export const DEFAULT_TODO_HOURS = 48
 export const MAX_TODO_HOURS = 168
+/** 日程查看窗口：今天=1，本周=7，最多 31 天。 */
+export const DEFAULT_CALENDAR_DAYS = 7
+export const MAX_CALENDAR_DAYS = 31
 
 /** Strip fences / prose and return the outermost JSON object, or null. */
 export function extractJsonObject(raw: string): string | null {
@@ -186,6 +192,19 @@ export function parseDecision(raw: string, options: ParseDecisionOptions = {}): 
       return { ok: false, reason: 'invalid-todo-hours' }
     }
     return { ok: true, decision: { action: 'mail_todos', hours: raw } }
+  }
+
+  // 日历读取同理：端口缺失时不允许模型"决定"一个做不到的动作。
+  if (action === 'calendar_view') {
+    if (options.calendarEnabled !== true) return { ok: false, reason: 'calendar-unavailable' }
+    const raw = record.days
+    if (raw === undefined || raw === null || raw === '') {
+      return { ok: true, decision: { action: 'calendar_view', days: DEFAULT_CALENDAR_DAYS } }
+    }
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > MAX_CALENDAR_DAYS) {
+      return { ok: false, reason: 'invalid-calendar-days' }
+    }
+    return { ok: true, decision: { action: 'calendar_view', days: raw } }
   }
 
   return { ok: false, reason: 'unknown-action' }

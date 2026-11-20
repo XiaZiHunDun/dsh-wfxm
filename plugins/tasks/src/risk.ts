@@ -12,7 +12,8 @@
  * v2 template: writing to an explicit absolute file → R2 + `file_exists`.
  * v3 template: archiving mail → R2 + `mail_archived` (the archive folder is
  * readable and non-empty). v4 template: sending mail → R3 + `mail_sent`;
- * drafting mail → R2 + `mail_drafted`. Matching templates stack: a combined
+ * drafting mail → R2 + `mail_drafted`. v5 template: creating/updating a
+ * calendar event → R2 + `calendar_event`. Matching templates stack: a combined
  * intent keeps both assertions instead of silently dropping one.
  * Anything without a derivable assertion stays at its baseline risk, so the
  * "no criteria, no R2+" invariant is never bypassed.
@@ -141,6 +142,30 @@ export function isMailDraftIntent(intent: string): boolean {
   return MAIL_DRAFT_OP.some((pattern) => pattern.test(intent))
 }
 
+/** 日程/日历写操作；只读与问句不升级。 */
+const CALENDAR_TOKEN = /(日程|日历|calendar)/i
+const CALENDAR_WRITE_OP =
+  /(创建|新建|建立|添加|加一个|加个|安排|约|定在|定到|改到|改在|修改|改成|更新|调整|推迟|提前)/
+const CALENDAR_WRITE_READ =
+  /(查看|看看|看一下|看下|列出|显示|有哪些|有什么|多少|哪些|忙不忙|空不空|有没有|查询|状态)/
+const CALENDAR_WRITE_NEGATION = /(不要|别|不用|无需|禁止)\s*(?:再)?\s*(?:创建|新建|添加|安排|修改|改|更新|调整)/
+/** 「今天的安排」「明天的日程安排」是读；带宾语（安排一个/一场）则是写。 */
+const CALENDAR_SCHEDULE_NOUN =
+  /(?:今天|明天|后天|本周|这周|下周|最近|未来)[^。；;，,]{0,6}安排(?!一个|个|一场|一回|会议|会|日程|日历)/
+
+/** Is this intent a calendar write (create/update) rather than a read? */
+export function isCalendarWriteIntent(intent: string): boolean {
+  if (!CALENDAR_TOKEN.test(intent)) return false
+  if (CALENDAR_WRITE_READ.test(intent)) return false
+  if (CALENDAR_WRITE_NEGATION.test(intent)) return false
+  if (!CALENDAR_WRITE_OP.test(intent)) return false
+  if (
+    CALENDAR_SCHEDULE_NOUN.test(intent)
+    && !/(创建|新建|建立|添加|修改|改成|改到|改在|更新|调整|推迟|提前)/.test(intent)
+  ) return false
+  return true
+}
+
 /**
  * Raise a baseline R0/R1 task when the intent is a state-changing service
  * operation that has a template assertion. `stop` is intentionally absent:
@@ -167,20 +192,23 @@ export function planTaskRisk(intent: string, baseline: RiskLevel): RiskPlan {
   const archive = isMailArchiveIntent(intent)
   const draft = isMailDraftIntent(intent)
   const send = isMailSendIntent(intent)
+  const calendar = isCalendarWriteIntent(intent)
   const file = writtenFileFor(intent)
-  if (archive || draft || send || file !== null) {
+  if (archive || draft || send || calendar || file !== null) {
     // Templates stack: a combined "archive the mail and write a report to
     // /abs/path.txt" intent must keep both proofs, not silently drop one.
     const reasons = [
       ...(send ? ['mail-send'] : []),
       ...(draft ? ['mail-draft'] : []),
       ...(archive ? ['mail-archive'] : []),
+      ...(calendar ? ['calendar-write'] : []),
       ...(file === null ? [] : [`file-write:${file}`]),
     ]
     const raw: unknown[] = [
       ...(send ? [{ kind: 'mail_sent' }] : []),
       ...(draft ? [{ kind: 'mail_drafted' }] : []),
       ...(archive ? [{ kind: 'mail_archived' }] : []),
+      ...(calendar ? [{ kind: 'calendar_event', minCount: 1, windowDays: 7 }] : []),
       ...(file === null ? [] : [{ kind: 'file_exists', path: file }]),
     ]
     return { risk: send ? 'R3' : 'R2', reasons, assertions: prepareAssertions(raw) }
