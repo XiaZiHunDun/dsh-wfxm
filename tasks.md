@@ -2114,6 +2114,6 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 ## BQ3 用例与发布
 
 - [x] `verify-calendar` 17 → 23 例（窗口/幂等/升级/文本/无绑定/失败/关闭/改期）
-- [ ] 四门禁全绿并发布（`2026.11.20-4`）
-- [ ] 真机：创建 10+ 分钟后开始的事件 → 收到一次提醒 → 不重复
+- [x] 四门禁全绿并发布（`2026.11.20-4`；生产库原地升级到 calendar v2；日志 `calendar:reminder enabled (lead=10m, every=60s)`）
+- [x] 真机：13:50:31 扫描入队（`evt_5d2a…` → outbox `01a1f781…`），outbox `status=sent`、`reminded_at` 已写；测试事件已删除
 - [ ] 提交推送（ailearn）
