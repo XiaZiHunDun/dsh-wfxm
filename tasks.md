@@ -2021,5 +2021,5 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 四门禁：`build` / `--noEmit` / `check-style 196 files` / `verify-all 47 passed`
 - [x] 文档：`docs/09` J2、`docs/08` J2、`docs/16 §12.52`、`AGENTS.md` Slice BN
 - [x] 发布并重启（`2026.11.19-20`，`[startup] 8/8`）
-- [x] 真机：飞书「从邮件里提取待办」→ 直接回待办列表
+- [x] 真机：飞书「从邮件里提取待办」→ 直接回待办列表；间隔 >60s 重发仍重读邮箱（2026-11-20）
 - [x] 提交推送（ailearn）
