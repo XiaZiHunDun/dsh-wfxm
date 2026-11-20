@@ -955,14 +955,19 @@ export async function ingestInbound(
         : resolveProject({ port: deps.project ?? null, explicitAlias: command.alias })
 
       const chatId = thread?.chatId ?? input.chatId ?? null
-      if (command.kind === 'use' && resolution.projectId !== null && chatId !== null) {
+      if (command.kind === 'use' && resolution.projectId !== null) {
         // Sticky per chat; never invents a session id if the chat has no route.
-        store.setSessionProject({
-          channelId: input.channelId,
-          chatId,
-          sessionKind: 'orchestrator',
-          projectId: resolution.projectId,
-        })
+        if (chatId !== null) {
+          store.setSessionProject({
+            channelId: input.channelId,
+            chatId,
+            sessionKind: 'orchestrator',
+            projectId: resolution.projectId,
+          })
+        }
+        // Threads exist as soon as a message is routed, so this is the reliable
+        // place for `/use` to persist even when `session_routes` has no row.
+        if (thread !== null) store.setThreadProject(thread.id, resolution.projectId)
       }
 
       const reason = command.kind === 'list'
@@ -1172,13 +1177,17 @@ export async function ingestInbound(
       replyToMsgId: input.replyToMsgId ?? null,
     })
 
-  // 4.5 Project binding for this turn (11 §5.3.1): anchor → sticky → single → ask.
+  // 4.5 Project binding for this turn (11 §5.3.1): reply anchor → sticky → single → ask.
+  // Only a reply to a task message inherits that task's project; a stale
+  // `single-wakeable` anchor must not steal the project chosen via `/use`.
   const project = resolveProject({
     port: deps.project ?? null,
-    anchorProjectId: followUp?.projectId ?? null,
+    anchorProjectId: followUp?.matchedBy === 'anchor' ? followUp.projectId : null,
     stickyProjectId: thread === null
       ? null
-      : store.getSessionRoute(input.channelId, thread.chatId, 'orchestrator')?.projectId ?? null,
+      : thread.projectId
+        ?? store.getSessionRoute(input.channelId, thread.chatId, 'orchestrator')?.projectId
+        ?? null,
   })
 
   if (followUp !== null && followUp.taskId !== null && threadId !== null) {

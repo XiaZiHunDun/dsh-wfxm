@@ -560,6 +560,12 @@ export interface GatewayStore {
 
   resolveThread(input: ResolveThreadInput): ThreadRecord
   getThread(id: string): ThreadRecord | null
+  /**
+   * Sticky project for one thread (11 §5.3.1). Threads always exist once a
+   * message is routed, so `/use` persists here even before the chat has a
+   * session route row.
+   */
+  setThreadProject(threadId: string, projectId: string | null): boolean
   listThreads(filter?: ThreadFilter): ThreadRecord[]
   /** True once ⑤ has created the `v_task_anchors` view (15 §9.5). */
   hasTaskAnchorView(): boolean
@@ -994,6 +1000,7 @@ export function createGatewayStore(dbPath: string): GatewayStore {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const touchThread = db.prepare('UPDATE threads SET last_msg_at = ? WHERE id = ?')
+  const updateThreadProject = db.prepare('UPDATE threads SET project_id = ? WHERE id = ?')
   const listThreadsAll = db.prepare(
     'SELECT * FROM threads ORDER BY last_msg_at ASC, rowid ASC',
   )
@@ -1604,6 +1611,11 @@ export function createGatewayStore(dbPath: string): GatewayStore {
     getThread(id) {
       const row = selectThreadById.get(id) as ThreadRow | undefined
       return row === undefined ? null : toThread(row)
+    },
+
+    setThreadProject(threadId, projectId) {
+      const id = requiredText(threadId, 'threadId')
+      return updateThreadProject.run(optionalText(projectId, 'projectId'), id).changes > 0
     },
 
     listThreads(filter) {

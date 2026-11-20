@@ -2028,8 +2028,68 @@ await check('the next plain message sticks to the project chosen last', async ()
     && result.inbox.status === 'routed'
 })
 
-await check('a reply anchor beats the chat stickiness', async () => {
-  anchorStore.setSessionRoute({
+await check('/use persists stickiness even when the chat has no session route', async () => {
+  const chatId = 'chat_no_route'
+  const use = await ingestInbound({ store: anchorStore, project: projectPort }, {
+    channelId: 'cli_anc',
+    msgId: 'evt_no_route_use',
+    externalUserId: 'open_anc',
+    content: { text: '/use alpha' },
+    chatId,
+  })
+  const route = anchorStore.getSessionRoute('cli_anc', chatId, 'orchestrator')
+  const thread = anchorStore.listThreads({ channelId: 'cli_anc', chatId })[0] ?? null
+  const next = await ingestInbound({ store: anchorStore, project: projectPort }, {
+    channelId: 'cli_anc',
+    msgId: 'evt_no_route_next',
+    externalUserId: 'open_anc',
+    content: { text: '看下磁盘' },
+    chatId,
+  })
+  return use.project.projectId === 'proj_alpha'
+    && route === null
+    && thread !== null
+    && thread.projectId === 'proj_alpha'
+    && next.project.projectId === 'proj_alpha'
+    && next.project.matchedBy === 'sticky'
+})
+
+await check('a stale single-wakeable anchor does not override the sticky project', async () => {
+  const chatId = 'chat_stale'
+  const thread = anchorStore.resolveThread({ channelId: 'cli_anc', chatId })
+  const staleDb = new DatabaseConstructor(anchorPath)
+  staleDb.prepare(`
+    INSERT INTO tasks(id, status, round, origin_msg_id, project_id)
+    VALUES ('task_stale', 'succeeded', 1, 'm_stale', 'proj_beta')
+  `).run()
+  staleDb.prepare(`
+    INSERT INTO task_threads(id, task_id, thread_id, relation, anchor_msg_id, created_at, released_at)
+    VALUES ('tt_stale', 'task_stale', ?, 'anchor', NULL, '2026-11-09T04:00:00.000Z', NULL)
+  `).run(thread.id)
+  staleDb.close()
+
+  const followUp = resolveFollowUp(anchorStore, { channelId: 'cli_anc', chatId })
+  await ingestInbound({ store: anchorStore, project: projectPort }, {
+    channelId: 'cli_anc',
+    msgId: 'evt_stale_use',
+    externalUserId: 'open_anc',
+    content: { text: '/use alpha' },
+    chatId,
+  })
+  const next = await ingestInbound({ store: anchorStore, project: projectPort }, {
+    channelId: 'cli_anc',
+    msgId: 'evt_stale_next',
+    externalUserId: 'open_anc',
+    content: { text: '看下日志' },
+    chatId,
+  })
+  return followUp.matchedBy === 'single-wakeable'
+    && followUp.projectId === 'proj_beta'
+    && next.project.projectId === 'proj_alpha'
+    && next.project.matchedBy === 'sticky'
+})
+
+await check('a reply anchor beats the chat stickiness', async () => {  anchorStore.setSessionRoute({
     channelId: 'cli_anc',
     chatId: 'chat_two',
     sessionKind: 'orchestrator',
