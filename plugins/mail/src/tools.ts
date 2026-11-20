@@ -9,9 +9,13 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   DEFAULT_ARCHIVE_FOLDER,
   readArchiveFolder,
+  readDraftFolderOverride,
   readMailAccount,
+  readMailSmtp,
+  readSentFolderOverride,
   type MailAccount,
   type MailConfigResult,
+  type MailSmtp,
 } from './config.js'
 import {
   buildMailDigest,
@@ -22,14 +26,20 @@ import {
 import {
   MailError,
   archiveMail,
+  draftMail,
   readMail,
   searchMail,
+  sendMail,
   type MailArchiveRequest,
   type MailArchiveResult,
+  type MailDraftRequest,
+  type MailDraftResult,
   type MailReadRequest,
   type MailReadResult,
   type MailSearchRequest,
   type MailSearchResult,
+  type MailSendRequest,
+  type MailSendResult,
 } from './query.js'
 
 export const name = 'dsh-wfxm-mail'
@@ -43,6 +53,8 @@ export const MAIL_TOOL_RISK = {
   mail_read: 'R0',
   mail_digest: 'R0',
   mail_archive: 'R2',
+  mail_draft: 'R2',
+  mail_send: 'R3',
 } as const
 
 export const MAIL_TOOL_PORT = 'Mail'
@@ -91,10 +103,17 @@ export interface MailToolsDeps {
   read?: (request: MailReadRequest, options: { account: MailAccount }) => Promise<MailReadResult>
   digest?: (request: MailDigestRequest, options: { account: MailAccount }) => Promise<MailDigestResult>
   archive?: (request: MailArchiveRequest, options: { account: MailAccount }) => Promise<MailArchiveResult>
+  draft?: (request: MailDraftRequest, options: { account: MailAccount }) => Promise<MailDraftResult>
+  send?: (request: MailSendRequest, options: { account: MailAccount }) => Promise<MailSendResult>
+  /** Tests pin SMTP; production derives it from the account + env. */
+  smtp?: (account: MailAccount) => { ok: true; smtp: MailSmtp } | { ok: false; message: string }
   /** Tests pin the approval service; production reads `ctx.get('approval')`. */
   approval?: () => ApprovalServiceLike | undefined
   /** Tests pin the archive folder; production reads the env. */
   archiveFolder?: () => string
+  /** Tests pin draft/sent folders; undefined lets the backend discover them. */
+  draftFolder?: () => string | undefined
+  sentFolder?: () => string | undefined
   /** Tests pin "now"; production uses the wall clock. */
   now?: () => Date
 }
@@ -230,6 +249,41 @@ export function validateArchiveArgs(args: Record<string, unknown>): MailArchiveA
   return request
 }
 
+export interface MailOutgoingArgs {
+  to: string
+  subject: string
+  body: string
+}
+
+const ADDRESS_RE = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/
+/** 头部字段不允许任何控制字符；正文允许换行。 */
+const HEADER_CONTROL = /[\u0000-\u001f\u007f]/
+const MAX_SUBJECT = 200
+const MAX_OUTGOING_BODY = 4_000
+
+/** 起草与发送共用的参数校验；单收件人、纯文本、无附件。 */
+export function validateOutgoingArgs(args: Record<string, unknown>): MailOutgoingArgs {
+  const to = asString(args.to, 'to')
+  if (to === undefined || !ADDRESS_RE.test(to)) {
+    throw new MailError('protocol', 'to must be a single email address')
+  }
+  const subject = asString(args.subject, 'subject')
+  if (subject === undefined) throw new MailError('protocol', 'subject must not be empty')
+  if (subject.length > MAX_SUBJECT) {
+    throw new MailError('protocol', `subject must be at most ${MAX_SUBJECT} characters`)
+  }
+  if (HEADER_CONTROL.test(subject)) {
+    throw new MailError('protocol', 'subject must not contain control characters')
+  }
+  if (typeof args.body !== 'string' || args.body.trim() === '') {
+    throw new MailError('protocol', 'body must be a non-empty string')
+  }
+  if (args.body.length > MAX_OUTGOING_BODY) {
+    throw new MailError('protocol', `body must be at most ${MAX_OUTGOING_BODY} characters`)
+  }
+  return { to, subject, body: args.body }
+}
+
 const MESSAGE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -349,6 +403,46 @@ function renderArchive(result: MailArchiveResult): string {
   return `已归档 ${result.moved} 封到 ${result.folder}：uid=${result.uids.join(',')}`
 }
 
+const DRAFT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    folder: { type: 'string', required: true },
+    to: { type: 'string', required: true },
+    subject: { type: 'string', required: true },
+    messageId: { type: 'string', required: true },
+  },
+} as const
+
+const SEND_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    to: { type: 'string', required: true },
+    subject: { type: 'string', required: true },
+    messageId: { type: 'string', required: true },
+    sentFolder: { type: 'string', required: true },
+    appended: { type: 'boolean', required: true },
+    warning: { type: 'string', required: true },
+  },
+} as const
+
+function renderDraft(result: MailDraftResult): string {
+  return `已保存草稿：${result.subject}（收件人 ${result.to}）→ ${result.folder}`
+}
+
+function renderSend(result: MailSendResult): string {
+  const copy = result.appended
+    ? `副本已保存到 ${result.sentFolder}`
+    : `副本未保存${result.warning === '' ? '' : `：${result.warning}`}`
+  return `已发送邮件给 ${result.to}：${result.subject}（${copy}）`
+}
+
+function outgoingReason(toolName: string, args: MailOutgoingArgs): string {
+  const preview = args.body.replace(/\s+/g, ' ').slice(0, 120)
+  return `${toolName}: 收件人=${args.to}；主题=${args.subject}；正文=${preview}`
+}
+
 export function registerMailTools(ctx: ContextLike, deps: MailToolsDeps = {}): void {
   const registry = ctx.tools
   if (registry === undefined) {
@@ -358,7 +452,15 @@ export function registerMailTools(ctx: ContextLike, deps: MailToolsDeps = {}): v
   const doSearch = deps.search ?? (async (request, options) => searchMail(request, options))
   const doRead = deps.read ?? (async (request, options) => readMail(request, options))
   const doArchive = deps.archive ?? (async (request, options) => archiveMail(request, options))
+  const doDraft = deps.draft ?? (async (request, options) => draftMail(request, options))
+  const doSend = deps.send ?? (async (request, options) => sendMail(request, options))
+  const smtpOf = deps.smtp ?? ((account) => {
+    const result = readMailSmtp(account)
+    return result.ok ? { ok: true, smtp: result.smtp } : { ok: false, message: result.message }
+  })
   const folderOf = deps.archiveFolder ?? (() => readArchiveFolder())
+  const draftFolderOf = deps.draftFolder ?? (() => readDraftFolderOverride())
+  const sentFolderOf = deps.sentFolder ?? (() => readSentFolderOverride())
   const approverOf = deps.approval ?? (() => ctx.get?.('approval') as ApprovalServiceLike | undefined)
   const doDigest = deps.digest ?? (async (request, options) => {
     const now = deps.now?.() ?? new Date()
@@ -493,9 +595,77 @@ export function registerMailTools(ctx: ContextLike, deps: MailToolsDeps = {}): v
       return doArchive({ uids, folder }, { account })
     },
   }))
+
+  /** 发送/起草共用：审批不可用或未批准时都不产生任何写入。 */
+  async function requireApproval(exec: unknown, toolName: string, reason: string): Promise<void> {
+    const approver = approverOf()
+    if (approver === undefined) {
+      throw new MailError('approval', `${toolName} 需要审批，但审批服务未挂载；未执行`)
+    }
+    const call = exec as ExecutionContextLike | undefined
+    if (call?.agent === undefined) {
+      throw new MailError('approval', `${toolName} 需要审批，但当前没有可路由审批的会话；未执行`)
+    }
+    const outcome = await approver.request({
+      agent: call.agent,
+      toolName,
+      callId: call.callId,
+      reason,
+      ...call.signal === undefined ? {} : { signal: call.signal },
+    })
+    if (outcome !== 'allowed-once') {
+      throw new MailError('approval', `${toolName} 未获批准（${outcome}）；未执行`)
+    }
+  }
+
+  registry.register(defineTool({
+    name: 'mail_draft',
+    description: 'Save a plain-text draft to the mailbox Drafts folder. Requires explicit user approval (R2); nothing is written without it. Single recipient, no attachments, never sends.',
+    parameters: {
+      to: { type: 'string', required: true, description: 'Single recipient email address.' },
+      subject: { type: 'string', required: true, description: 'Subject, 1..200 characters, no newlines.' },
+      body: { type: 'string', required: true, description: 'Plain-text body, up to 4000 characters; newlines are kept.' },
+    },
+    output: {
+      schema: DRAFT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderDraft(value) }],
+    },
+    async execute(args, exec) {
+      const request = validateOutgoingArgs(args as Record<string, unknown>)
+      const account = accountOf()
+      await requireApproval(exec, 'mail_draft', outgoingReason('mail_draft', request))
+      const folder = draftFolderOf()
+      return doDraft({ ...request, ...folder === undefined ? {} : { folder } }, { account })
+    },
+  }))
+
+  registry.register(defineTool({
+    name: 'mail_send',
+    description: 'Send one plain-text email (R3). Requires explicit user approval on every call; the approval reason echoes recipient, subject and body. The recipient/subject/body must come verbatim from the task instruction. No attachments or multiple recipients.',
+    parameters: {
+      to: { type: 'string', required: true, description: 'Single recipient email address.' },
+      subject: { type: 'string', required: true, description: 'Subject, 1..200 characters, no newlines.' },
+      body: { type: 'string', required: true, description: 'Plain-text body, up to 4000 characters; newlines are kept.' },
+    },
+    output: {
+      schema: SEND_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderSend(value) }],
+    },
+    async execute(args, exec) {
+      const request = validateOutgoingArgs(args as Record<string, unknown>)
+      const account = accountOf()
+      const smtp = smtpOf(account)
+      if (!smtp.ok) throw new MailError('config', smtp.message)
+      await requireApproval(exec, 'mail_send', outgoingReason('mail_send', request))
+      const folder = sentFolderOf()
+      return doSend({ ...request, ...folder === undefined ? {} : { folder } }, {
+        account: { ...account, smtp: smtp.smtp },
+      })
+    },
+  }))
 }
 
 export function apply(ctx: ContextLike): void {
   registerMailTools(ctx)
-  ctx.logger?.info?.('[mail] IMAP tools registered (mail_search, mail_read, mail_digest, mail_archive)')
+  ctx.logger?.info?.('[mail] IMAP tools registered (mail_search, mail_read, mail_digest, mail_archive, mail_draft, mail_send)')
 }

@@ -37,6 +37,8 @@ export type AssertionKind =
   | 'git_diff_matches'
   | 'page_contains'
   | 'mail_archived'
+  | 'mail_sent'
+  | 'mail_drafted'
 
 export type AssertionStatus = 'pending' | 'pass' | 'fail' | 'skipped'
 
@@ -247,6 +249,8 @@ export const ASSERTION_KINDS: readonly AssertionKind[] = [
   'git_diff_matches',
   'page_contains',
   'mail_archived',
+  'mail_sent',
+  'mail_drafted',
 ]
 
 /**

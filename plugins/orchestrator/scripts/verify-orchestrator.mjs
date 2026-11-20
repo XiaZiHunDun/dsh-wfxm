@@ -260,8 +260,8 @@ await check('BE trust boundary: owner message is instruction, pasted external te
   return prompt.includes('指令层')
     && prompt.includes('数据层')
     && prompt.includes('疑似提示注入')
-    && enabled.includes('\n14. 消息里若出现')
-    && disabled.includes('\n10. 消息里若出现')
+    && enabled.includes('\n16. 消息里若出现')
+    && disabled.includes('\n12. 消息里若出现')
 })
 
 await check('a decision turn is scoped to the thread id, never a shared session', async () => {
@@ -372,6 +372,27 @@ await check('the rule layer raises an R1 service restart to R3 with a template a
     && assertions[0].kind === 'unit_restarted'
     && assertions[1].kind === 'service_active'
     && assertions.every((item) => item.spec.unit === 'dsh-wfxm-managed-demo.service')
+})
+
+await check('a mail send task is raised to R3 with mail_sent and held for approval', async () => {
+  const { host } = makeHost({
+    decide: async () => JSON.stringify({
+      action: 'task',
+      intent: '发送邮件｜收件人：a@example.com｜主题：周报｜正文：本周完成',
+      risk: 'R1',
+    }),
+  })
+  await pair(host)
+  const { result } = await say(host, '给 a@example.com 发邮件，主题周报')
+  const taskId = result.foreground?.taskId
+  const task = host.stores.tasks.getTask(taskId)
+  const assertions = host.stores.tasks.listAssertions(taskId)
+  host.close()
+  return result.foreground?.action === 'task-created'
+    && result.foreground.note === 'risk-escalated:mail-send'
+    && task.riskLevel === 'R3'
+    && assertions.length === 1
+    && assertions[0].kind === 'mail_sent'
 })
 
 await check('a read-only log request about a managed unit is not escalated', async () => {
@@ -1237,6 +1258,14 @@ await check('prompt carries time and pending reminders only when enabled', () =>
     && enabled.includes('"action":"remind"')
     && !disabled.includes('当前时间')
     && !disabled.includes('"action":"remind"')
+})
+
+await check('prompt asks for recipient/subject/body before sending mail', () => {
+  const prompt = buildDecisionPrompt({ text: '帮我发邮件' })
+  return prompt.includes('发送邮件｜收件人')
+    && prompt.includes('起草邮件｜收件人')
+    && prompt.includes('缺任一项')
+    && prompt.includes('正文超过 300 字')
 })
 
 await check('mail_todos defaults to 48h and accepts 1..168 only', () => {

@@ -47,12 +47,15 @@ export interface VerifyContext {
   /** Filled by `verifyTask` from `task.startedAt`; baseline for `unit_restarted`. */
   taskStartedAt?: string | null
   /**
-   * Adapter hook for `mail_archived` (Mail): read-only SELECT of the archive
-   * folder and its EXISTS count. `folder` null means the adapter's default
-   * (`DSH_WFXM_MAIL_ARCHIVE_FOLDER`, else Archive). Returning null = the probe
-   * could not decide (unconfigured account, IMAP error).
+   * Adapter hook for mail folder assertions (`mail_archived` / `mail_sent` /
+   * `mail_drafted`): read-only SELECT of the folder and its EXISTS count.
+   * `folder` null means the adapter default for `purpose`; returning null =
+   * undecidable (unconfigured account, IMAP error).
    */
-  mailFolderCount?: (folder: string | null) => Promise<{ folder: string; count: number } | null>
+  mailFolderCount?: (
+    folder: string | null,
+    purpose?: 'archive' | 'sent' | 'drafted',
+  ) => Promise<{ folder: string; count: number } | null>
   /** Adapter hook for `page_contains` (Browser). */
   browserContains?: (input: { url: string; selector: string; expect: string }) => Promise<boolean | null>
   /** Adapter hook for `git_diff_matches`; defaults to a read-only `git diff`. */
@@ -260,7 +263,7 @@ export async function evaluateAssertion(
           evidence: { evaluator: 'mail_archived', folder, reason: 'no Mail adapter mounted' },
         }
       }
-      const observed = await context.mailFolderCount(folder)
+      const observed = await context.mailFolderCount(folder, 'archive')
       if (observed === null) {
         return {
           status: 'skipped',
@@ -271,6 +274,35 @@ export async function evaluateAssertion(
         status: observed.count >= expected ? 'pass' : 'fail',
         evidence: {
           evaluator: 'mail_archived',
+          folder: observed.folder,
+          expected,
+          observed: observed.count,
+        },
+      }
+    }
+
+    case 'mail_sent':
+    case 'mail_drafted': {
+      const purpose = assertion.kind === 'mail_sent' ? 'sent' : 'drafted'
+      const folder = typeof spec.folder === 'string' ? spec.folder : null
+      const expected = Number(spec.minCount ?? 1)
+      if (context.mailFolderCount === undefined) {
+        return {
+          status: 'skipped',
+          evidence: { evaluator: assertion.kind, folder, reason: 'no Mail adapter mounted' },
+        }
+      }
+      const observed = await context.mailFolderCount(folder, purpose)
+      if (observed === null) {
+        return {
+          status: 'skipped',
+          evidence: { evaluator: assertion.kind, folder, observed: 'unavailable', transient: true },
+        }
+      }
+      return {
+        status: observed.count >= expected ? 'pass' : 'fail',
+        evidence: {
+          evaluator: assertion.kind,
           folder: observed.folder,
           expected,
           observed: observed.count,

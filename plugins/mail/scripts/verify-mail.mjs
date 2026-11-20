@@ -27,12 +27,16 @@ import {
   parseDigestEnv,
   readArchiveFolder,
   readDigestState,
+  readDraftFolderOverride,
   readMailAccount,
+  readMailSmtp,
+  readSentFolderOverride,
   registerMailTools,
   renderDigest,
   searchMail,
   validateArchiveArgs,
   validateDigestArgs,
+  validateOutgoingArgs,
   validateReadArgs,
   validateSearchArgs,
   writeDigestState,
@@ -219,18 +223,22 @@ function fakeContext() {
   }
 }
 
-await check('registers three read-only tools plus one approved write tool', () => {
+await check('registers three read-only tools plus three approved write tools', () => {
   const ctx = fakeContext()
   registerMailTools(ctx)
   const names = ctx.captured.map((tool) => tool.name).sort()
-  const readOnly = ctx.captured.filter((tool) => tool.name !== 'mail_archive')
+  const readOnly = ctx.captured.filter((tool) => !['mail_archive', 'mail_draft', 'mail_send'].includes(tool.name))
   const archive = ctx.captured.find((tool) => tool.name === 'mail_archive')
-  return names.length === 4 && names.join(',') === 'mail_archive,mail_digest,mail_read,mail_search'
+  const draft = ctx.captured.find((tool) => tool.name === 'mail_draft')
+  const send = ctx.captured.find((tool) => tool.name === 'mail_send')
+  return names.length === 6
+    && names.join(',') === 'mail_archive,mail_digest,mail_draft,mail_read,mail_search,mail_send'
     && readOnly.every((tool) => String(tool.description).toLowerCase().includes('read-only'))
-    && archive !== undefined
-    && String(archive.description).toLowerCase().includes('approval')
+    && archive !== undefined && draft !== undefined && send !== undefined
+    && [archive, draft, send].every((tool) => String(tool.description).toLowerCase().includes('approval'))
     && MAIL_TOOL_RISK.mail_search === 'R0' && MAIL_TOOL_RISK.mail_read === 'R0'
     && MAIL_TOOL_RISK.mail_digest === 'R0' && MAIL_TOOL_RISK.mail_archive === 'R2'
+    && MAIL_TOOL_RISK.mail_draft === 'R2' && MAIL_TOOL_RISK.mail_send === 'R3'
 })
 
 await check('tools surface a readable error when mail is not configured', async () => {
@@ -654,6 +662,109 @@ await check('archive executes once on allowed-once and echoes folder override', 
   return calls === 1 && seen.uids.join() === '4,5' && seen.folder === 'Archive/2026'
     && value.moved === 2 && value.folder === 'Archive/2026'
     && reason.includes('2 封') && reason.includes('Archive/2026')
+})
+
+// ---- 起草与发送（Slice BO） -----------------------------------------------------
+
+await check('outgoing args reject header injection, bad address and empty body', () => {
+  const ok = validateOutgoingArgs({ to: 'a@example.com', subject: '你好', body: '第一行\n第二行' })
+  return ok.to === 'a@example.com' && ok.body === '第一行\n第二行'
+    && rejects(() => validateOutgoingArgs({ to: 'a@example.com\r\nBcc: y@example.com', subject: 's', body: 'b' }), 'protocol')
+    && rejects(() => validateOutgoingArgs({ to: 'a@example.com', subject: 's\r\nBcc: y@example.com', body: 'b' }), 'protocol')
+    && rejects(() => validateOutgoingArgs({ to: 'nope', subject: 's', body: 'b' }), 'protocol')
+    && rejects(() => validateOutgoingArgs({ to: 'a@example.com', subject: '', body: 'b' }), 'protocol')
+    && rejects(() => validateOutgoingArgs({ to: 'a@example.com', subject: 's', body: '   ' }), 'protocol')
+    && rejects(() => validateOutgoingArgs({ to: 'a@example.com', subject: 's', body: 'x'.repeat(4001) }), 'protocol')
+})
+
+await check('SMTP settings derive from imap.* or fail closed', () => {
+  const base = { host: 'imap.163.com', port: 993, secure: true, user: 'me@163.com', password: 'p' }
+  const derived = readMailSmtp(base, {})
+  const explicit = readMailSmtp(base, {
+    DSH_WFXM_MAIL_SMTP_HOST: 'smtp.example.com',
+    DSH_WFXM_MAIL_SMTP_PORT: '587',
+    DSH_WFXM_MAIL_SMTP_SECURE: '0',
+  })
+  const custom = readMailSmtp({ ...base, host: 'mail.example.com' }, {})
+  const fromFile = readMailSmtp({ ...base, smtp: { host: 'smtp.file.com', port: 2525, secure: false } }, {})
+  return derived.ok && derived.smtp.host === 'smtp.163.com' && derived.smtp.port === 465 && derived.smtp.secure
+    && explicit.ok && explicit.smtp.host === 'smtp.example.com'
+    && explicit.smtp.port === 587 && explicit.smtp.secure === false
+    && !custom.ok && custom.code === 'config'
+    && fromFile.ok && fromFile.smtp.host === 'smtp.file.com'
+    && fromFile.smtp.port === 2525 && fromFile.smtp.secure === false
+    && readDraftFolderOverride({}) === undefined && readSentFolderOverride({}) === undefined
+    && readDraftFolderOverride({ DSH_WFXM_MAIL_DRAFT_FOLDER: '草稿箱' }) === '草稿箱'
+})
+
+await check('mail_send fails closed without approval and echoes the three fields', async () => {
+  const smtp = () => ({ ok: true, smtp: { host: 'smtp.163.com', port: 465, secure: true } })
+  const run = async (approval) => {
+    let sent = 0
+    let reason = ''
+    const ctx = fakeContext()
+    registerMailTools(ctx, {
+      config: () => ({ ok: true, source: 'env', account }),
+      smtp,
+      send: async (request) => {
+        sent += 1
+        return {
+          to: request.to,
+          subject: request.subject,
+          messageId: '<m@example.com>',
+          sentFolder: 'Sent',
+          appended: true,
+          warning: '',
+        }
+      },
+      ...approval === undefined ? {} : { approval },
+    })
+    const tool = ctx.captured.find((item) => item.name === 'mail_send')
+    try {
+      const value = await tool.execute(
+        { to: 'a@example.com', subject: '会议改期', body: '改到周五' },
+        { agent: {}, callId: 's1' },
+      )
+      return { threw: false, sent, reason, value }
+    } catch (error) {
+      return { threw: error instanceof MailError && error.code === 'approval', sent, reason, value: null }
+    }
+  }
+  const missing = await run(undefined)
+  const rejected = await run(() => ({
+    request: async (req) => {
+      return req.reason.includes('a@example.com') ? 'rejected' : 'rejected'
+    },
+  }))
+  const allowed = await run(() => ({
+    request: async (req) => {
+      // reason 必须回显三项；否则拒绝，测试即失败。
+      return req.reason.includes('a@example.com')
+        && req.reason.includes('会议改期') && req.reason.includes('改到周五')
+        ? 'allowed-once'
+        : 'rejected'
+    },
+  }))
+  return missing.threw && missing.sent === 0
+    && rejected.threw && rejected.sent === 0
+    && !allowed.threw && allowed.sent === 1 && allowed.value.appended === true
+})
+
+await check('mail_draft writes once on approval and reports the folder', async () => {
+  let written = 0
+  const ctx = fakeContext()
+  registerMailTools(ctx, {
+    config: () => ({ ok: true, source: 'env', account }),
+    draft: async (request) => {
+      written += 1
+      return { folder: request.folder ?? 'Drafts', to: request.to, subject: request.subject, messageId: '<d@x>' }
+    },
+    approval: () => ({ request: async () => 'allowed-once' }),
+    draftFolder: () => undefined,
+  })
+  const tool = ctx.captured.find((item) => item.name === 'mail_draft')
+  const value = await tool.execute({ to: 'a@example.com', subject: '草稿', body: '内容' }, { agent: {}, callId: 'd1' })
+  return written === 1 && value.folder === 'Drafts' && value.subject === '草稿'
 })
 
 // ---- Python 自测 ---------------------------------------------------------------

@@ -11,8 +11,9 @@
  * (proof the restart happened) + `service_active` (proof it is healthy now).
  * v2 template: writing to an explicit absolute file → R2 + `file_exists`.
  * v3 template: archiving mail → R2 + `mail_archived` (the archive folder is
- * readable and non-empty). Matching templates stack: a combined intent keeps
- * both assertions instead of silently dropping one.
+ * readable and non-empty). v4 template: sending mail → R3 + `mail_sent`;
+ * drafting mail → R2 + `mail_drafted`. Matching templates stack: a combined
+ * intent keeps both assertions instead of silently dropping one.
  * Anything without a derivable assertion stays at its baseline risk, so the
  * "no criteria, no R2+" invariant is never bypassed.
  */
@@ -110,6 +111,36 @@ export function isMailArchiveIntent(intent: string): boolean {
   return MAIL_ARCHIVE_OP.some((pattern) => pattern.test(intent))
 }
 
+/** 发送操作；问句与否定不算。 */
+const MAIL_SEND_OP: readonly RegExp[] = [
+  new RegExp(`(?:发送|发出|寄出|发)\\s*(?:一封|一个|这封|那封)?\\s*[^。；;，,]{0,20}?${MAIL_TARGET}`, 'i'),
+  new RegExp(`(?:给|向|和)[^。；;，,]{0,30}?(?:发送|发出|寄出|发)[^。；;，,]{0,10}?${MAIL_TARGET}`, 'i'),
+  /\bsend\b[^.;,]{0,40}\b(?:e-?mail|mail)\b/i,
+]
+const MAIL_SEND_READ =
+  /(查看|看看|看一下|列出|显示|搜索|查找|已发送|发送记录|发送历史|发送状态|发送成功|发送失败|有没有(?:已)?发送|怎么发|如何发|能不能发|能否发送|可以发吗)/i
+const MAIL_SEND_NEGATION = /(不要|别|无需|不用|禁止)\s*(?:再)?\s*(?:发送|发出|寄出|发)/i
+
+export function isMailSendIntent(intent: string): boolean {
+  if (!MAIL_TOKEN.test(intent)) return false
+  if (MAIL_SEND_READ.test(intent) || MAIL_SEND_NEGATION.test(intent)) return false
+  return MAIL_SEND_OP.some((pattern) => pattern.test(intent))
+}
+
+/** 起草/保存草稿；读草稿夹不算。 */
+const MAIL_DRAFT_OP: readonly RegExp[] = [
+  new RegExp(`(?:起草|拟|写)\\s*(?:一封|一个|这封)?\\s*[^。；;，,]{0,20}?${MAIL_TARGET}`, 'i'),
+  /(?:保存(?:为|成)?|存为|存成)\s*(?:一封|一个)?\s*(?:邮件)?\s*草稿/i,
+  /\b(?:draft|save\s+as\s+draft)\b/i,
+]
+const MAIL_DRAFT_READ = /(查看|看看|打开|列出|显示|有多少|几封|草稿夹|草稿箱|草稿里)/i
+
+export function isMailDraftIntent(intent: string): boolean {
+  if (!MAIL_TOKEN.test(intent)) return false
+  if (MAIL_DRAFT_READ.test(intent)) return false
+  return MAIL_DRAFT_OP.some((pattern) => pattern.test(intent))
+}
+
 /**
  * Raise a baseline R0/R1 task when the intent is a state-changing service
  * operation that has a template assertion. `stop` is intentionally absent:
@@ -134,19 +165,25 @@ export function planTaskRisk(intent: string, baseline: RiskLevel): RiskPlan {
   }
 
   const archive = isMailArchiveIntent(intent)
+  const draft = isMailDraftIntent(intent)
+  const send = isMailSendIntent(intent)
   const file = writtenFileFor(intent)
-  if (archive || file !== null) {
+  if (archive || draft || send || file !== null) {
     // Templates stack: a combined "archive the mail and write a report to
     // /abs/path.txt" intent must keep both proofs, not silently drop one.
     const reasons = [
+      ...(send ? ['mail-send'] : []),
+      ...(draft ? ['mail-draft'] : []),
       ...(archive ? ['mail-archive'] : []),
       ...(file === null ? [] : [`file-write:${file}`]),
     ]
     const raw: unknown[] = [
+      ...(send ? [{ kind: 'mail_sent' }] : []),
+      ...(draft ? [{ kind: 'mail_drafted' }] : []),
       ...(archive ? [{ kind: 'mail_archived' }] : []),
       ...(file === null ? [] : [{ kind: 'file_exists', path: file }]),
     ]
-    return { risk: 'R2', reasons, assertions: prepareAssertions(raw) }
+    return { risk: send ? 'R3' : 'R2', reasons, assertions: prepareAssertions(raw) }
   }
   return { risk: baseline, reasons: [], assertions: [] }
 }

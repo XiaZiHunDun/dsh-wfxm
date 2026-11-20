@@ -16,6 +16,10 @@ export const DEFAULT_MAIL_CONFIG_PATH = join(homedir(), '.dsh/integrations/dsh-m
 /** 归档目标文件夹；不存在时由 IMAP 侧创建。 */
 export const DEFAULT_ARCHIVE_FOLDER = 'Archive'
 
+/** 草稿 / 已发送夹的默认名；实际名称由服务商候选项自动发现。 */
+export const DEFAULT_DRAFT_FOLDER = 'Drafts'
+export const DEFAULT_SENT_FOLDER = 'Sent'
+
 /**
  * `DSH_WFXM_MAIL_ARCHIVE_FOLDER` 覆盖归档夹；空值回落默认。
  * 非 ASCII 名称由 Python 侧编码成 IMAP modified UTF-7。
@@ -23,6 +27,70 @@ export const DEFAULT_ARCHIVE_FOLDER = 'Archive'
 export function readArchiveFolder(env: NodeJS.ProcessEnv = process.env): string {
   const raw = env.DSH_WFXM_MAIL_ARCHIVE_FOLDER?.trim()
   return raw === undefined || raw === '' ? DEFAULT_ARCHIVE_FOLDER : raw
+}
+
+export function readDraftFolder(env: NodeJS.ProcessEnv = process.env): string {
+  return readDraftFolderOverride(env) ?? DEFAULT_DRAFT_FOLDER
+}
+
+export function readSentFolder(env: NodeJS.ProcessEnv = process.env): string {
+  return readSentFolderOverride(env) ?? DEFAULT_SENT_FOLDER
+}
+
+/** 显式覆盖值；未配置时返回 undefined，让 Python 侧按服务商候选名发现。 */
+export function readDraftFolderOverride(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.DSH_WFXM_MAIL_DRAFT_FOLDER?.trim()
+  return raw === undefined || raw === '' ? undefined : raw
+}
+
+export function readSentFolderOverride(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.DSH_WFXM_MAIL_SENT_FOLDER?.trim()
+  return raw === undefined || raw === '' ? undefined : raw
+}
+
+export interface MailSmtp {
+  host: string
+  port: number
+  secure: boolean
+}
+
+export type MailSmtpResult =
+  | { ok: true; smtp: MailSmtp; source: 'env' | 'account' | 'derived' }
+  | { ok: false; code: 'config'; message: string }
+
+/**
+ * SMTP 设置。主机优先级：`DSH_WFXM_MAIL_SMTP_HOST` → 配置文件 `account.smtp.host`
+ * → 仅当 IMAP host 以 `imap.` 开头时替换为 `smtp.`；其它主机必须显式配置，
+ * 避免把邮件发到猜出来的域名。
+ */
+export function readMailSmtp(
+  account: MailAccount,
+  env: NodeJS.ProcessEnv = process.env,
+): MailSmtpResult {
+  const envHost = env.DSH_WFXM_MAIL_SMTP_HOST?.trim()
+  const configured = account.smtp?.host?.trim()
+  const derived = /^imap\./i.test(account.host)
+    ? account.host.replace(/^imap\./i, 'smtp.')
+    : ''
+  const host = envHost !== undefined && envHost !== '' ? envHost : configured !== undefined && configured !== '' ? configured : derived
+  if (host === '') {
+    return {
+      ok: false,
+      code: 'config',
+      message: `未配置 SMTP 主机：请设置 DSH_WFXM_MAIL_SMTP_HOST（IMAP ${account.host} 无法自动推导）`,
+    }
+  }
+  const rawPort = env.DSH_WFXM_MAIL_SMTP_PORT?.trim()
+  const port = rawPort !== undefined && rawPort !== '' ? Number(rawPort) : account.smtp?.port ?? 465
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return { ok: false, code: 'config', message: 'SMTP 端口无效（DSH_WFXM_MAIL_SMTP_PORT）' }
+  }
+  const envSecure = env.DSH_WFXM_MAIL_SMTP_SECURE?.trim()
+  const secure = envSecure !== undefined && envSecure !== ''
+    ? envSecure !== '0'
+    : account.smtp?.secure !== false
+  const source = envHost !== undefined && envHost !== '' ? 'env' : configured !== undefined && configured !== '' ? 'account' : 'derived'
+  return { ok: true, smtp: { host, port, secure }, source }
 }
 /**
  * 邮件凭据放在集成目录，**不要**复用 `~/.dsh/.credentials.yaml`：
@@ -38,6 +106,8 @@ export interface MailAccount {
   user: string
   /** 只用于 stdin 传给 Python；不落日志、不进 argv。 */
   password: string
+  /** 配置文件里的 SMTP 覆盖；环境变量优先（见 `readMailSmtp`）。 */
+  smtp?: { host?: string; port?: number; secure?: boolean }
 }
 
 export type MailConfigResult =
@@ -165,6 +235,12 @@ export function readMailAccount(options: MailConfigOptions = {}): MailConfigResu
     return { ok: false, code: 'config', message: `account 缺少 secretRef（${configPath}）` }
   }
 
+  const smtp = record.smtp
+  const smtpRecord = smtp !== null && typeof smtp === 'object' ? smtp as Record<string, unknown> : null
+  const smtpHost = typeof smtpRecord?.host === 'string' ? smtpRecord.host.trim() : undefined
+  const smtpPort = typeof smtpRecord?.port === 'number' ? smtpRecord.port : undefined
+  const smtpSecure = typeof smtpRecord?.secure === 'boolean' ? smtpRecord.secure : undefined
+
   return {
     ok: true,
     source: 'file',
@@ -174,6 +250,15 @@ export function readMailAccount(options: MailConfigOptions = {}): MailConfigResu
       secure: record.secure !== false,
       user,
       password,
+      ...smtpHost === undefined && smtpPort === undefined && smtpSecure === undefined
+        ? {}
+        : {
+            smtp: {
+              ...smtpHost === undefined ? {} : { host: smtpHost },
+              ...smtpPort === undefined ? {} : { port: smtpPort },
+              ...smtpSecure === undefined ? {} : { secure: smtpSecure },
+            },
+          },
     },
   }
 }

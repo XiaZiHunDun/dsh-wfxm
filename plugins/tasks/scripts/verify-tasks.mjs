@@ -117,7 +117,7 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     && names.includes('task_inputs')
     && names.includes('task_checkpoints')
     && names.includes('resource_locks')
-    && version.version === 10
+    && version.version === 11
     && ['input_tokens', 'output_tokens', 'cost_usd'].every((column) => columns.includes(column))
     && objects.includes('ux_task_events_seq')
     && objects.includes('task_events_no_update')
@@ -200,7 +200,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     && keptTask.taskRef === null
     && fresh.taskRef !== null
     && fresh.taskRef.length === 10
-    && version.version === 10
+    && version.version === 11
     && keptTask.isolation === 'serial'
     && fresh.isolation === 'serial'
     && fresh.worktreePath === null
@@ -376,6 +376,30 @@ await check('mail_archived survives the v10 CHECK constraint on a real row', () 
   }
   const row = store.listAssertions(task.id)[0]
   return row.kind === 'mail_archived' && row.status === 'pending'
+})
+
+await check('mail_sent / mail_drafted take defaults and a folder, reject bad minCount', () => {
+  const sent = prepareAssertions([{ kind: 'mail_sent' }])
+  const drafted = prepareAssertions([{ kind: 'mail_drafted', folder: '草稿箱', minCount: 2 }])
+  let bad = false
+  try {
+    prepareAssertions([{ kind: 'mail_sent', minCount: 0 }])
+  } catch {
+    bad = true
+  }
+  return sent.length === 1 && sent[0].kind === 'mail_sent' && sent[0].spec.minCount === 1
+    && drafted.length === 1 && drafted[0].kind === 'mail_drafted'
+    && drafted[0].spec.folder === '草稿箱' && drafted[0].spec.minCount === 2
+    && bad
+})
+
+await check('mail_sent / mail_drafted survive the v11 CHECK constraint on real rows', () => {
+  const task = store.createTask({ intent: 'mail send row', riskLevel: 'R3' })
+  for (const prepared of prepareAssertions([{ kind: 'mail_sent' }, { kind: 'mail_drafted' }])) {
+    store.addAssertion(task.id, prepared)
+  }
+  const kinds = store.listAssertions(task.id).map((row) => row.kind).sort()
+  return kinds.join(',') === 'mail_drafted,mail_sent'
 })
 
 await check('duplicate assertions are rejected', () => {
@@ -1729,6 +1753,33 @@ await check('mail_archived passes/fails/skips on the read-only Mail probe', asyn
     && unavailable.evidence.transient === true
     && noAdapter.status === 'skipped'
     && seen[0] === '已归档'
+})
+
+await check('mail_sent / mail_drafted use the Sent/Drafts purpose and pass/fail/skip', async () => {
+  const seen = []
+  const pass = await evaluateAssertion(
+    { kind: 'mail_sent', spec: { minCount: 1 } },
+    {
+      mailFolderCount: async (folder, purpose) => {
+        seen.push([folder, purpose])
+        return { folder: 'Sent', count: 3 }
+      },
+    },
+  )
+  const empty = await evaluateAssertion(
+    { kind: 'mail_drafted', spec: { minCount: 1 } },
+    { mailFolderCount: async () => ({ folder: 'Drafts', count: 0 }) },
+  )
+  const unavailable = await evaluateAssertion(
+    { kind: 'mail_sent', spec: { minCount: 1 } },
+    { mailFolderCount: async () => null },
+  )
+  const noAdapter = await evaluateAssertion({ kind: 'mail_drafted', spec: { minCount: 1 } })
+  return pass.status === 'pass' && pass.evidence.folder === 'Sent'
+    && empty.status === 'fail'
+    && unavailable.status === 'skipped' && unavailable.evidence.transient === true
+    && noAdapter.status === 'skipped'
+    && seen[0][0] === null && seen[0][1] === 'sent'
 })
 
 await check('R2 mail archive completes only when the Mail probe is mounted', async () => {

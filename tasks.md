@@ -2023,3 +2023,41 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 发布并重启（`2026.11.19-20`，`[startup] 8/8`）
 - [x] 真机：飞书「从邮件里提取待办」→ 直接回待办列表；间隔 >60s 重发仍重读邮箱（2026-11-20）
 - [x] 提交推送（ailearn）
+
+# Slice BO — J3 邮件起草与发送（2026-11-20）
+
+## BO1 邮件写入（Python + 配置）
+
+- [x] `mail-query.py` 新增 `draft` / `send`：MIME 构造、草稿 APPEND、SMTP SSL/STARTTLS、已发送副本
+- [x] 头注入拒绝（to/subject 无 CR/LF 与控制字符）；正文保留换行
+- [x] 草稿夹/已发送夹配置与候选名自动发现（`DSH_WFXM_MAIL_DRAFT_FOLDER` / `_SENT_FOLDER`）
+- [x] `config.ts`：`readMailSmtp`（`imap.*` → `smtp.*` 推导，否则 fail-closed）、`readDraftFolder`、`readSentFolder`
+- [x] self-test 覆盖 MIME、注入拒绝、SMTP 主机推导、候选夹匹配
+
+## BO2 工具与审批
+
+- [x] `query.ts`：`draftMail` / `sendMail` 包装，错误分类沿用
+- [x] `tools.ts`：`mail_draft`（R2）/ `mail_send`（R3）；工具内审批，reason 回显收件人/主题/正文摘要
+- [x] 未获 `allowed-once` 不写邮箱、不发送；返回结构化回执并渲染
+- [x] `MAIL_TOOL_RISK` 与 `apply()` 日志更新；governance 已批准白名单加入两个新工具
+
+## BO3 风险、断言与迁移
+
+- [x] `isMailSendIntent` → R3 + `mail_sent`；`isMailDraftIntent` → R2 + `mail_drafted`
+- [x] 问句/否定不升级；与归档/文件规则可叠加
+- [x] 新断言 kind `mail_sent` / `mail_drafted`（folder/minCount），`verify.ts` 复用只读计数
+- [x] tasks 迁移 v11 放宽 CHECK；`serve.mjs` 的 `mailFolderCount` 支持 purpose 与自动发现
+
+## BO4 前台、执行者与用例
+
+- [x] 决策 prompt：缺收件人/主题/正文 → reply 补充；正文 ≤300 字；规范 intent 格式
+- [x] 执行者指令层级：邮件三要素必须原样来自任务指令，缺字段 → `[[NEED_INPUT]]`
+- [x] `verify-mail 46` / `verify-risk 20` / `verify-tasks 122` / `verify-orchestrator 73` / `verify-approval-bridge 11`
+
+## BO5 文档、发布与真机
+
+- [x] 四门禁：`build` / `--noEmit` / `check-style 196 files` / `verify-all 47 passed`
+- [x] 文档：`docs/08` J3、`docs/09` J3、`docs/16 §12.53`、`AGENTS.md` Slice BO
+- [x] 发布并重启（`2026.11.20-1`，`[startup] 8/8`）
+- [ ] 真机：给自己发短邮件 → R3 卡回显三项 → 两次确认 → 回执；已发送夹计数增加；草稿落草稿夹
+- [ ] 提交推送（ailearn）

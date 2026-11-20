@@ -87,14 +87,50 @@ export interface MailArchiveResult {
 }
 
 export interface MailFolderCountRequest {
-  /** 目标夹；省略时由 Python 侧回落 `Archive`。 */
+  /** 目标夹；省略时由 Python 侧按 `role` 回落默认并尝试发现。 */
   folder?: string
+  /** 断言用途：决定默认夹与候选名（sent/drafted/archive）。 */
+  role?: 'archive' | 'sent' | 'drafted'
 }
 
 export interface MailFolderCountResult {
   folder: string
   /** 该夹的消息数（SELECT 的 EXISTS）。 */
   count: number
+}
+
+export interface MailDraftRequest {
+  to: string
+  subject: string
+  body: string
+  /** 目标草稿夹；省略时由 Python 侧发现或创建。 */
+  folder?: string
+}
+
+export interface MailDraftResult {
+  folder: string
+  to: string
+  subject: string
+  messageId: string
+}
+
+export interface MailSendRequest {
+  to: string
+  subject: string
+  body: string
+  /** 已发送副本夹；省略时由 Python 侧发现。 */
+  folder?: string
+}
+
+export interface MailSendResult {
+  to: string
+  subject: string
+  messageId: string
+  sentFolder: string
+  /** 已发送副本是否写入成功；发送成功但副本失败时为 false。 */
+  appended: boolean
+  /** 副本失败原因；没有问题时为空串。 */
+  warning: string
 }
 
 export interface QueryMailOptions {
@@ -189,8 +225,8 @@ function runScript(
 }
 
 export async function queryMail(
-  request: MailSearchRequest | MailReadRequest | MailArchiveRequest | MailFolderCountRequest,
-  options: QueryMailOptions & { action: 'search' | 'read' | 'archive' | 'count' },
+  request: MailSearchRequest | MailReadRequest | MailArchiveRequest | MailFolderCountRequest | MailDraftRequest | MailSendRequest,
+  options: QueryMailOptions & { action: 'search' | 'read' | 'archive' | 'count' | 'draft' | 'send' },
 ): Promise<Record<string, unknown>> {
   return runScript({ action: options.action, account: options.account, request }, options)
 }
@@ -229,6 +265,34 @@ export async function countMailFolder(
   return {
     folder: String(result.folder ?? request.folder ?? ''),
     count: Number(result.count ?? 0),
+  }
+}
+
+export async function draftMail(
+  request: MailDraftRequest,
+  options: QueryMailOptions,
+): Promise<MailDraftResult> {
+  const result = await queryMail(request, { ...options, action: 'draft' })
+  return {
+    folder: String(result.folder ?? request.folder ?? ''),
+    to: String(result.to ?? request.to),
+    subject: String(result.subject ?? request.subject),
+    messageId: String(result.messageId ?? ''),
+  }
+}
+
+export async function sendMail(
+  request: MailSendRequest,
+  options: QueryMailOptions,
+): Promise<MailSendResult> {
+  const result = await queryMail(request, { ...options, action: 'send' })
+  return {
+    to: String(result.to ?? request.to),
+    subject: String(result.subject ?? request.subject),
+    messageId: String(result.messageId ?? ''),
+    sentFolder: String(result.sentFolder ?? request.folder ?? ''),
+    appended: result.appended === true,
+    warning: typeof result.warning === 'string' ? result.warning : '',
   }
 }
 

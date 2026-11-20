@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict'
 
-const { isMailArchiveIntent, managedUnitFor, planTaskRisk } = await import('../lib/index.js')
+const { isMailArchiveIntent, isMailDraftIntent, isMailSendIntent, managedUnitFor, planTaskRisk } = await import('../lib/index.js')
 
 let pass = 0
 let fail = 0
@@ -127,6 +127,43 @@ check('规则叠加：归档 + 写绝对路径同时保留两条断言', () => {
 check('managedUnitFor 只认托管前缀', () => {
   assert.equal(managedUnitFor('重启 dsh-wfxm-managed-api.service'), 'dsh-wfxm-managed-api.service')
   return managedUnitFor('重启 nginx 服务') === 'dsh-wfxm-managed-nginx.service'
+})
+
+check('「发送邮件给 owner@example.com」升 R3，并带 mail_sent', () => {
+  const plan = planTaskRisk('发送邮件｜收件人：owner@example.com｜主题：周报｜正文：见附件', 'R1')
+  assert.equal(plan.risk, 'R3')
+  assert.deepEqual(plan.reasons, ['mail-send'])
+  assert.deepEqual(plan.assertions.map((item) => item.kind), ['mail_sent'])
+  assert.equal(plan.assertions[0].spec.minCount, 1)
+  assert.equal(isMailSendIntent('给张三发一封邮件'), true)
+  return true
+})
+
+check('「起草/保存草稿」升 R2，并带 mail_drafted', () => {
+  const plan = planTaskRisk('起草邮件｜收件人：a@example.com｜主题：改期｜正文：改到周五', 'R1')
+  assert.equal(plan.risk, 'R2')
+  assert.deepEqual(plan.reasons, ['mail-draft'])
+  assert.deepEqual(plan.assertions.map((item) => item.kind), ['mail_drafted'])
+  assert.equal(isMailDraftIntent('把邮件保存为草稿'), true)
+  return true
+})
+
+check('发送/草稿的问句与否定不升级', () => {
+  for (const text of ['查看已发送邮件', '发送记录里有什么', '有没有发送成功', '怎么发邮件', '不要发送这封邮件', '别发邮件了']) {
+    assert.equal(planTaskRisk(text, 'R1').risk, 'R1', text)
+  }
+  for (const text of ['看看草稿箱', '草稿夹里有几封', '列出草稿']) {
+    assert.equal(planTaskRisk(text, 'R1').risk, 'R1', text)
+  }
+  return true
+})
+
+check('发送 + 归档同时出现时保留两条断言且风险取 R3', () => {
+  const plan = planTaskRisk('把邮件归档，并发送邮件给 a@example.com', 'R1')
+  assert.equal(plan.risk, 'R3')
+  assert.deepEqual(plan.reasons.sort(), ['mail-archive', 'mail-send'])
+  assert.deepEqual(plan.assertions.map((item) => item.kind).sort(), ['mail_archived', 'mail_sent'])
+  return true
 })
 
 console.log(`\nrisk: ${pass} passed, ${fail} failed`)

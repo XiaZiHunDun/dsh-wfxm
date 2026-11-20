@@ -66,6 +66,12 @@ check('other tools still fall through (fail-closed)', other === 'denied' && dele
 const mail = await answer({ toolName: 'mail_archive', arguments: { uids: [7] } }, passThrough)
 check('mail_archive is allowed once by the task-level approval', mail === 'allowed-once' && delegated === 1, String(mail))
 
+const send = await answer({ toolName: 'mail_send', arguments: {} }, passThrough)
+check('mail_send is allowed once by the task-level approval', send === 'allowed-once' && delegated === 1, String(send))
+
+const draft = await answer({ toolName: 'mail_draft', arguments: {} }, passThrough)
+check('mail_draft is allowed once by the task-level approval', draft === 'allowed-once' && delegated === 1, String(draft))
+
 const search = await answer({ toolName: 'mail_search', arguments: {} }, passThrough)
 check('mail_search still falls through', search === 'denied' && delegated === 2, String(search))
 

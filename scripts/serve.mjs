@@ -52,8 +52,10 @@ import {
   parseDigestEnv,
   parseMailTodos,
   readArchiveFolder,
+  readDraftFolder,
   readMail,
   readMailAccount,
+  readSentFolder,
   renderMailTodos,
   searchMail,
 } from '@dsh-wfxm/mail'
@@ -337,15 +339,18 @@ async function main() {
                   return { activeState: 'unknown', activeEnteredAtMs: null }
                 }
               },
-              // `mail_archived` 的只读探针（Slice BM）：只 SELECT 归档夹取
-              // EXISTS 计数，不读正文、不移动。邮箱未配置或 IMAP 失败返回
-              // null → 断言 skipped → 完成被拒（fail-closed）。
-              mailFolderCount: async (folder) => {
+              // 邮件夹只读探针（Slice BM/BO）：只 SELECT 取 EXISTS 计数，
+              // 不读正文、不移动。邮箱未配置或 IMAP 失败返回 null →
+              // 断言 skipped → 完成被拒（fail-closed）。
+              mailFolderCount: async (folder, purpose) => {
                 const account = readMailAccount()
                 if (!account.ok) return null
-                const target = folder ?? readArchiveFolder()
+                const role = purpose === 'sent' ? 'sent' : purpose === 'drafted' ? 'drafted' : 'archive'
+                const target = folder ?? (role === 'sent'
+                  ? readSentFolder()
+                  : role === 'drafted' ? readDraftFolder() : readArchiveFolder())
                 try {
-                  const result = await countMailFolder({ folder: target }, { account: account.account })
+                  const result = await countMailFolder({ folder: target, role }, { account: account.account })
                   return { folder: result.folder, count: result.count }
                 } catch {
                   return null

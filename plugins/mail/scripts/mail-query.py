@@ -21,11 +21,16 @@ import email.policy
 import imaplib
 import json
 import re
+import smtplib
 import socket
+import ssl
 import sys
+import time
 from datetime import datetime
 from email.header import decode_header
+from email.message import EmailMessage
 from email.parser import BytesParser
+from email.utils import formatdate, make_msgid
 from html.parser import HTMLParser
 
 MAX_LIMIT = 50
@@ -34,7 +39,15 @@ MAX_SCAN = 200
 MAX_BODY_CAP = 20000
 DEFAULT_BODY = 4000
 DEFAULT_ARCHIVE_FOLDER = "Archive"
+DEFAULT_DRAFT_FOLDER = "Drafts"
+DEFAULT_SENT_FOLDER = "Sent"
+MAX_SUBJECT = 200
+MAX_OUTGOING_BODY = 4000
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+ADDRESS_RE = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+SENT_FOLDER_CANDIDATES = ("Sent", "已发送", "Sent Items", "Sent Messages")
+DRAFT_FOLDER_CANDIDATES = ("Drafts", "草稿", "草稿箱")
 
 
 class MailError(Exception):
@@ -399,17 +412,193 @@ def archive_mail(imap, request: dict) -> dict:
 
 
 def count_mail(imap, request: dict) -> dict:
-    """只读选区并返回 EXISTS 计数，用作 `mail_archived` 判据的探针。"""
-    folder = str(request.get("folder") or DEFAULT_ARCHIVE_FOLDER)
-    quoted = quote_mailbox(encode_mailbox(folder))
+    """只读选区并返回 EXISTS 计数，用作 `mail_archived` / `mail_sent` 判据的探针。"""
+    requested = request.get("folder")
+    role = request.get("role")
+    if requested:
+        folder = str(requested)
+    elif role == "sent":
+        folder = DEFAULT_SENT_FOLDER
+    elif role == "drafted":
+        folder = DEFAULT_DRAFT_FOLDER
+    else:
+        folder = DEFAULT_ARCHIVE_FOLDER
+    resolved = folder
+    if not folder_available(imap, folder) and role in ("sent", "drafted"):
+        # 各服务商命名不同（Sent / 已发送 / Sent Items…）；只读尝试候选。
+        found = discover_folder(imap, candidates_for(role))
+        if found is not None:
+            resolved = found
+    quoted = quote_mailbox(encode_mailbox(resolved))
     typ, data = imap.select(quoted, readonly=True)
     if typ != "OK":
-        raise MailError("protocol", f"cannot open folder {folder!r}: {data!r}")
+        raise MailError("protocol", f"cannot open folder {resolved!r}: {data!r}")
     try:
         count = int(data[0])
     except (TypeError, ValueError, IndexError):
         count = 0
-    return {"folder": folder, "count": count}
+    return {"folder": resolved, "count": count}
+
+
+def candidates_for(role: str) -> tuple[str, ...]:
+    if role == "sent":
+        return SENT_FOLDER_CANDIDATES
+    if role == "drafted":
+        return DRAFT_FOLDER_CANDIDATES
+    return (DEFAULT_ARCHIVE_FOLDER,)
+
+
+def folder_available(imap, folder: str) -> bool:
+    try:
+        typ, _ = imap.select(quote_mailbox(encode_mailbox(folder)), readonly=True)
+    except imaplib.IMAP4.error:
+        return False
+    return typ == "OK"
+
+
+def discover_folder(imap, candidates) -> str | None:
+    for name in candidates:
+        if folder_available(imap, name):
+            return name
+    return None
+
+
+def ensure_writable_folder(imap, folder: str) -> str:
+    if folder_available(imap, folder):
+        return folder
+    encoded = encode_mailbox(folder)
+    quoted = quote_mailbox(encoded)
+    try:
+        imap.create(quoted)
+    except imaplib.IMAP4.error:
+        pass
+    if not folder_available(imap, folder):
+        raise MailError("protocol", f"folder {folder!r} is not available")
+    return folder
+
+
+def validate_outgoing(request: dict) -> dict:
+    to = str(request.get("to") or "").strip()
+    subject = str(request.get("subject") or "").strip()
+    body = request.get("body")
+    if not ADDRESS_RE.match(to):
+        raise MailError("protocol", "to must be a single email address")
+    if CONTROL_RE.search(subject):
+        raise MailError("protocol", "subject must not contain control characters")
+    if subject == "" or len(subject) > MAX_SUBJECT:
+        raise MailError("protocol", f"subject must be 1..{MAX_SUBJECT} characters")
+    if not isinstance(body, str) or body.strip() == "":
+        raise MailError("protocol", "body must be a non-empty string")
+    if len(body) > MAX_OUTGOING_BODY:
+        raise MailError("protocol", f"body must be at most {MAX_OUTGOING_BODY} characters")
+    return {"to": to, "subject": subject, "body": body}
+
+
+def build_message(account: dict, request: dict) -> tuple[EmailMessage, bytes]:
+    fields = validate_outgoing(request)
+    sender = str(account.get("user") or "").strip()
+    if not ADDRESS_RE.match(sender):
+        raise MailError("config", "account.user is not an email address")
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = fields["to"]
+    message["Subject"] = fields["subject"]
+    message["Date"] = formatdate(localtime=True)
+    message["Message-ID"] = make_msgid(domain=sender.split("@", 1)[1])
+    message.set_content(fields["body"], subtype="plain", charset="utf-8")
+    return message, message.as_bytes()
+
+
+def append_message(imap, folder: str, raw: bytes, flags: str) -> None:
+    mailbox = quote_mailbox(encode_mailbox(folder)).decode("ascii")
+    typ, data = imap.append(mailbox, flags, imaplib.Time2Internaldate(time.time()), raw)
+    if typ != "OK":
+        raise MailError("protocol", f"APPEND to {folder!r} failed: {data!r}")
+
+
+def smtp_settings(account: dict) -> dict:
+    smtp = account.get("smtp") or {}
+    host = str(smtp.get("host") or "").strip()
+    if host == "":
+        raise MailError("config", "SMTP host is not configured")
+    try:
+        port = int(smtp.get("port", 465))
+    except (TypeError, ValueError) as error:
+        raise MailError("config", "SMTP port must be an integer") from error
+    return {"host": host, "port": port, "secure": smtp.get("secure") is not False}
+
+
+def smtp_send(account: dict, raw: bytes) -> None:
+    settings = smtp_settings(account)
+    user = account.get("user")
+    password = account.get("password")
+    if not user or not password:
+        raise MailError("config", "mail account is missing user/password")
+    context = ssl.create_default_context()
+    try:
+        if settings["secure"]:
+            client = smtplib.SMTP_SSL(settings["host"], settings["port"], timeout=20, context=context)
+        else:
+            client = smtplib.SMTP(settings["host"], settings["port"], timeout=20)
+            client.starttls(context=context)
+    except (socket.timeout, TimeoutError) as error:
+        raise MailError("timeout", f"connect to SMTP {settings['host']}:{settings['port']} timed out") from error
+    except (OSError, smtplib.SMTPException) as error:
+        raise MailError("network", f"cannot connect to SMTP {settings['host']}:{settings['port']}: {error}") from error
+    try:
+        client.login(user, password)
+        client.send_message(BytesParser(policy=email.policy.default).parsebytes(raw))
+    except smtplib.SMTPAuthenticationError as error:
+        raise MailError("auth", f"SMTP login failed: {error}") from error
+    except smtplib.SMTPException as error:
+        raise MailError("protocol", f"SMTP send failed: {error}") from error
+    finally:
+        try:
+            client.quit()
+        except Exception:
+            pass
+
+
+def send_mail(imap, account: dict, request: dict) -> dict:
+    """SMTP 发送；成功后尽力向已发送夹追加副本（失败只告警）。"""
+    message, raw = build_message(account, request)
+    smtp_send(account, raw)
+    requested = str(request.get("folder") or "").strip()
+    sent_folder = requested or discover_folder(imap, SENT_FOLDER_CANDIDATES) or DEFAULT_SENT_FOLDER
+    appended = False
+    warning = None
+    try:
+        if not folder_available(imap, sent_folder):
+            sent_folder = ensure_writable_folder(imap, sent_folder)
+        append_message(imap, sent_folder, raw, "\\Seen")
+        appended = True
+    except Exception as error:  # 已发出：副本失败不能反悔
+        warning = f"sent copy not saved: {type(error).__name__}: {error}"
+    return {
+        "to": str(message["To"]),
+        "subject": str(message["Subject"]),
+        "messageId": str(message["Message-ID"]),
+        "sentFolder": sent_folder,
+        "appended": appended,
+        "warning": warning,
+    }
+
+
+def draft_mail(imap, account: dict, request: dict) -> dict:
+    """把草稿写入草稿夹；草稿夹不可用时按候选名发现或创建。"""
+    message, raw = build_message(account, request)
+    requested = str(request.get("folder") or "").strip()
+    if requested:
+        folder = ensure_writable_folder(imap, requested)
+    else:
+        folder = discover_folder(imap, DRAFT_FOLDER_CANDIDATES) or ensure_writable_folder(imap, DEFAULT_DRAFT_FOLDER)
+    append_message(imap, folder, raw, "\\Draft")
+    return {
+        "folder": folder,
+        "to": str(message["To"]),
+        "subject": str(message["Subject"]),
+        "messageId": str(message["Message-ID"]),
+    }
 
 
 def send_client_id(imap) -> None:
@@ -478,6 +667,37 @@ def self_test() -> int:
     check("archive strategy move", archive_strategy(b"IMAP4rev1 MOVE UIDPLUS") == "move")
     check("archive strategy copy-expunge", archive_strategy(b"IMAP4rev1 UIDPLUS") == "copy-expunge")
     check("archive strategy unsupported", archive_strategy(b"IMAP4rev1") is None)
+    check("sent candidates", "Sent" in candidates_for("sent") and "已发送" in candidates_for("sent"))
+    check("draft candidates", "Drafts" in candidates_for("drafted") and "草稿" in candidates_for("drafted"))
+
+    outgoing = validate_outgoing({"to": "a@example.com", "subject": "你好", "body": "第一行\n第二行"})
+    check("outgoing keeps newlines", outgoing["body"] == "第一行\n第二行")
+    rejected = 0
+    for bad in (
+        {"to": "a@example.com\r\nBcc: x@example.com", "subject": "s", "body": "b"},
+        {"to": "a@example.com", "subject": "s\r\nBcc: x@example.com", "body": "b"},
+        {"to": "not-an-address", "subject": "s", "body": "b"},
+        {"to": "a@example.com", "subject": "", "body": "b"},
+        {"to": "a@example.com", "subject": "s", "body": "  "},
+    ):
+        try:
+            validate_outgoing(bad)
+        except MailError:
+            rejected += 1
+    check("outgoing rejects injection and empty fields", rejected == 5)
+
+    smtp, raw_message = build_message(
+        {"user": "me@example.com", "smtp": {"host": "smtp.example.com"}},
+        {"to": "a@example.com", "subject": "会议改期", "body": "改到周五"},
+    )
+    check("message from user", smtp["From"] == "me@example.com")
+    check("message to", smtp["To"] == "a@example.com")
+    check("message subject decodes", smtp["Subject"] == "会议改期")
+    check("message has id", str(smtp["Message-ID"]).startswith("<"))
+    check("message raw utf-8", b"=?utf-8?" in raw_message.lower() or b"\xe4\xbc\x9a\xe8\xae\xae" in raw_message)
+    check("smtp host", smtp_settings({"smtp": {"host": "smtp.example.com"}})["host"] == "smtp.example.com")
+    check("smtp secure default", smtp_settings({"smtp": {"host": "smtp.example.com"}})["secure"] is True)
+    check("smtp plain", smtp_settings({"smtp": {"host": "smtp.example.com", "secure": False}})["secure"] is False)
 
     raw = (
         "From: =?UTF-8?B?5byg5LiJ?= <a@example.com>\r\n"
@@ -531,19 +751,24 @@ def main() -> int:
     action = payload.get("action")
     if action == "self-test":
         return self_test()
-    if action not in ("search", "read", "archive", "count"):
+    if action not in ("search", "read", "archive", "count", "draft", "send"):
         return emit_error("protocol", f"unknown action {action!r}")
 
     imap = None
     try:
         request = payload.get("request") or {}
-        imap = connect(payload.get("account") or {})
+        account = payload.get("account") or {}
+        imap = connect(account)
         if action == "search":
             result = search_mail(imap, request)
         elif action == "read":
             result = read_mail(imap, request)
         elif action == "count":
             result = count_mail(imap, request)
+        elif action == "draft":
+            result = draft_mail(imap, account, request)
+        elif action == "send":
+            result = send_mail(imap, account, request)
         else:
             result = archive_mail(imap, request)
         print(json.dumps({"ok": True, **result}, ensure_ascii=False))

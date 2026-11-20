@@ -206,6 +206,19 @@ export function prepareAssertion(
       if (folder !== undefined) spec.folder = folder
       return { kind: 'mail_archived', spec }
     }
+    case 'mail_sent':
+    case 'mail_drafted': {
+      // Same shape as `mail_archived`; omitted folder means the adapter's
+      // default for that role (Sent / Drafts, or the provider's discovered name).
+      const folder = raw.folder === undefined ? undefined : text(raw.folder, `${kind}.folder`, MAX_SHORT_TEXT)
+      const minCount = raw.minCount === undefined ? 1 : raw.minCount
+      if (typeof minCount !== 'number' || !Number.isInteger(minCount) || minCount < 1 || minCount > 10_000) {
+        invalid(`${kind}.minCount must be an integer in 1..10000`)
+      }
+      const spec: JsonObject = { minCount }
+      if (folder !== undefined) spec.folder = folder
+      return { kind: kind as AssertionKind, spec }
+    }
   }
   return invalid('unreachable assertion kind')
 }
