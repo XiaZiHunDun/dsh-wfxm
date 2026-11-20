@@ -2059,5 +2059,5 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 四门禁：`build` / `--noEmit` / `check-style 196 files` / `verify-all 47 passed`
 - [x] 文档：`docs/08` J3、`docs/09` J3、`docs/16 §12.53`、`AGENTS.md` Slice BO
 - [x] 发布并重启（`2026.11.20-1`，`[startup] 8/8`）
-- [ ] 真机：给自己发短邮件 → R3 卡回显三项 → 两次确认 → 回执；已发送夹计数增加；草稿落草稿夹
-- [ ] 提交推送（ailearn）
+- [x] 真机：草稿 R2 一次确认 → `mail_drafted=pass`（Drafts 1）；发送 R3 两次确认 → `mail_sent=pass`（已发送 4），邮箱收到测试邮件（2026-11-20）
+- [x] 提交推送（ailearn）
