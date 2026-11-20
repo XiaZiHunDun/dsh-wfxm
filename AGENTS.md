@@ -558,6 +558,12 @@
     `reminded_at` + outbox dedupeKey 双层去重（`DSH_WFXM_CALENDAR_REMINDER_MINUTES=0` 关闭）。
     `verify-calendar 23` / `verify-risk 23` / `verify-tasks 125` /
     `verify-orchestrator 79`（[16 §12.54](docs/16-部署与运行.md) / [§12.55](docs/16-部署与运行.md)）。
+  - **B2 项目结构自动推导（Slice BR）**：项目注册补齐最后一项人工填写。`scripts/lib/project-detect.mjs`
+    只读探测：`prepareCmd` 按 lockfile 优先级（pnpm → npm → yarn → bun → cargo → go），
+    `rulesDoc` 按 `AGENTS.md` → `CLAUDE.md` → `README.md` → `README.rst` → `CONTRIBUTING.md`。
+    新增 `--rules-doc`；显式 `--prepare-cmd` / `--rules-doc` 覆盖推断、空串清空；显式 rulesDoc
+    必须是 root 内现有文件。`update` 不传字段则保留原值（不静默重推）。VCS 探测沿用 `<root>/.git`。
+    `verify-projects-cli 13`；只改 CLI，不涉及服务运行时。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

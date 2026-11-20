@@ -2116,4 +2116,22 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `verify-calendar` 17 → 23 例（窗口/幂等/升级/文本/无绑定/失败/关闭/改期）
 - [x] 四门禁全绿并发布（`2026.11.20-4`；生产库原地升级到 calendar v2；日志 `calendar:reminder enabled (lead=10m, every=60s)`）
 - [x] 真机：13:50:31 扫描入队（`evt_5d2a…` → outbox `01a1f781…`），outbox `status=sent`、`reminded_at` 已写；测试事件已删除
-- [ ] 提交推送（ailearn）
+- [x] 提交推送（ailearn）
+
+# Slice BR — B2 项目结构自动推导（一期收口）
+
+## BR1 自动推导
+
+- [x] 新增 `scripts/lib/project-detect.mjs`：`detectPrepareCmd`（pnpm → npm → yarn → bun → cargo → go）、
+      `detectRulesDoc`（`AGENTS.md` → `CLAUDE.md` → `README.md` → `README.rst` → `CONTRIBUTING.md`）
+- [x] `scripts/projects.mjs` 接线：`add` 缺省即推断；新增 `--rules-doc`；显式值覆盖推断、空串清空；
+      显式 rulesDoc 必须是 root 内现有文件
+- [x] `update` 不传字段保留原值（不静默重推）；`--root` 变更不重推断
+
+## BR2 用例与门禁
+
+- [x] `verify-projects-cli` 10 → 13 例（lockfile 优先级、rulesDoc 优先级、显式覆盖/清空、缺失与越界拒绝）
+- [x] `check-style`、`verify-all` 全绿（48 套件 + preimages advisory）
+- [x] 文档：[09 §2 B2 / §9.1 / §9.3](docs/09-能力对照与实现路径.md)、[16 §12.17](docs/16-部署与运行.md)、`AGENTS.md`
+- [x] 提交推送（`XiaZiHunDun <cuiyangjs@163.com>`；ailearn 推送）
+- 说明：只改 CLI，不涉及服务运行时，无需发布/重启

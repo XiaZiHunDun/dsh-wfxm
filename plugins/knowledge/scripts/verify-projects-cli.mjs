@@ -64,6 +64,13 @@ mkdirSync(plainDir2)
 const otherGitRepo = makeGitRepo('repo-b', true)
 const thirdGitRepo = makeGitRepo('repo-c', true)
 const bareGitRepo = makeGitRepo('repo-d')
+const detectRepo = makeGitRepo('repo-detect')
+writeFileSync(join(detectRepo, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
+writeFileSync(join(detectRepo, 'package-lock.json'), '{}\n')
+writeFileSync(join(detectRepo, 'AGENTS.md'), '# rules\n')
+const npmRepo = makeGitRepo('repo-npm')
+writeFileSync(join(npmRepo, 'package-lock.json'), '{}\n')
+const explicitRepo = makeGitRepo('repo-explicit')
 const missingRoot = join(dir, 'missing')
 const filePath = join(dir, 'a-file')
 writeFileSync(filePath, 'not a directory\n')
@@ -206,6 +213,48 @@ await check('unknown command / missing arguments exit 1', () => {
   const noRoot = run(['add', '--name', 'incomplete'])
   assert.equal(noRoot.status, 1)
   assert.match(noRoot.stderr, /--root/)
+  return true
+})
+
+await check('B2: add auto-detects prepareCmd (pnpm > npm) and rulesDoc (AGENTS > README)', () => {
+  const detected = run(['add', '--name', 'auto', '--root', detectRepo])
+  assert.equal(detected.status, 0, detected.stderr)
+  const project = byName('auto')
+  assert.equal(project.prepareCmd, 'pnpm install --frozen-lockfile')
+  assert.equal(project.rulesDoc, 'AGENTS.md')
+
+  const npm = run(['add', '--name', 'npm-auto', '--root', npmRepo])
+  assert.equal(npm.status, 0, npm.stderr)
+  assert.equal(byName('npm-auto').prepareCmd, 'npm ci')
+  assert.equal(byName('npm-auto').rulesDoc, 'README.md')
+  return true
+})
+
+await check('B2: explicit --prepare-cmd/--rules-doc override detection; empty clears', () => {
+  const explicit = run([
+    'add', '--name', 'explicit', '--root', explicitRepo,
+    '--prepare-cmd', 'make build', '--rules-doc', 'README.md',
+  ])
+  assert.equal(explicit.status, 0, explicit.stderr)
+  assert.equal(byName('explicit').prepareCmd, 'make build')
+  assert.equal(byName('explicit').rulesDoc, 'README.md')
+
+  const cleared = run(['update', 'explicit', '--prepare-cmd', '', '--rules-doc', ''])
+  assert.equal(cleared.status, 0, cleared.stderr)
+  assert.equal(byName('explicit').prepareCmd, null)
+  assert.equal(byName('explicit').rulesDoc, null)
+  return true
+})
+
+await check('B2: an explicit rulesDoc must be an existing file inside the root', () => {
+  const missing = run(['update', 'explicit', '--rules-doc', 'missing.md'])
+  assert.equal(missing.status, 1)
+  assert.match(missing.stderr, /does not exist or is not a file/)
+
+  const escape = run(['update', 'explicit', '--rules-doc', '../outside.md'])
+  assert.equal(escape.status, 1)
+  assert.match(escape.stderr, /inside --root/)
+  assert.equal(byName('explicit').rulesDoc, null)
   return true
 })
 
