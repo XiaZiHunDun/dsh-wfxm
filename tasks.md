@@ -2148,5 +2148,5 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
       任务 `e6chptr5qc` `succeeded`，`project_id=a44583c7…`，
       worktree `/var/lib/dsh-wfxm/projects/dsh-wfxm/.agents/worktrees/e6chptr5qc`（分支 `wfxm/e6chptr5qc`），
       文件 `hello-wfxm.md` 仅存在于 worktree，主仓库 `git status` 干净（仅 `?? .agents/`）
-- 遗留：worktree 未合并（manual）；`demo` 仍在库
+- 清理：`release --reason abandoned`（worktree 已删、`wfxm/e6chptr5qc` 分支已删）；生产副本已 reset 到 `7a08e18`；`demo` 仍在库
 - [x] 巡检告警 `dsh-wfxm-backup.service` 失败：`/etc/dsh-wfxm/env` 改 `0640 root:dshwfxm` → 手工触发备份 `Result=success`（新归档 + `.sha256`）
