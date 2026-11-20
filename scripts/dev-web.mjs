@@ -33,6 +33,8 @@ const CHAT = 'web-chat'
 const port = Number(process.env.DSH_WFXM_DEV_PORT ?? 8787)
 const root = process.env.DSH_WFXM_DEV_ROOT ?? join(process.cwd(), '.wfxm', 'dev')
 const dbPath = join(root, 'ops.sqlite')
+// worker 里的日历工具与宿主读同一个库。
+process.env.DSH_WFXM_DB ??= dbPath
 const workspace = join(root, 'workspace')
 mkdirSync(workspace, { recursive: true })
 if (process.env.DSH_WFXM_DEV_RESET === '1') {

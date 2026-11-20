@@ -1,7 +1,7 @@
 {
   "name": "@dsh-wfxm/calendar",
   "version": "0.1.0",
-  "description": "dsh-wfxm Feishu calendar (J4): app-owned calendar view/create/update through three narrow tools",
+  "description": "dsh-wfxm server-side calendar (J4): local event store exposed through three narrow tools",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -23,14 +23,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@dsh-wfxm/feishu": "workspace:*",
-    "@larksuiteoapi/node-sdk": "1.73.0"
+    "better-sqlite3": "^13.0.3"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.10.0",
     "typescript": "^5.9.3"
   }

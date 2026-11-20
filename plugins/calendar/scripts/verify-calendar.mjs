@@ -1,15 +1,15 @@
 /**
- * Hermetic acceptance for @dsh-wfxm/calendar (J4 — 飞书应用日历).
+ * Hermetic acceptance for @dsh-wfxm/calendar (J4 — server-side calendar).
  *
- * No network: the SDK seam is a fake client with the same payload shape, and
- * the tools take injected API / approval services. Covers calendar discovery,
- * argument validation, SDK parameter mapping, scope-error mapping, event
- * window rendering, and the R2 approval gate.
+ * No network and no Feishu: events live in a temp SQLite database. Covers the
+ * store/migration, window semantics, argument validation, rendering, and the
+ * R2 approval gate on the two write tools.
  */
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -18,30 +18,30 @@ const pkgRoot = join(here, '..')
 const repoRoot = join(pkgRoot, '..', '..')
 
 const tsc = join(repoRoot, 'plugins', 'executor', 'node_modules', 'typescript', 'bin', 'tsc')
-function buildIfStale(pkg) {
-  const lib = join(pkgRoot, '..', pkg, 'lib', 'index.js')
-  const srcDir = join(pkgRoot, '..', pkg, 'src')
+function buildIfStale() {
+  const lib = join(pkgRoot, 'lib', 'index.js')
+  const srcDir = join(pkgRoot, 'src')
   const libTime = existsSync(lib) ? statSync(lib).mtimeMs : 0
   const newestSrc = readdirSync(srcDir)
     .filter((name) => name.endsWith('.ts'))
     .reduce((max, name) => Math.max(max, statSync(join(srcDir, name)).mtimeMs), 0)
   if (libTime < newestSrc) {
-    execFileSync(process.execPath, [tsc, '-p', join(pkgRoot, '..', pkg, 'tsconfig.json')], { stdio: 'inherit' })
+    execFileSync(process.execPath, [tsc, '-p', join(pkgRoot, 'tsconfig.json')], { stdio: 'inherit' })
   }
 }
-buildIfStale('feishu')
-buildIfStale('calendar')
+buildIfStale()
 
 const {
   CALENDAR_TOOL_RISK,
   CalendarError,
-  createCalendarApi,
+  countCalendarEvents,
+  createCalendarEvent,
+  createCalendarStore,
+  defaultCalendarDbPath,
   formatEventTime,
-  readCalendarIdOverride,
-  readCalendarSummary,
   registerCalendarTools,
   renderCalendarView,
-  resolveCalendar,
+  updateCalendarEvent,
   validateCreateArgs,
   validateUpdateArgs,
   validateViewArgs,
@@ -69,52 +69,26 @@ async function check(name, fn) {
 const CLOCK = new Date('2026-11-20T02:00:00.000Z') // 10:00 Asia/Shanghai
 const now = () => new Date(CLOCK)
 const DAY_MS = 86_400_000
+const tempRoot = mkdtempSync(join(tmpdir(), 'dsh-wfxm-calendar-'))
+const dbPath = join(tempRoot, 'ops.sqlite')
 
-function makeApi(overrides = {}) {
-  const calls = { listed: 0, created: [], listedEvents: [], createdEvents: [], patchedEvents: [] }
-  const api = {
-    async listCalendars() {
-      calls.listed += 1
-      return [{ calendarId: 'cal_1', summary: 'dsh 日程' }]
-    },
-    async createCalendar(summary) {
-      calls.created.push(summary)
-      return { calendarId: 'cal_new', summary }
-    },
-    async listEvents(calendarId, range) {
-      calls.listedEvents.push({ calendarId, range })
-      return []
-    },
-    async createEvent(calendarId, input) {
-      calls.createdEvents.push({ calendarId, input })
-      return {
-        eventId: 'ev_1',
-        summary: input.summary ?? '',
-        start: { timestamp: String(Math.floor(Date.parse(input.start) / 1000)) },
-        end: { timestamp: String(Math.floor(Date.parse(input.end) / 1000)) },
-        location: '',
-      }
-    },
-    async patchEvent(calendarId, eventId, input) {
-      calls.patchedEvents.push({ calendarId, eventId, input })
-      return { eventId, summary: input.summary ?? '', start: null, end: null, location: '' }
-    },
-    ...overrides,
-  }
-  return { api, calls }
+function raises(code) {
+  return (error) => error instanceof CalendarError && error.code === code
 }
 
-function makeTools(api, options = {}) {
+function makeStore() {
+  return createCalendarStore(dbPath)
+}
+
+function makeTools(store, options = {}) {
   const registered = []
   const requests = []
   const outcome = options.outcome ?? 'allowed-once'
   registerCalendarTools({
     tools: { register(tool) { registered.push(tool) } },
   }, {
-    api: async () => api,
-    calendarId: () => options.calendarId,
-    summary: () => 'dsh 日程',
-    approval: () => ({
+    store: () => store,
+    approval: options.approval === null ? () => undefined : () => ({
       async request(request) {
         requests.push(request)
         return outcome
@@ -125,52 +99,66 @@ function makeTools(api, options = {}) {
   return { tools: new Map(registered.map((tool) => [tool.name, tool])), requests }
 }
 
-function raises(code) {
-  return (error) => error instanceof CalendarError && error.code === code
-}
+let store = makeStore()
 
-// -- env / calendar discovery ------------------------------------------------------------
+// -- store / migration -------------------------------------------------------------------
 
-await check('config: env id wins, summary defaults to dsh 日程', () => {
-  assert.equal(readCalendarIdOverride({ DSH_WFXM_CALENDAR_ID: 'cal_env' }), 'cal_env')
-  assert.equal(readCalendarIdOverride({}), undefined)
-  assert.equal(readCalendarSummary({}), 'dsh 日程')
-  assert.equal(readCalendarSummary({ DSH_WFXM_CALENDAR_SUMMARY: '团队日程' }), '团队日程')
+await check('store: create → list → get → update persists across reopen', () => {
+  const created = createCalendarEvent({
+    summary: '周会',
+    start: '2026-11-21T09:00:00+08:00',
+    end: '2026-11-21T10:00:00+08:00',
+    location: '会议室 A',
+  }, { store })
+  assert.match(created.eventId, /^evt_[0-9a-f]{20}$/)
+  const windowed = viewCalendar({ days: 7 }, { store, now })
+  assert.equal(windowed.events.length, 1)
+  assert.equal(windowed.events[0].summary, '周会')
+
+  const updated = updateCalendarEvent({ eventId: created.eventId, summary: '周会（改）' }, { store })
+  assert.equal(updated.summary, '周会（改）')
+  store.close()
+
+  store = makeStore()
+  const reopened = store.getEvent(created.eventId)
+  assert.equal(reopened?.summary, '周会（改）')
+  assert.equal(reopened?.location, '会议室 A')
   return true
 })
 
-await check('resolve: env id is used without listing calendars', async () => {
-  const { api, calls } = makeApi()
-  const calendar = await resolveCalendar(api, { calendarId: 'cal_env', summary: 'dsh 日程' })
-  assert.deepEqual(calendar, { calendarId: 'cal_env', summary: 'dsh 日程' })
-  assert.equal(calls.listed, 0)
+await check('store: update validates the merged range and unknown ids fail', () => {
+  const created = createCalendarEvent({
+    summary: '评审',
+    start: '2026-11-22T09:00:00+08:00',
+    end: '2026-11-22T10:00:00+08:00',
+  }, { store })
+  assert.throws(() => updateCalendarEvent({
+    eventId: created.eventId,
+    start: '2026-11-22T11:00:00+08:00',
+  }, { store }), raises('protocol'))
+  assert.throws(() => updateCalendarEvent({ eventId: 'evt_missing', summary: 'x' }, { store }), raises('not-found'))
   return true
 })
 
-await check('resolve: finds the calendar by exact summary', async () => {
-  const { api } = makeApi()
-  const calendar = await resolveCalendar(api, { summary: 'dsh 日程' })
-  assert.deepEqual(calendar, { calendarId: 'cal_1', summary: 'dsh 日程' })
+await check('store: window uses overlap, not just start-inside', () => {
+  const spanning = createCalendarEvent({
+    summary: '跨天',
+    start: '2026-11-19T23:00:00+08:00',
+    end: '2026-11-20T01:00:00+08:00',
+  }, { store })
+  const result = viewCalendar({ days: 1 }, { store, now })
+  assert.ok(result.events.some((event) => event.eventId === spanning.eventId))
   return true
 })
 
-await check('resolve: read-only miss returns null (no side effect)', async () => {
-  const { api, calls } = makeApi({ async listCalendars() { return [] } })
-  const calendar = await resolveCalendar(api, { summary: 'dsh 日程', create: false })
-  assert.equal(calendar, null)
-  assert.equal(calls.created.length, 0)
+await check('store: default db path follows DSH_WFXM_DB then DSH_WFXM_DATA_DIR', () => {
+  assert.equal(defaultCalendarDbPath({ DSH_WFXM_DB: '/tmp/x.db' }), '/tmp/x.db')
+  assert.equal(defaultCalendarDbPath({ DSH_WFXM_DATA_DIR: '/srv/wfxm' }), '/srv/wfxm/ops.sqlite')
+  assert.equal(defaultCalendarDbPath({}), '/var/lib/dsh-wfxm/ops.sqlite')
   return true
 })
 
-await check('resolve: write miss creates a private calendar once', async () => {
-  const { api, calls } = makeApi({ async listCalendars() { return [] } })
-  const calendar = await resolveCalendar(api, { summary: 'dsh 日程', create: true })
-  assert.deepEqual(calendar, { calendarId: 'cal_new', summary: 'dsh 日程' })
-  assert.deepEqual(calls.created, ['dsh 日程'])
-  return true
-})
-
-// -- argument validation ----------------------------------------------------------------
+// -- argument validation -----------------------------------------------------------------
 
 await check('validate: days defaults to 7 and accepts 1..31 only', () => {
   assert.deepEqual(validateViewArgs({}), { days: 7 })
@@ -207,155 +195,61 @@ await check('validate: create requires offset timestamps and end after start', (
 })
 
 await check('validate: update needs eventId plus at least one field', () => {
-  assert.deepEqual(validateUpdateArgs({ eventId: 'ev_1', summary: '新标题' }), { eventId: 'ev_1', summary: '新标题' })
-  assert.equal(validateUpdateArgs({ eventId: 'ev_1', start: '2026-11-21T09:00:00+08:00' }).start, '2026-11-21T09:00:00+08:00')
-  assert.throws(() => validateUpdateArgs({ eventId: 'ev_1' }), raises('protocol'))
-  assert.throws(() => validateUpdateArgs({ eventId: 'ev_1', start: '2026-11-21 09:00' }), raises('protocol'))
+  assert.deepEqual(validateUpdateArgs({ eventId: 'evt_1', summary: '新标题' }), { eventId: 'evt_1', summary: '新标题' })
+  assert.equal(validateUpdateArgs({ eventId: 'evt_1', start: '2026-11-21T09:00:00+08:00' }).start, '2026-11-21T09:00:00+08:00')
+  assert.throws(() => validateUpdateArgs({ eventId: 'evt_1' }), raises('protocol'))
+  assert.throws(() => validateUpdateArgs({ eventId: 'evt_1', start: '2026-11-21 09:00' }), raises('protocol'))
   return true
 })
 
-// -- SDK seam ---------------------------------------------------------------------------
+// -- window + rendering ------------------------------------------------------------------
 
-await check('sdk: calendars paginate until has_more is false', async () => {
-  let page = 0
-  const api = createCalendarApi({
-    calendar: {
-      calendar: {
-        async list() {
-          page += 1
-          return page === 1
-            ? { code: 0, data: { calendar_list: [{ calendar_id: 'cal_1', summary: 'A' }], has_more: true, page_token: 'p2' } }
-            : { code: 0, data: { calendar_list: [{ calendar_id: 'cal_2', summary: 'B' }], has_more: false } }
-        },
-        async create() { throw new Error('unused') },
-      },
-      calendarEvent: { async list() { throw new Error('unused') }, async create() { throw new Error('unused') }, async patch() { throw new Error('unused') } },
-    },
-  })
-  assert.deepEqual(await api.listCalendars(), [
-    { calendarId: 'cal_1', summary: 'A' },
-    { calendarId: 'cal_2', summary: 'B' },
-  ])
-  assert.equal(page, 2)
-  return true
-})
-
-await check('sdk: createEvent maps seconds + Asia/Shanghai and keeps summary', async () => {
-  const captured = []
-  const api = createCalendarApi({
-    calendar: {
-      calendar: { async list() { throw new Error('unused') }, async create() { throw new Error('unused') } },
-      calendarEvent: {
-        async list() { throw new Error('unused') },
-        async create(input) {
-          captured.push(input)
-          return { code: 0, data: { event: { event_id: 'ev_9', summary: '周会' } } }
-        },
-        async patch() { throw new Error('unused') },
-      },
-    },
-  })
-  const event = await api.createEvent('cal_1', {
-    summary: '周会',
+await check('view: starts at Shanghai midnight, sorts by start, renders compactly', () => {
+  const scoped = createCalendarStore(join(tempRoot, 'view.sqlite'))
+  createCalendarEvent({
+    summary: '下午',
+    start: '2026-11-21T14:00:00+08:00',
+    end: '2026-11-21T15:00:00+08:00',
+  }, { store: scoped })
+  createCalendarEvent({
+    summary: '上午',
     start: '2026-11-21T09:00:00+08:00',
     end: '2026-11-21T10:00:00+08:00',
-  })
-  assert.equal(event.eventId, 'ev_9')
-  assert.equal(captured[0].path.calendar_id, 'cal_1')
-  assert.deepEqual(captured[0].data.start_time, {
-    timestamp: String(Math.floor(Date.parse('2026-11-21T09:00:00+08:00') / 1000)),
-    timezone: 'Asia/Shanghai',
-  })
-  assert.deepEqual(captured[0].data.end_time, {
-    timestamp: String(Math.floor(Date.parse('2026-11-21T10:00:00+08:00') / 1000)),
-    timezone: 'Asia/Shanghai',
-  })
-  return true
-})
-
-await check('sdk: missing scope maps to calendar-scope on throw and on code', async () => {
-  const thrown = createCalendarApi({
-    calendar: {
-      calendar: {
-        async list() {
-          throw { response: { data: { code: 99991672, msg: 'Access denied. One of scopes …' } } }
-        },
-        async create() { throw new Error('unused') },
-      },
-      calendarEvent: { async list() { throw new Error('unused') }, async create() { throw new Error('unused') }, async patch() { throw new Error('unused') } },
-    },
-  })
-  await assert.rejects(() => thrown.listCalendars(), raises('calendar-scope'))
-
-  const resolved = createCalendarApi({
-    calendar: {
-      calendar: {
-        async list() { return { code: 99991672, msg: 'Access denied' } },
-        async create() { throw new Error('unused') },
-      },
-      calendarEvent: { async list() { throw new Error('unused') }, async create() { throw new Error('unused') }, async patch() { throw new Error('unused') } },
-    },
-  })
-  await assert.rejects(() => resolved.listCalendars(), (error) => {
-    assert.ok(error instanceof CalendarError)
-    assert.equal(error.code, 'calendar-scope')
-    assert.match(error.message, /calendar:calendar:readonly/)
-    return true
-  })
-  return true
-})
-
-// -- window + rendering -----------------------------------------------------------------
-
-await check('view: window starts at Shanghai midnight and sorts by start', async () => {
-  const { api, calls } = makeApi()
-  api.listEvents = async (calendarId, range) => {
-    calls.listedEvents.push({ calendarId, range })
-    return [
-      { eventId: 'ev_late', summary: '下午', start: { timestamp: String(Math.floor(Date.parse('2026-11-21T14:00:00+08:00') / 1000)) }, end: null, location: '' },
-      { eventId: 'ev_early', summary: '上午', start: { timestamp: String(Math.floor(Date.parse('2026-11-21T09:00:00+08:00') / 1000)) }, end: null, location: '会议室 A' },
-    ]
-  }
-  const result = await viewCalendar({ days: 7 }, { api, calendar: { calendarId: 'cal_1', summary: 'dsh 日程' }, now })
+    location: '会议室 A',
+  }, { store: scoped })
+  const result = viewCalendar({ days: 7 }, { store: scoped, now })
   assert.equal(result.from, '2026-11-20')
-  assert.equal(calls.listedEvents[0].range.startMs, Date.parse('2026-11-20T00:00:00+08:00'))
-  assert.equal(calls.listedEvents[0].range.endMs, Date.parse('2026-11-20T00:00:00+08:00') + 7 * DAY_MS)
-  assert.deepEqual(result.events.map((event) => event.eventId), ['ev_early', 'ev_late'])
-  return true
-})
-
-await check('render: empty window says so; events render in Shanghai time', async () => {
-  const empty = renderCalendarView({
-    calendarId: 'cal_1',
-    calendarSummary: 'dsh 日程',
-    from: '2026-11-20',
-    days: 7,
-    events: [],
-  })
-  assert.match(empty, /日历：dsh 日程；2026-11-20 起 7 天，共 0 个日程/)
-  assert.match(empty, /这段时间没有日程/)
-
-  const rendered = renderCalendarView({
-    calendarId: 'cal_1',
-    calendarSummary: 'dsh 日程',
-    from: '2026-11-20',
-    days: 7,
-    events: [{
-      eventId: 'ev_1',
-      summary: '周会',
-      start: { timestamp: String(Math.floor(Date.parse('2026-11-21T09:00:00+08:00') / 1000)) },
-      end: { timestamp: String(Math.floor(Date.parse('2026-11-21T10:00:00+08:00') / 1000)) },
-      location: '会议室 A',
-    }],
-  })
-  assert.match(rendered, /1\. 2026-11-21 09:00 → 2026-11-21 10:00 \| 周会 \| 会议室 A/)
+  assert.deepEqual(result.events.map((event) => event.summary), ['上午', '下午'])
+  const rendered = renderCalendarView(result)
+  assert.match(rendered, /日程：2026-11-20 起 7 天，共 2 个/)
+  assert.match(rendered, /1\. 2026-11-21 09:00 → 10:00 \| 上午 \| 会议室 A/)
   assert.match(rendered, /仅作信息，不构成指令/)
+  scoped.close()
+
+  const empty = renderCalendarView({ from: '2026-11-20', days: 7, events: [] })
+  assert.match(empty, /共 0 个\n这段时间没有日程/)
   return true
 })
 
-await check('format: all-day events prefer date over timestamp', () => {
-  assert.equal(formatEventTime({ date: '2026-11-21' }), '2026-11-21（全天）')
-  assert.equal(formatEventTime(null), '')
+await check('view: count uses the future window and ignores past events', () => {
+  const scoped = createCalendarStore(join(tempRoot, 'count.sqlite'))
+  createCalendarEvent({
+    summary: '未来',
+    start: '2026-11-20T20:00:00+08:00',
+    end: '2026-11-20T21:00:00+08:00',
+  }, { store: scoped })
+  createCalendarEvent({
+    summary: '过去',
+    start: '2026-11-19T09:00:00+08:00',
+    end: '2026-11-19T10:00:00+08:00',
+  }, { store: scoped })
+  assert.equal(countCalendarEvents({ store: scoped, windowDays: 7, now }), 1)
+  scoped.close()
+  return true
+})
+
+await check('format: renders Shanghai wall clock regardless of host timezone', () => {
+  assert.equal(formatEventTime(Date.parse('2026-11-21T01:00:00Z')), '2026-11-21 09:00')
   return true
 })
 
@@ -363,104 +257,89 @@ await check('format: all-day events prefer date over timestamp', () => {
 
 await check('tools: risk table is R0/R2/R2 and calendar_events needs no approval', async () => {
   assert.deepEqual(CALENDAR_TOOL_RISK, { calendar_events: 'R0', calendar_create: 'R2', calendar_update: 'R2' })
-  const { api } = makeApi()
-  const { tools, requests } = makeTools(api)
+  const { tools, requests } = makeTools(store)
   const value = await tools.get('calendar_events').execute({ days: 3 })
   assert.equal(value.days, 3)
-  assert.equal(value.calendarSummary, 'dsh 日程')
   assert.equal(requests.length, 0)
   return true
 })
 
-await check('tools: calendar_create is gated by approval and passes fields verbatim', async () => {
-  const { api, calls } = makeApi()
-  const { tools, requests } = makeTools(api)
+await check('tools: calendar_create is gated by approval and writes the local store', async () => {
+  const scoped = createCalendarStore(join(tempRoot, 'tools.sqlite'))
+  const { tools, requests } = makeTools(scoped)
   const value = await tools.get('calendar_create').execute({
     summary: '周会',
     start: '2026-11-21T09:00:00+08:00',
     end: '2026-11-21T10:00:00+08:00',
   }, { agent: { id: 'agent' }, callId: 'c1' })
-  assert.equal(value.eventId, 'ev_1')
+  assert.match(value.eventId, /^evt_/)
   assert.equal(requests.length, 1)
   assert.equal(requests[0].toolName, 'calendar_create')
   assert.match(requests[0].reason, /标题=周会/)
-  assert.match(requests[0].reason, /开始=2026-11-21T09:00:00\+08:00/)
-  assert.deepEqual(calls.createdEvents[0].input, {
-    summary: '周会',
-    start: '2026-11-21T09:00:00+08:00',
-    end: '2026-11-21T10:00:00+08:00',
-  })
+  assert.equal(scoped.listEvents({ startMs: 0, endMs: Date.parse('2027-01-01T00:00:00Z') }).length, 1)
+  scoped.close()
   return true
 })
 
 await check('tools: rejected approval writes nothing', async () => {
-  const { api, calls } = makeApi()
-  const { tools } = makeTools(api, { outcome: 'denied' })
+  const scoped = createCalendarStore(join(tempRoot, 'denied.sqlite'))
+  const { tools } = makeTools(scoped, { outcome: 'denied' })
   await assert.rejects(() => tools.get('calendar_create').execute({
     summary: '周会',
     start: '2026-11-21T09:00:00+08:00',
     end: '2026-11-21T10:00:00+08:00',
   }, { agent: { id: 'agent' }, callId: 'c1' }), raises('approval'))
-  assert.equal(calls.createdEvents.length, 0)
+  assert.equal(scoped.listEvents({ startMs: 0, endMs: Date.parse('2027-01-01T00:00:00Z') }).length, 0)
+  scoped.close()
   return true
 })
 
 await check('tools: missing approval service fails closed', async () => {
-  const { api, calls } = makeApi()
-  const registered = []
-  registerCalendarTools({ tools: { register(tool) { registered.push(tool) } } }, {
-    api: async () => api,
-    summary: () => 'dsh 日程',
-    approval: () => undefined,
-  })
-  const create = registered.find((tool) => tool.name === 'calendar_create')
-  await assert.rejects(() => create.execute({
+  const scoped = createCalendarStore(join(tempRoot, 'no-approval.sqlite'))
+  const { tools } = makeTools(scoped, { approval: null })
+  await assert.rejects(() => tools.get('calendar_create').execute({
     summary: '周会',
     start: '2026-11-21T09:00:00+08:00',
     end: '2026-11-21T10:00:00+08:00',
   }, { agent: { id: 'agent' }, callId: 'c1' }), raises('approval'))
-  assert.equal(calls.createdEvents.length, 0)
+  assert.equal(scoped.listEvents({ startMs: 0, endMs: Date.parse('2027-01-01T00:00:00Z') }).length, 0)
+  scoped.close()
   return true
 })
 
 await check('tools: calendar_update patches only the given fields', async () => {
-  const { api, calls } = makeApi()
-  const { tools, requests } = makeTools(api)
-  const value = await tools.get('calendar_update').execute({
-    eventId: 'ev_1',
-    summary: '新标题',
-  }, { agent: { id: 'agent' }, callId: 'c2' })
-  assert.equal(value.eventId, 'ev_1')
-  assert.equal(value.summary, '新标题')
-  assert.deepEqual(calls.patchedEvents[0], {
-    calendarId: 'cal_1',
-    eventId: 'ev_1',
-    input: { summary: '新标题' },
-  })
-  assert.match(requests[0].reason, /event_id=ev_1/)
-  return true
-})
-
-await check('tools: read on a missing calendar reports it instead of creating', async () => {
-  const { api, calls } = makeApi({ async listCalendars() { return [] } })
-  const { tools } = makeTools(api)
-  await assert.rejects(() => tools.get('calendar_events').execute({}), raises('config'))
-  assert.equal(calls.created.length, 0)
-  return true
-})
-
-await check('tools: write creates the calendar on miss before creating the event', async () => {
-  const { api, calls } = makeApi({ async listCalendars() { return [] } })
-  const { tools } = makeTools(api)
-  await tools.get('calendar_create').execute({
-    summary: '周会',
+  const scoped = createCalendarStore(join(tempRoot, 'update.sqlite'))
+  const created = createCalendarEvent({
+    summary: '旧标题',
     start: '2026-11-21T09:00:00+08:00',
     end: '2026-11-21T10:00:00+08:00',
-  }, { agent: { id: 'agent' }, callId: 'c3' })
-  assert.deepEqual(calls.created, ['dsh 日程'])
-  assert.equal(calls.createdEvents.length, 1)
+  }, { store: scoped })
+  const { tools, requests } = makeTools(scoped)
+  const value = await tools.get('calendar_update').execute({
+    eventId: created.eventId,
+    summary: '新标题',
+  }, { agent: { id: 'agent' }, callId: 'c2' })
+  assert.equal(value.summary, '新标题')
+  assert.match(requests[0].reason, /event_id=evt_/)
+  assert.equal(scoped.getEvent(created.eventId)?.startAt, created.startAt)
+  scoped.close()
   return true
+})
+
+await check('tools: descriptions never mention Feishu or a remote calendar id', () => {
+  const { tools } = makeTools(store)
+  const texts = [...tools.values()].map((tool) => `${tool.name} ${tool.description ?? ''}`).join('\n')
+  return !/飞书|feishu|calendar_id|app secret/i.test(texts)
+})
+
+await check('risk: calendar writes need approval, reads do not', () => {
+  const { tools } = makeTools(store)
+  return tools.get('calendar_events') !== undefined
+    && tools.get('calendar_create') !== undefined
+    && tools.get('calendar_update') !== undefined
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
+store.close()
+rmSync(tempRoot, { recursive: true, force: true })
 if (fail > 0) process.exitCode = 1

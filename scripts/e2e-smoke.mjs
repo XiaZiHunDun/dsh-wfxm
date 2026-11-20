@@ -36,6 +36,7 @@ import { createResourceProbe, createSystemdAdapter, probeListeningPorts, probeLo
 delete process.env.LD_LIBRARY_PATH
 
 const dbPath = process.env.DSH_WFXM_DB ?? join(process.cwd(), '.wfxm', 'ops.sqlite')
+process.env.DSH_WFXM_DB = dbPath
 const workdir = process.env.DSH_WFXM_WORKDIR ?? join(process.cwd(), '.wfxm', 'workspace')
 mkdirSync(dirname(dbPath), { recursive: true })
 mkdirSync(workdir, { recursive: true })

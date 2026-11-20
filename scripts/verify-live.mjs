@@ -30,6 +30,7 @@ import { createWfxmHost } from '@dsh-wfxm/host'
 delete process.env.LD_LIBRARY_PATH
 
 const dbPath = process.env.DSH_WFXM_LIVE_DB ?? '.wfxm/live/ops.sqlite'
+process.env.DSH_WFXM_DB ??= dbPath
 const grantsPath = process.env.DSH_WFXM_LIVE_GRANTS ?? '.wfxm/live/grants.sqlite'
 const workdir = process.env.DSH_WFXM_LIVE_WORKDIR ?? '.wfxm/live/workspace'
 const useDsh = process.argv.includes('--dsh')

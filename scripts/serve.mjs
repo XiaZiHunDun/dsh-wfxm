@@ -27,13 +27,9 @@ import { dirname, join } from 'node:path'
 import { createDshExecutor } from '@dsh-wfxm/executor'
 import { createChangeStore } from '@dsh-wfxm/changes'
 import {
-  CalendarError,
   countCalendarEvents,
-  createLarkCalendarApi,
-  readCalendarIdOverride,
-  readCalendarSummary,
+  createCalendarStore,
   renderCalendarView,
-  resolveCalendar,
   viewCalendar,
 } from '@dsh-wfxm/calendar'
 import {
@@ -176,6 +172,7 @@ async function main() {
   let todoRunner = null
   let transport = null
   let patrol = null
+  let calendarStore = null
   let stopping = false
   let seq = 0
 
@@ -294,37 +291,10 @@ async function main() {
           : { at: mailDigest.at, channel: mailDigest.channelId, chat: mailDigest.chatId ?? 'latest' })
         // Slice S: deterministic read-only checks for the front desk's quick answers.
         const quickLogWindowMinutes = readInspectionConfig(process.env).thresholds.logWindowMinutes
-        // Slice BP (J4): 应用自有日历。凭据缺失或 scope 未开通时端口抛错 /
-        // 返回 null，前台转成可读话术、断言 skipped；不影响其他能力。
-        let calendarApiPromise = null
-        const calendarApi = () => {
-          calendarApiPromise ??= (async () => {
-            let credentials
-            try {
-              credentials = loadFeishuCredentials()
-            } catch (error) {
-              throw new CalendarError(
-                'config',
-                `飞书凭据不可用：${error instanceof Error ? error.message : String(error)}`,
-              )
-            }
-            return createLarkCalendarApi(credentials)
-          })().catch((error) => {
-            calendarApiPromise = null
-            throw error
-          })
-          return calendarApiPromise
-        }
-        const resolveAppCalendar = async (create) => {
-          const api = await calendarApi()
-          const calendarId = readCalendarIdOverride()
-          const calendar = await resolveCalendar(api, {
-            ...calendarId === undefined ? {} : { calendarId },
-            summary: readCalendarSummary(),
-            create,
-          })
-          return { api, calendar }
-        }
+        // Slice BP (J4): 日程正本在本机库。读给前台/断言用同一个 store，
+        // 并把库路径传给 worker，保证工具写入与这里读到的是同一份数据。
+        process.env.DSH_WFXM_DB ??= config.dbPath
+        calendarStore = createCalendarStore(config.dbPath)
         host = createWfxmHost({
           dbPath: config.dbPath,
           executor,
@@ -397,13 +367,11 @@ async function main() {
                   return null
                 }
               },
-              // 应用日历只读计数（Slice BP）：日历未创建 → 0；凭据/scope/API
-              // 失败 → null（断言 skipped，完成被拒，绝不把读不到当成通过）。
-              calendarEventCount: async (windowDays) => {
+              // 本地日程只读计数（Slice BP）：读不到 → null（断言 skipped，
+              // 完成被拒，绝不把读不到当成通过）。
+              calendarEventCount: (windowDays) => {
                 try {
-                  const { api, calendar } = await resolveAppCalendar(false)
-                  if (calendar === null) return 0
-                  return await countCalendarEvents({ api, calendarId: calendar.calendarId, windowDays })
+                  return countCalendarEvents({ store: calendarStore, windowDays })
                 } catch {
                   return null
                 }
@@ -479,12 +447,8 @@ async function main() {
               tasks,
               decide: runner,
               ...(mailTodos === null ? {} : { mailTodos }),
-              // Slice BP (J4): 「看看日程」直接读应用日历，不跑模型、不建任务。
-              calendarView: async ({ days }) => {
-                const { api, calendar } = await resolveAppCalendar(false)
-                if (calendar === null) return null
-                return renderCalendarView(await viewCalendar({ days }, { api, calendar }))
-              },
+              // Slice BP (J4): 「看看日程」直接读本机日程库，不跑模型、不建任务。
+              calendarView: ({ days }) => renderCalendarView(viewCalendar({ days }, { store: calendarStore })),
               probe: createResourceProbe({ runner: spawnRunner }),
               checks: {
                 unitStatus: async (unit) => {
@@ -1027,6 +991,7 @@ async function main() {
       stores?.snapshot.close()
       stores?.reminders.close()
       stores?.changes.close()
+      calendarStore?.close()
     } catch (error) {
       log('shutdown:warn', `close failed: ${error instanceof Error ? error.message : String(error)}`)
     }

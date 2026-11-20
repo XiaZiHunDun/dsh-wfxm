@@ -2847,35 +2847,33 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
 
 # Slice BP Spec — J4 飞书应用日历（2026-11-20）
 
-> 状态：**代码已实施并发布**（`2026.11.20-2`）。真机验证待 BP0 开通 scope
-> （复测仍为 `99991672`）；会前提醒拆到 Slice BQ。落点 `plugins/calendar`（`@dsh-wfxm/calendar`）。
+> 状态：**已实施并发布**。日程正本在服务器本地库；飞书只是对话渠道，**不需要任何日历 scope**。
+> 会前提醒拆到 Slice BQ。落点 `plugins/calendar`（`@dsh-wfxm/calendar`）。
 
-## 1. 前置与口径
+## 1. 口径
 
-- 应用 `cli_aa6d572d61b8dbb0` **尚未开通日历权限**：实测
-  `GET /open-apis/calendar/v4/calendars` 返回 `99991672`。owner 需在开放平台开通
-  `calendar:calendar:readonly` + `calendar:calendar` 并发布版本。
-- 采用**应用身份**（tenant_access_token），不引入 OAuth；读写一本应用自有日历
-  「dsh 日程」，读不到 owner 的个人主日历。owner 在飞书里订阅/查看这本日历。
+- 日程正本 = 本机 `ops.sqlite` 的 `calendar_events` 表（`schema_migrations.module='calendar'`，v1）。
+- 飞书只负责把文本回复送到对话；**不调用**飞书日历 API，不读个人主日历，不需要 scope、OAuth
+  或应用版本发布。
+- 时间写入必须带 `Z` / `±HH:MM`；展示统一 `Asia/Shanghai`。
+- 存储路径与宿主一致：`DSH_WFXM_DB` → `<DSH_WFXM_DATA_DIR>/ops.sqlite`；宿主启动时把
+  `DSH_WFXM_DB` 传给 worker，保证工具写入与前台读取是同一份数据。
 
 ## 2. 机制
 
 - **新插件 `plugins/calendar`**
-  - 凭据复用 `@dsh-wfxm/feishu` 的 `loadFeishuCredentials`；客户端用
-    `@larksuiteoapi/node-sdk` 的 `calendar.v4`。
-  - 日历解析：`DSH_WFXM_CALENDAR_ID` 优先 → 按 summary「dsh 日程」查找 →
-    写操作可创建（`POST /calendar/v4/calendars`，`permissions=private`）；
-    只读操作找不到时返回「尚未创建 dsh 日程」。
-  - 时区固定 `Asia/Shanghai`；`start`/`end` 必须带 `Z` 或 `±HH:MM` 偏移。
+  - `store.ts`：better-sqlite3；`calendar_events(id, summary, description, start_at, end_at,
+    start_ms, end_ms, location, created_at, updated_at)`；窗口按 `start_ms < end AND end_ms > start`
+    取重叠事件，按开始时间升序。
+  - 时间固定 `Asia/Shanghai` 展示；`start`/`end` 必须带 `Z` 或 `±HH:MM` 偏移。
 - **工具**
   - `calendar_events`（R0）：`from?`（默认今天）、`days?`（默认 7，1..31）→
     列事件（`event_id`/`summary`/`start`/`end`/`location`）；只读。
-  - `calendar_create`（R2）：`summary`、`start`、`end`、`description?`；
+  - `calendar_create`（R2）：`summary`、`start`、`end`、`description?`、`location?`；
     工具内审批；reason 回显标题与起止时间；成功后返回 `event_id`。
-  - `calendar_update`（R2）：`eventId` + 可选 `summary`/`start`/`end`/`description`；
-    工具内审批；PATCH 后返回 `event_id`。
-  - `MAIL_TOOL_RISK` 同款常量 `CALENDAR_TOOL_RISK`；`governance` 已批准白名单加入
-    `calendar_create` / `calendar_update`。
+  - `calendar_update`（R2）：`eventId` + 可选 `summary`/`start`/`end`/`description`/`location?`；
+    工具内审批；按合并后的起止校验，未知 id 返回 `not-found`。
+  - `CALENDAR_TOOL_RISK`；`governance` 已批准白名单加入 `calendar_create` / `calendar_update`。
 - **前台只读动作**
   - 决策动作 `{"action":"calendar_view","days":7}`（days 1..31，默认 7）；
     前台直接 `reply`，不建任务；未挂载 → `calendar-unavailable`；
@@ -2887,7 +2885,7 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
   - `isCalendarWriteIntent`：日历/日程 + 建/加/改/约/安排/定 → R2 + `calendar_event`；
     只读与问句不升级。
   - 新断言 kind `calendar_event`：`{minCount?, windowDays?}`（默认 1 / 7）；
-    `verify.ts` 走只读端口 `calendarEventCount(windowDays)`，统计应用日历未来窗口内事件数；
+    `verify.ts` 走只读端口 `calendarEventCount(windowDays)`，统计本地库未来窗口内事件数；
     tasks 迁移 **v12**。
   - 写 intent 规范：「创建日程｜标题：…｜开始：…｜结束：…｜描述：…」；
     缺标题或时间 → 前台 `reply` 要求补充，不建任务。
@@ -2897,19 +2895,19 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
 
 ## 3. 边界
 
-- 不读个人主日历、不做跨人忙闲、不发会议邀请（不设置 attendees）；不删除事件。
-- 所有写操作走 R2 审批；未批准不调用飞书。
-- scope 未开通时：工具与只读动作都返回可读的 `calendar-scope` 错误，不吞异常。
+- 日程只存本机；不读个人主日历、不做跨人忙闲、不发会议邀请（不设置 attendees）；不删除事件。
+- 所有写操作走 R2 审批；未批准不落库。
+- 存储不可读时：工具返回可读 `calendar-store` 错误，前台回「日程读取失败」，不吞异常。
 
 ## 4. 验证
 
-- 新 `verify-calendar`：凭据/日历发现（env → summary → 未创建）、事件列表参数、
-  创建/更新参数、scope 错误映射、`calendar_view` 渲染。
+- 新 `verify-calendar`：store CRUD / 重开持久化 / 窗口重叠 / 参数校验 / 渲染 /
+  工具审批闸门 / 描述里不出现飞书与远端日历 id。
 - `verify-risk`：建/改日程 → R2 + `calendar_event`；查看/问句不升级。
 - `verify-tasks`：`calendar_event` prepare/verify（pass/fail/skip）与 v12 迁移。
 - `verify-orchestrator`：`calendar_view` 默认 7、1..31、未挂载拒绝、确定性匹配；
   prompt 规则。
-- 真机（scope 开通后）：查看日程、创建日程 R2 卡、批准、事件出现在「dsh 日程」。
+- 真机：查看日程、创建日程 R2 卡、批准、事件出现在本地日程库并可直接再次查看。
 
 ## 5. 文件落点
 
@@ -2918,5 +2916,6 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
 - `plugins/tasks/src/{model,assertions,verify,risk,store}.ts` 及相关测试
 - `plugins/governance/src/index.ts`
 - `plugins/executor/src/executor.ts`
-- `scripts/serve.mjs`（前台端口 + 断言端口）
+- `scripts/{serve,dev-web,e2e-smoke,verify-live}.mjs`（store 与断言端口、worker 库路径）
+- `scripts/install-calendar-profile.mjs`（把工具挂进 worker profile）
 - 文档：`docs/08` J4、`docs/09` J4、`docs/16 §12.54`、`AGENTS.md`、`tasks.md`、本文件
