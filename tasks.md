@@ -2135,3 +2135,11 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 文档：[09 §2 B2 / §9.1 / §9.3](docs/09-能力对照与实现路径.md)、[16 §12.17](docs/16-部署与运行.md)、`AGENTS.md`
 - [x] 提交推送（`XiaZiHunDun <cuiyangjs@163.com>`；ailearn 推送）
 - 说明：只改 CLI，不涉及服务运行时，无需发布/重启
+
+## BR3 生产灰度
+
+- [x] 发布 `2026.11.20-5`（`active`、`NRestarts=0`、`[startup] 8/8`）
+- [x] 以 dshwfxm 用户 clone 工作副本 `/var/lib/dsh-wfxm/projects/dsh-wfxm`（origin 指向 GitHub）
+- [x] 生产登记：`add --name dsh-wfxm --root … --prepare-cmd ""` →
+      `vcs=git`、`mergeMode=manual`、`rulesDoc=AGENTS.md`（自动推导）、`prepareCmd=null`
+- [ ] 真机灰度：飞书 `/use dsh-wfxm` + 一个小任务 → 确认 worktree 建在 `.agents/worktrees/wfxm/<task>`
