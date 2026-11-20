@@ -564,6 +564,12 @@
     新增 `--rules-doc`；显式 `--prepare-cmd` / `--rules-doc` 覆盖推断、空串清空；显式 rulesDoc
     必须是 root 内现有文件。`update` 不传字段则保留原值（不静默重推）。VCS 探测沿用 `<root>/.git`。
     `verify-projects-cli 13`；只改 CLI，不涉及服务运行时。
+  - **项目绑定修复（Slice BS）**：多项目灰度暴露两个既有缺陷——① `/use` 的粘性只 `UPDATE session_routes`，
+    而生产从未建过该行；② 非回复消息也会被 `single-wakeable` 历史锚点抢走项目。
+    修复：`/use` 同时把项目写到当前 thread（`threads.project_id`）作为粘性，读侧 `thread → session_routes` 回退；
+    `resolveProject` 的 `anchorProjectId` 只在 `followUp.matchedBy === 'anchor'`（回复任务消息）时继承。
+    `verify-gateway 134`；发布 `2026.11.20-6` 后真机任务 `e6chptr5qc` 正确落在
+    `/var/lib/dsh-wfxm/projects/dsh-wfxm/.agents/worktrees/e6chptr5qc`。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

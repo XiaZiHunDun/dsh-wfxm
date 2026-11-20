@@ -2142,4 +2142,10 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 以 dshwfxm 用户 clone 工作副本 `/var/lib/dsh-wfxm/projects/dsh-wfxm`（origin 指向 GitHub）
 - [x] 生产登记：`add --name dsh-wfxm --root … --prepare-cmd ""` →
       `vcs=git`、`mergeMode=manual`、`rulesDoc=AGENTS.md`（自动推导）、`prepareCmd=null`
-- [ ] 真机灰度：飞书 `/use dsh-wfxm` + 一个小任务 → 确认 worktree 建在 `.agents/worktrees/wfxm/<task>`
+- [x] 真机灰度（首轮暴露缺陷）：任务 `4a6v7ugasf` 建在 demo worktree ——`/use` 未落库、非回复锚点抢占项目
+- [x] 修复（Slice BS）：`/use` 写 `threads.project_id` 作为粘性；锚点仅在「回复任务消息」时继承
+- [x] 发布 `2026.11.20-6` 后复测：`/use dsh-wfxm` → thread 粘性 `a44583c7…`；
+      任务 `e6chptr5qc` `succeeded`，`project_id=a44583c7…`，
+      worktree `/var/lib/dsh-wfxm/projects/dsh-wfxm/.agents/worktrees/e6chptr5qc`（分支 `wfxm/e6chptr5qc`），
+      文件 `hello-wfxm.md` 仅存在于 worktree，主仓库 `git status` 干净（仅 `?? .agents/`）
+- 遗留：worktree 未合并（manual）；`demo` 仍在库；巡检告警 `dsh-wfxm-backup.service` 失败（待处理）
