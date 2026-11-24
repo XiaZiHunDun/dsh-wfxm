@@ -593,7 +593,7 @@
     （2026-11-24 已重生成锁文件，4 个 importer 漂移清零）。
     不改运行时、不发布；`verify-all` 51 套件。
   - **二期 v2（Slice CF / G5，2026-11-24）**：knowledge 迁移 v4 新增 `memory_proposals`；`mem_propose` 只落提案、
-    `mem_resolve` 确认时才复用 `gateFact` + `insertFact`；同键同值去重、单条异值建议取代、≥2 条异值拒绝、
+    `mem_resolve` 确认时才复用 `gateFact` + `insertFact`；显式「记住 X」走 `mem_remember`，推断/观察才提案；同键同值去重、单条异值建议取代、≥2 条异值拒绝、
     7 天未确认自动过期、同键同值待确认复用 id；日报「事实体检」段追加待确认提案（最多 3 个 id）。
     v1 用对话确认（不做飞书按钮卡片）；`verify-knowledge` 57 例。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），

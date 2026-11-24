@@ -334,7 +334,7 @@ export function registerMemoryTools(ctx: ContextLike, deps: MemoryToolsDeps): vo
 
   registry.register(defineTool({
     name: 'mem_remember',
-    description: 'Write one fact card (module ⑥). kind=environment needs evidence and is checked by a read-only probe first: agreement writes, contradiction is rejected (old value kept), an unavailable probe writes with verification=unverified. kind=preference is never probed. Pass `supersedes` to replace an existing fact; rows are never deleted.',
+    description: 'Write one fact card (module ⑥) when the owner explicitly says "记住 X" / "remember X". For a fact you merely inferred or observed, use mem_propose instead so the owner can confirm. kind=environment needs evidence and is checked by a read-only probe first: agreement writes, contradiction is rejected (old value kept), an unavailable probe writes with verification=unverified. kind=preference is never probed. Pass `supersedes` to replace an existing fact; rows are never deleted.',
     parameters: {
       subject: { type: 'string', required: true, description: 'What the fact is about, e.g. "dsh-wfxm".' },
       predicate: { type: 'string', required: true, description: 'The attribute, e.g. "package-manager" / "path".' },
@@ -424,7 +424,7 @@ export function registerMemoryTools(ctx: ContextLike, deps: MemoryToolsDeps): vo
 
   registry.register(defineTool({
     name: 'mem_propose',
-    description: 'Propose one fact for the owner to confirm (G5 memory maintenance). Nothing is written now: tell the owner the proposal id, and when they answer "记住 <id>"/"不记 <id>" call mem_resolve. An identical live fact returns duplicate; a different live value returns conflict and will supersede on confirm; two or more different live values must be cleaned up first.',
+    description: 'Propose one fact for the owner to confirm (G5 memory maintenance). Use this for inferred or observed facts the owner has not explicitly asked to store; when the owner already said "记住 X", write it with mem_remember instead. Nothing is written now: tell the owner the proposal id, and when they answer "记住 <id>"/"不记 <id>" call mem_resolve. An identical live fact returns duplicate; a different live value returns conflict and will supersede on confirm; two or more different live values must be cleaned up first.',
     parameters: {
       subject: { type: 'string', required: true, description: 'What the fact is about, e.g. "dsh-wfxm".' },
       predicate: { type: 'string', required: true, description: 'The attribute, e.g. "package-manager" / "path".' },

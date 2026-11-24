@@ -3026,6 +3026,7 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
 
 - `memory_proposals`（迁移 v4）保存与事实同构的字段 + `reason`，不写 `memory_facts`；7 天未处理自动过期。
 - `mem_propose` 提交提案；`mem_proposals` 列待确认；`mem_resolve(confirm|reject)` 复用 `gateFact` + `insertFact`。
+- 边界：显式「记住 X」由 `mem_remember` 直写；推断/观察才走提案。
 - 整理：同值去重、单条异值建议取代、≥2 条异值拒绝新提案、同键同值待确认复用 id。
 - 日报「事实体检」段追加待确认提案（最多 3 个 id），只提醒不自动确认。
 
