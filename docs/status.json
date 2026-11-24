@@ -88,6 +88,14 @@
       "phase": "v2",
       "evidence": [],
       "note": "主通道是飞书；无需求前不做"
+    },
+    {
+      "id": "EVAL-DSH",
+      "name": "dsh 测评体系",
+      "state": "done",
+      "phase": "done",
+      "evidence": ["scripts/eval/run-task.mjs", "docs/16-部署与运行.md"],
+      "note": "第二阶段 P0：薄驱动 + agent-eval 的 L1/L2/L3；PR 跑离线四套件，真实能力每晚 advisory，首轮 16/20"
     }
   ]
 }

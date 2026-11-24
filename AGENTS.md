@@ -413,6 +413,9 @@
   - **一键门禁**：`scripts/build.mjs`（逐包 tsc；`--noEmit` 只 typecheck）、`scripts/check-style.mjs`（CRLF/空白/末尾换行/`debugger`/`.only(`/`console.log`）、
     `scripts/verify-all.mjs`（显式 `SUITES` + `discover()` 漂移检测，`--ci` 跳过真机套件）。`live` 套件通过 `DSH_WFXM_FEISHU_CONFIG`/`DSH_WFXM_CREDENTIALS`
     读 `/etc/dsh-wfxm/credentials/*`，root 也能跑全量。CI 见 `.github/workflows/ci.yml`（Node 24 + pnpm 11.28.5）。
+  - **跨仓测评（第二阶段）**：本仓只提供薄驱动 `scripts/eval/run-task.mjs`（stdin payload → spawn `dsh --profile headless --json -` → `__EVAL_RESULT__`），
+    不解析判据；引擎、任务与基线在公共仓 `agent-eval`（`tasks/dsh/*`、`adapters/dsh-wfxm.mjs`）。PR 跑 L2 离线四套件，真实模型 `dsh-capability` 每晚 advisory，
+    不改运行时。
   - **对话连续性（Slice AO）**：`gateway.threadHistory` 只取本线程的 `message` + 已发送 `say`（脱敏、旧→新）；
     决策 prompt 带最近 8 轮，SDK 按 `threadId` 开独立 session；补充指令走 `tasks.steerTask`——
     running/paused 打断重跑（intent 追加、attempt 归零、清租约，host 调 `worker.cancel()`），queued 合并，
