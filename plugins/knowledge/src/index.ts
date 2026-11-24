@@ -33,7 +33,6 @@ export type { HealthCheck, HealthDigestOptions, HealthFinding, HealthOptions, He
 export { checkFacts, formatFactHealth } from './health.js'
 export type {
   MemoryProposal,
-  ProposalDecision,
   ProposalInput,
   ProposalListOptions,
   ProposalStatus,

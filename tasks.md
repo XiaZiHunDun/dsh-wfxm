@@ -2188,3 +2188,11 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 真机探测 3 轮（隔离库）：显式直写 / 隐式提案 / 确认落库；测试库已删，生产记忆 0 污染
 - [x] 工具描述写明边界并发布 `2026.11.24-3`（startup 8/8、`NRestarts=0`）
 - [x] 发布 `2026.11.24-2`：prepare → verify（8/8）→ switch → restart；memory v4 已应用、`NRestarts=0`
+
+## CA5 第一阶段收口
+
+- [x] 代码审计：扫描 `plugins/*/src` 导出；唯一死符号 `ProposalDecision`（声明 + 再导出、无使用）已删除
+- [x] 文档收口：`docs/20` 定稿 + §七收口结果；`docs/00` §1/§3/§6/§7；`docs/README`、`README`、`AGENTS`
+- [x] 冗余审计：`docs/` 无临时/重复整篇；01/03/04/05/06/07/18 有入链，保留；删除 `.trae/specs/phase1-closeout/`
+- [x] 门禁：build / `verify-docs` / `check-style` / `verify-all`（50 passed · 0 failed · 1 advisory）
+- [x] 提交并推送（不改运行时、不发布）

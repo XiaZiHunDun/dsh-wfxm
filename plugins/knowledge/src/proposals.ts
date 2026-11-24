@@ -19,9 +19,6 @@ import type { FactEvidence, FactKind, FactScope, FactSource, PreparedFact } from
 
 export type ProposalStatus = 'pending' | 'confirmed' | 'rejected' | 'expired'
 
-/** Outcome of `mem_propose` — only `pending`/`conflict` may carry an id. */
-export type ProposalDecision = 'pending' | 'conflict' | 'duplicate'
-
 export interface MemoryProposal {
   id: string
   scope: FactScope
