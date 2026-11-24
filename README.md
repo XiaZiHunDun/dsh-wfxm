@@ -1,7 +1,7 @@
 # dsh-wfxm — 基于 DeepSeek Harness 的服务器 AI 管家
 
 > **状态**：一期已结项（2026-11-20）。MVP 37/37、上线门槛 7/7；生产运行 `2026.11.20-6`（飞书主通道）。
-> **入口**：AI 编码工具先读 [AGENTS.md](AGENTS.md)；文档导航见 [docs/README.md](docs/README.md)。
+> **入口**：AI 编码工具先读 [AGENTS.md](AGENTS.md)；没有聊天记录的新会话先读 [docs/00-接续指南.md](docs/00-接续指南.md)；文档导航见 [docs/README.md](docs/README.md)。
 
 ## 一句话
 
