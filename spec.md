@@ -3003,7 +3003,7 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
 
 - `scripts/verify-supply.mjs`：内部依赖 `workspace:` + 目标存在；外部依赖禁非 registry 协议与
   `*`/`latest`；每个外部依赖在 `pnpm-lock.yaml` 有记录；已安装直接依赖许可证须在白名单。
-- 声明依赖但锁文件缺 importer 的包失败；既有 4 个漂移为 `IMPORTER_BASELINE` 告警。
+- 声明依赖但锁文件缺 importer 的包失败；2026-11-24 已重生成锁文件，4 个漂移清零。
 - 注册为 `verify-all` 第 2 套件；纯离线、只读。
 
 ### 3. 边界
@@ -3013,8 +3013,8 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
 
 ### 4. 验证
 
-- 脚本自带 7 个反例（协议/浮动区间/内部目标缺失/锁文件缺记录/GPL/未登记 importer/基线）。
-- 真实仓库 `findings=0`、4 条基线告警；`verify-docs` 套件数 51 一致。
+- 脚本自带 7 个反例（协议/浮动区间/内部目标缺失/锁文件缺记录/GPL/未登记 importer）。
+- 真实仓库 `findings=0`、16 个 importer 全覆盖；`verify-docs` 套件数 51 一致。
 
 ## 二期 v2（Slice CF / G5）
 

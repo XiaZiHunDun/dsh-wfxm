@@ -79,7 +79,7 @@
       "state": "done",
       "phase": "done",
       "evidence": ["scripts/verify-supply.mjs"],
-      "note": "Slice CE：清单协议/版本区间/来源/许可证门禁；4 个既有 importer 漂移为显式基线"
+      "note": "Slice CE：清单协议/版本区间/来源/许可证门禁；2026-11-24 已刷新锁文件，importer 全覆盖"
     },
     {
       "id": "WX-P1",

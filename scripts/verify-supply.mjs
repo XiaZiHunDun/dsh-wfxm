@@ -13,9 +13,8 @@
  *   4. installed direct deps carry an allowlisted license (skipped, with a
  *      notice, when node_modules is absent).
  *
- * The lockfile is intentionally NOT rewritten here: docs/00 §3 forbids
- * `pnpm install` in this repo. Known pre-existing importer drift is baselined
- * below so new drift still fails.
+ * The lockfile is intentionally NOT rewritten here; if `--frozen-lockfile`
+ * rejects a manifest change, refresh the lockfile explicitly and commit it.
  */
 
 import assert from 'node:assert/strict'
@@ -34,18 +33,6 @@ const PINNED = /^[~^]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 const LICENSE_ALLOWLIST = new Set([
   '0BSD', 'Apache-2.0', 'BlueOak-1.0.0', 'BSD-2-Clause', 'BSD-3-Clause',
   'CC0-1.0', 'ISC', 'MIT', 'Unlicense',
-])
-
-/**
- * Pre-existing lockfile drift (2026-11-24): these packages declared deps after
- * the last lockfile refresh. Regenerate the lockfile in an environment that
- * permits `pnpm install`, then delete the matching entry.
- */
-const IMPORTER_BASELINE = new Set([
-  'plugins/calendar',
-  'plugins/changes',
-  'plugins/mail',
-  'plugins/reminder',
 ])
 
 const DEP_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
@@ -181,21 +168,13 @@ export function runChecks(root) {
   }
 
   let importersCovered = 0
-  const baselineHit = []
   if (lockText !== null) {
     const importers = lockfileImporters(lockText)
     for (const [dir, { manifest }] of packages) {
       if (dir === '') continue
       if (depsOf(manifest).length === 0) continue
-      if (importers.has(dir)) {
-        importersCovered++
-        if (IMPORTER_BASELINE.has(dir)) advisories.push(`${dir}: baselined importer drift is fixed — drop it from IMPORTER_BASELINE`)
-      } else if (IMPORTER_BASELINE.has(dir)) {
-        baselineHit.push(dir)
-        advisories.push(`${dir}: missing from pnpm-lock.yaml importers (known baseline, regenerate lockfile)`)
-      } else {
-        findings.push(`${dir}: declares dependencies but has no pnpm-lock.yaml importer entry`)
-      }
+      if (importers.has(dir)) importersCovered++
+      else findings.push(`${dir}: declares dependencies but has no pnpm-lock.yaml importer entry`)
     }
   }
 
@@ -229,7 +208,6 @@ export function runChecks(root) {
       external: external.size,
       provenance: provenanceOk,
       importers: importersCovered,
-      baseline: baselineHit.length,
       licensed: installed.length,
       unchecked: unchecked.length,
     },
@@ -368,18 +346,14 @@ check('non-allowlisted license is rejected', () => {
   }
 })
 
-check('unbaselined missing importer fails, baselined one only advises', () => {
+check('a package missing from lockfile importers is rejected', () => {
   const root = fixtureRoot(cleanFixture({
     'plugins/c/package.json': { name: '@dsh-wfxm/c', dependencies: { 'left-pad': '1.3.0' } },
     'plugins/c/node_modules/left-pad/package.json': { name: 'left-pad', version: '1.3.0', license: 'MIT' },
-    'plugins/calendar/package.json': { name: '@dsh-wfxm/calendar', dependencies: { 'left-pad': '1.3.0' } },
-    'plugins/calendar/node_modules/left-pad/package.json': { name: 'left-pad', version: '1.3.0', license: 'MIT' },
   }))
   try {
-    const { findings, advisories } = runChecks(root)
+    const { findings } = runChecks(root)
     assert.ok(findings.some((item) => item.includes('plugins/c: declares dependencies')), JSON.stringify(findings))
-    assert.ok(!findings.some((item) => item.includes('plugins/calendar: declares')), JSON.stringify(findings))
-    assert.ok(advisories.some((item) => item.includes('plugins/calendar: missing from pnpm-lock.yaml')), JSON.stringify(advisories))
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -409,5 +383,5 @@ if (failed > 0 || findings.length > 0) {
 console.log(
   `supply ok (${stats.packages} packages, ${stats.internalEdges} internal edges, `
   + `${stats.external} external deps, ${stats.licensed} licenses checked, `
-  + `${stats.importers} importers, ${stats.baseline} baseline drift)`,
+  + `${stats.importers} importers)`,
 )

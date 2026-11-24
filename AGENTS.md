@@ -589,8 +589,8 @@
       新增用例；`verify-all` 50 套件。
   - **二期 v2（Slice CE / M10，2026-11-24）**：新增 `scripts/verify-supply.mjs`（verify-all 第 2 套件）：
     内部依赖必须 `workspace:` 且目标存在；外部依赖禁用 `file:`/`link:`/`git`/`http`/`npm:` 别名与 `*`/`latest`，
-    必须在 `pnpm-lock.yaml` 有记录；已安装直接依赖许可证需在白名单；声明依赖但缺 importer 的包失败，
-    既有 4 个漂移（`calendar`/`changes`/`mail`/`reminder`）为显式基线告警，锁文件重生成后须删除基线项。
+    必须在 `pnpm-lock.yaml` 有记录；已安装直接依赖许可证需在白名单；声明依赖但缺 importer 的包失败
+    （2026-11-24 已重生成锁文件，4 个 importer 漂移清零）。
     不改运行时、不发布；`verify-all` 51 套件。
   - **二期 v2（Slice CF / G5，2026-11-24）**：knowledge 迁移 v4 新增 `memory_proposals`；`mem_propose` 只落提案、
     `mem_resolve` 确认时才复用 `gateFact` + `insertFact`；同键同值去重、单条异值建议取代、≥2 条异值拒绝、

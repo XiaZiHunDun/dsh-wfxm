@@ -2171,7 +2171,7 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 ## CA3 二期 v2：M10 供应链门禁（Slice CE）
 
 - [x] `scripts/verify-supply.mjs`：协议 / 版本区间 / 锁文件来源 / 许可证四类硬检查 + 7 个反例
-- [x] importer 覆盖检查：既有 4 个漂移（calendar/changes/mail/reminder）显式基线告警，新增漂移失败
+- [x] importer 覆盖检查：声明依赖但缺 importer 的包失败；2026-11-24 重生成锁文件，4 个漂移清零
 - [x] 注册 verify-all 第 2 套件（51 套件）
 - [x] 文档回写：00 / 09 §9.3 / 16（12.61）/ 20 / status.json / AGENTS / README
 - [x] 不改运行时、不发布

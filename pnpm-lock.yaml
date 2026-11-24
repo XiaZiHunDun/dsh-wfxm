@@ -8,6 +8,41 @@ importers:
 
   .: {}
 
+  plugins/calendar:
+    dependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+    devDependencies:
+      '@deepseek-ai/dsh-tools':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(f4f5dafa2004c02f6afbbbc8518bca23)
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
+      '@types/node':
+        specifier: ^24.10.0
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  plugins/changes:
+    dependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
+      '@types/node':
+        specifier: ^24.10.0
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   plugins/executor:
     devDependencies:
       '@types/node':
@@ -97,6 +132,9 @@ importers:
 
   plugins/host:
     dependencies:
+      '@dsh-wfxm/changes':
+        specifier: workspace:*
+        version: link:../changes
       '@dsh-wfxm/gateway':
         specifier: workspace:*
         version: link:../gateway
@@ -106,6 +144,12 @@ importers:
       '@dsh-wfxm/knowledge':
         specifier: workspace:*
         version: link:../knowledge
+      '@dsh-wfxm/mail':
+        specifier: workspace:*
+        version: link:../mail
+      '@dsh-wfxm/reminder':
+        specifier: workspace:*
+        version: link:../reminder
       '@dsh-wfxm/tasks':
         specifier: workspace:*
         version: link:../tasks
@@ -135,6 +179,18 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+      '@types/node':
+        specifier: ^24.10.0
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  plugins/mail:
+    devDependencies:
+      '@deepseek-ai/dsh-tools':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(f4f5dafa2004c02f6afbbbc8518bca23)
       '@types/node':
         specifier: ^24.10.0
         version: 24.19.2
@@ -172,6 +228,22 @@ importers:
 
   plugins/redact:
     devDependencies:
+      '@types/node':
+        specifier: ^24.10.0
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  plugins/reminder:
+    dependencies:
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
       '@types/node':
         specifier: ^24.10.0
         version: 24.19.2
