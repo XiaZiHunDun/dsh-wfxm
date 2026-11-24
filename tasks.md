@@ -2185,4 +2185,6 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `verify-knowledge` 57 例（新增 11 例）
 - [x] 文档回写：00 / 09 / 16（12.62）/ 20 / status.json / AGENTS / spec / tasks
 - [x] 全量 `verify-all`：50 passed / 0 failed / 1 advisory
+- [x] 真机探测 3 轮（隔离库）：显式直写 / 隐式提案 / 确认落库；测试库已删，生产记忆 0 污染
+- [x] 工具描述写明边界并发布 `2026.11.24-3`（startup 8/8、`NRestarts=0`）
 - [x] 发布 `2026.11.24-2`：prepare → verify（8/8）→ switch → restart；memory v4 已应用、`NRestarts=0`
