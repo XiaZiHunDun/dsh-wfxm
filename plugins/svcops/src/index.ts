@@ -51,6 +51,13 @@ export { gradeInspection } from './inspection/alerting.js'
 export type { AlertDecision, AlertLevel } from './inspection/alerting.js'
 export { CANDIDATE_RULES, deriveCandidates } from './inspection/candidates.js'
 export type { CandidateInput, CandidateRule, CandidateStrength } from './inspection/candidates.js'
+export { deriveSuggestions, formatSuggestions } from './suggestions.js'
+export type {
+  FailureBreakdown,
+  Suggestion,
+  SuggestionBudget,
+  SuggestionInput,
+} from './suggestions.js'
 export {
   parseExpectedPorts,
   parseThresholds,
@@ -99,6 +106,7 @@ export {
 export type {
   AlertTextInput,
   InspectionPatrol,
+  MemoryHealthDigest,
   InspectionPatrolOptions,
   PatrolConfig,
   PatrolConfigResult,

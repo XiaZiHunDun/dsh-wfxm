@@ -2150,3 +2150,19 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
       文件 `hello-wfxm.md` 仅存在于 worktree，主仓库 `git status` 干净（仅 `?? .agents/`）
 - 清理：`release --reason abandoned`（worktree 已删、`wfxm/e6chptr5qc` 分支已删）；生产副本已 reset 到 `7a08e18`；`demo` 仍在库
 - [x] 巡检告警 `dsh-wfxm-backup.service` 失败：`/etc/dsh-wfxm/env` 改 `0640 root:dshwfxm` → 手工触发备份 `Result=success`（新归档 + `.sha256`）
+
+## CA1 二期 v1 实现
+
+- [x] BT：`docs/status.json` + `scripts/verify-docs.mjs`，注册 verify-all（50 套件）
+- [x] BU：`formatFactHealth` + `patrol.memoryHealth`；日报段与冲突告警
+- [x] CC：执行器硬停 + worker 每日闸 + tasks 迁移 v13 `task_usage_daily` + 日报预算行
+- [x] CD：`deriveSuggestions` / `formatSuggestions` + `patrol.suggestionDigest`
+- [x] 文档回写：00 / 09 / 15 / 16（12.56–12.59）/ 20 / AGENTS / README
+
+## CA2 验证与发布
+
+- [x] `verify-docs` 首次捕获 30 处真实漂移，修正后 `docs ok`
+- [x] `check-style` 206 files 通过
+- [x] 全量 `verify-all`：49 passed / 0 failed / 1 advisory（preimages）
+- [ ] 提交并以 ailearn 身份推送
+- [ ] 发布新版本并 `serve --check` 8/8

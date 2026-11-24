@@ -422,6 +422,47 @@ await check('BK usage: step_end tokens are summed and priced', () => {
     && usageOutcome.usage?.costUsd === 0.0042
 })
 
+// ---- Slice CC (M8): budget hard limits ---------------------------------------
+
+const budgetExecutor = createDshExecutor({
+  dshBin: stubBin,
+  env: { STUB_MODE: 'ok', STUB_OUTFILE: join(dir, 'budget-out.txt') },
+  timeoutMs: 2_000,
+  heartbeatMs: 50,
+  tokenBudget: 1_500,
+})
+const budgetOutcome = await budgetExecutor(
+  { id: 't-budget', intent: 'cross the budget' },
+  { heartbeat: () => true, attempt: 1 },
+)
+
+await check('CC task budget: crossing step_end usage kills the attempt', () => {
+  return budgetOutcome.status === 'failed'
+    && budgetOutcome.failure === 'budget_exceeded'
+    && /budget-exceeded: used 3600 tokens > limit 1500/.test(budgetOutcome.summary)
+})
+
+const gateStore = createTaskStore(join(dir, 'budget.sqlite'))
+const gateTask = gateStore.createTask({ intent: 'wait for tomorrow', riskLevel: 'R1' })
+gateStore.recordUsage(
+  gateTask.id,
+  { inputTokens: 10, outputTokens: 0, costUsd: 0 },
+  new Date(),
+)
+const gateWorker = createTaskWorker({
+  store: gateStore,
+  execute: () => ({ status: 'succeeded', summary: 'should not run' }),
+  owner: 'budget-test',
+  dailyTokenBudget: 5,
+})
+
+await check('CC daily budget: exhausted day skips claiming and keeps the task queued', async () => {
+  const report = await gateWorker.runOnce()
+  return report.outcome === 'skipped'
+    && report.skipped === 'budget'
+    && gateStore.getTask(gateTask.id)?.status === 'queued'
+})
+
 // ---- failure classification ---------------------------------------------------
 
 const boom = makeTask({ intent: 'fail with a plain error' })

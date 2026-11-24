@@ -19,6 +19,7 @@
 | 9 | [`docs/12-技术栈选型.md`](docs/12-技术栈选型.md) | 换库 / 换插件 / 看版本矩阵时 |
 | 10 | [`docs/05-落地路线.md`](docs/05-落地路线.md)、[`docs/06-风险与待验证.md`](docs/06-风险与待验证.md) | 历史路线与风险台账；实际落点以代码与 16 为准 |
 | 11 | [`docs/18-Super-agent对照与改进建议.md`](docs/18-Super-agent对照与改进建议.md) | 动主动路径/线程/守望/并发写前（B1–B4 均已实施，含实施记） |
+| 12 | [`docs/20-二期范围.md`](docs/20-二期范围.md) | 规划二期 / 判断某能力做没做之前（含 A8/O2/N8 状态校正与 v1 四片验收） |
 
 > **产品侧（08）与实现侧（07）各是 SSOT，不要互相反推。**
 > 用 07 反推产品设计 = 把"实现有什么"当"产品该有什么"，是本项目早期走过的弯路。
@@ -49,6 +50,8 @@
 - **一期已结项（2026-11-20）** —— MVP 37/37、上线门槛 7/7；生产 `2026.11.20-6`。
   项目注册已自动推导 VCS/`prepareCmd`/`rulesDoc`（Slice BR）；`/use` 项目粘性写 `threads.project_id`
   且锚点只在回复任务消息时继承（Slice BS）；真机 worktree 灰度通过。结项口径见 [09 §九](docs/09-能力对照与实现路径.md)。
+- **二期 v1 已完成（2026-11-24）** —— BT 文档漂移门禁、BU 事实体检入巡检、CC 预算硬限、CD 日报建议；
+  范围与验收见 [20](docs/20-二期范围.md)，能力状态真源为 `docs/status.json`；`verify-all` 50 套件。
 - **产品能力构想（08，122 项）与能力对照（09）均已完成** —— 09 含逐条判定、工程量分级，以及对 01-08 的复核修正。
 - **核心机制方案（13）已写** —— 两个决定性痛点是「对话与记忆不乱」和「任务成功率」；
   主解不在更花哨的检索，而在**装配预算 + 作用域隔离 + 事实版本化**、**Verifier + 前置快照 + 重试分级 + Outbox**；
@@ -566,6 +569,23 @@
     `resolveProject` 的 `anchorProjectId` 只在 `followUp.matchedBy === 'anchor'`（回复任务消息）时继承。
     `verify-gateway 134`；发布 `2026.11.20-6` 后真机任务 `e6chptr5qc` 正确落在
     `/var/lib/dsh-wfxm/projects/dsh-wfxm/.agents/worktrees/e6chptr5qc`。
+  - **二期 v1（Slices BT/BU/CC/CD，2026-11-24）**：
+    - **BT（N2 文档漂移门禁）**：`docs/status.json` 为能力状态真源；`scripts/verify-docs.mjs` 校验相对链接、
+      行内路径、`DSH_WFXM_*` 变量、`node scripts/*.mjs`/`pnpm <script>`、`09 §9.3` 与状态一致、
+      `README`/`00` 的套件数；注册为 verify-all 第 1 套件（CI 同步）。首次运行捕获 30 处真实漂移。
+      历史文档 `01/03/04` 只校验链接；未落地变量需显式 allowlist。
+    - **BU（O2 事实体检入巡检）**：`patrol.memoryHealth` 回调 + `formatFactHealth`；日报有计数/复核候选时
+      追加「事实体检」段，仅 `conflict>0` 走 30 分钟静默告警（`patrol-memory:<target>:<bucket>`）；
+      异常只 warn，不影响巡检主流程。
+    - **CC（M8 预算硬限）**：`DSH_WFXM_TASK_TOKEN_BUDGET` / `DSH_WFXM_DAILY_TOKEN_BUDGET`（默认 0 = 不限）；
+      执行器按 `step_end` 累计，超单任务上限即杀子进程并 `failed(budget_exceeded)`；worker 领取前查当日
+      `task_usage_daily`，超限 `skipped:'budget'` 且任务保持 `queued`（次日再跑）；tasks 迁移 v13 新增日表，
+      日报追加预算行。
+    - **CD（G4 建议 v1）**：`plugins/svcops/src/suggestions.ts` 规则优先，顺序为冲突 → 重试耗尽 → 不可重试 →
+      预算 ≥80% → 巡检候选（fail 优先）→ 事实复核，最多 3 条；只进日报，末行固定提示「做 #n」走正常审批，
+      不自动建任务；生成异常只 warn。
+    - 验证：`verify-docs`/`verify-knowledge`/`verify-patrol`/`verify-svcops`/`verify-executor`/`verify-tasks`
+      新增用例；`verify-all` 50 套件。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

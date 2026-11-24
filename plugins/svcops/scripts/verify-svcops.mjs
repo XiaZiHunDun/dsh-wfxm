@@ -1,4 +1,4 @@
-import { createSystemdAdapter, SvcOpsError } from '../lib/index.js'
+import { createSystemdAdapter, deriveSuggestions, formatSuggestions, SvcOpsError } from '../lib/index.js'
 
 const calls = []
 const customRunner = {
@@ -154,6 +154,49 @@ await check('写操作走 controlCommand，读操作仍走 systemctl', async () 
   await wrapped.status('dsh-wfxm-managed-api.service')
   return seen.includes('sudo -n /usr/local/sbin/dsh-wfxm-unit-control restart dsh-wfxm-managed-api.service')
     && seen.some((key) => key.startsWith('systemctl show dsh-wfxm-managed-api.service'))
+})
+
+await check('CD suggestions: data integrity first, budget threshold, max 3', () => {
+  const candidates = [
+    { ruleId: 'disk-pressure', itemId: 'disk', target: 'h', status: 'warn', observed: '91%' },
+    { ruleId: 'missing-ports', itemId: 'ports', target: 'h', status: 'fail', observed: '8080' },
+  ]
+  const list = deriveSuggestions({
+    candidates,
+    failures: { retryExhausted: 2, nonRetryable: 0, conflicts: 1 },
+    reviewFacts: 4,
+    budget: { tokens: 8_500, limit: 10_000 },
+  })
+  const text = formatSuggestions(list)
+  return list.length === 3
+    && list[0].action.includes('合并冲突')
+    && list[1].action.includes('重试耗尽')
+    && list[2].action.includes('token 已用 85%')
+    && /^建议：\n1\. \[R2\]/.test(text)
+    && /回复「做 #n」按正常审批流程发起，不会自动执行。/.test(text)
+})
+
+await check('CD suggestions: quiet state renders nothing; candidates respect max', () => {
+  const empty = deriveSuggestions({
+    candidates: [],
+    failures: { retryExhausted: 0, nonRetryable: 1, conflicts: 0 },
+    reviewFacts: 0,
+    budget: null,
+  })
+  const many = deriveSuggestions({
+    candidates: [1, 2, 3, 4].map((index) => ({
+      ruleId: 'log-errors',
+      itemId: `logs-${index}`,
+      target: 'h',
+      status: 'warn',
+      observed: 'errors',
+    })),
+    failures: { retryExhausted: 0, nonRetryable: 0, conflicts: 0 },
+    reviewFacts: 0,
+    budget: null,
+    max: 2,
+  })
+  return formatSuggestions(empty) === null && many.length === 2
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

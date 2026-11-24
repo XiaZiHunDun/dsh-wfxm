@@ -41,6 +41,8 @@ export type FailureKind =
   | 'not_found'
   | 'invalid_input'
   | 'conflict'
+  /** Slice CC (M8): the attempt crossed its token budget and was killed. */
+  | 'budget_exceeded'
   | 'unknown'
 
 /** Slice AS (A4): a file the task produced, staged inside its workspace. */
@@ -128,6 +130,11 @@ export interface DshExecutorOptions {
    * only `costUsd` stays 0 so the owner can add prices later without a migration.
    */
   pricing?: { inputPerMTok: number; outputPerMTok: number } | null
+  /**
+   * Slice CC (M8): kill the child once accumulated `step_end` usage exceeds
+   * this many tokens (input+output). Absent/null = unlimited.
+   */
+  tokenBudget?: number | null
   /** Hard wall-clock limit per attempt; a timeout is a transient failure. */
   timeoutMs?: number
   /** Grace between SIGTERM and SIGKILL when killing the child. */
@@ -329,6 +336,10 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
   const dshBin = options.dshBin ?? 'dsh'
   const profile = options.profile ?? 'headless'
   const pricing = options.pricing ?? null
+  const tokenBudget = options.tokenBudget !== undefined && options.tokenBudget !== null
+    && options.tokenBudget > 0
+    ? options.tokenBudget
+    : null
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
@@ -461,6 +472,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
       let timedOut = false
       let leaseLost = false
       let cancelled = false
+      let budgetExceeded = false
       let spawnError: NodeJS.ErrnoException | null = null
       let settled = false
 
@@ -518,6 +530,15 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         } else if (event.type === 'status' && event.phase === 'step_end') {
           inputTokens += Number(event.usage?.inputTokens) || 0
           outputTokens += Number(event.usage?.outputTokens) || 0
+          // Slice CC (M8): budget is enforced mid-run, not after the fact.
+          if (
+            tokenBudget !== null
+            && !budgetExceeded
+            && inputTokens + outputTokens > tokenBudget
+          ) {
+            budgetExceeded = true
+            killChild()
+          }
         } else if (
           event.type === 'status'
           && event.phase === 'turn_end'
@@ -582,6 +603,12 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         if (leaseLost) {
           closeCheckpoint('aborted')
           fail('conflict', 'lease lost while the child ran; killed the attempt')
+          return
+        }
+        if (budgetExceeded) {
+          closeCheckpoint('aborted')
+          const used = inputTokens + outputTokens
+          fail('budget_exceeded', `budget-exceeded: used ${used} tokens > limit ${tokenBudget}`)
           return
         }
         if (timedOut) {

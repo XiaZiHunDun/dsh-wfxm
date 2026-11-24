@@ -778,6 +778,146 @@ check('candidates: warn findings open candidates but push no immediate alert', a
   store.close()
 })
 
+check('runOnce: fact health rides the daily digest (Slice BU)', async () => {
+  const deliveries = []
+  const calls = []
+  const current = new Date(2026, 10, 11, 10, 0, 0)
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('memory-digest'),
+    config: { intervalMinutes: 15, digestHour: 9, target: 'h' },
+    collect: async () => OK,
+    now: () => current,
+    deliver: (delivery) => deliveries.push(delivery),
+    memoryHealth: (window) => {
+      calls.push(window)
+      return {
+        text: '扫描 4 条：冲突 0 / 过期 1 / 无来源 0 / 孤儿 0 / 失效 0\n只提示，不自动取代。',
+        conflicts: 0,
+      }
+    },
+  })
+  const first = await patrol.runOnce()
+  assert.equal(first.pushed, 'digest')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].to.getTime(), current.getTime())
+  assert.equal(calls[0].from.getTime(), current.getTime() - 24 * 3_600_000)
+  assert.match(deliveries[0].text, /事实体检：\n扫描 4 条：冲突 0/)
+  patrol.stop()
+})
+
+check('runOnce: an empty fact health keeps the digest unchanged (Slice BU)', async () => {
+  const deliveries = []
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('memory-empty'),
+    config: { intervalMinutes: 15, digestHour: 9, target: 'h' },
+    collect: async () => OK,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => deliveries.push(delivery),
+    memoryHealth: () => null,
+  })
+  const result = await patrol.runOnce()
+  assert.equal(result.pushed, 'digest')
+  assert.doesNotMatch(deliveries[0].text, /事实体检/)
+  patrol.stop()
+})
+
+check('runOnce: conflicts alert immediately with the shared quiet window (Slice BU)', async () => {
+  const deliveries = []
+  let current = new Date(2026, 10, 11, 10, 0, 0)
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('memory-alert'),
+    config: { intervalMinutes: 15, digestHour: -1, target: 'h' },
+    collect: async () => OK,
+    now: () => current,
+    deliver: (delivery) => deliveries.push(delivery),
+    memoryHealth: () => ({
+      text: '扫描 2 条：冲突 1 / 过期 0 / 无来源 0 / 孤儿 0 / 失效 0\n只提示，不自动取代。',
+      conflicts: 1,
+    }),
+  })
+
+  const first = await patrol.runOnce()
+  assert.equal(first.pushed, 'memory')
+  assert.equal(deliveries.length, 1)
+  assert.match(deliveries[0].text, /^\[事实体检\] h · 冲突 1 条/)
+  assert.match(deliveries[0].dedupeKey, /^patrol-memory:h:/)
+
+  current = new Date(2026, 10, 11, 10, 5, 0)
+  assert.equal((await patrol.runOnce()).pushed, null)
+  assert.equal(deliveries.length, 1)
+
+  current = new Date(2026, 10, 11, 10, 31, 0)
+  assert.equal((await patrol.runOnce()).pushed, 'memory')
+  assert.equal(deliveries.length, 2)
+  patrol.stop()
+})
+
+check('runOnce: a throwing fact health is isolated (Slice BU)', async () => {
+  const warnings = []
+  const deliveries = []
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('memory-throw'),
+    config: { intervalMinutes: 15, digestHour: 9, target: 'h' },
+    collect: async () => OK,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => deliveries.push(delivery),
+    logger: { warn: (message) => warnings.push(message) },
+    memoryHealth: () => {
+      throw new Error('memory store gone')
+    },
+  })
+  const result = await patrol.runOnce()
+  assert.equal(result.pushed, 'digest')
+  assert.doesNotMatch(deliveries[0].text, /事实体检/)
+  assert.match(warnings.join('\n'), /memory health failed: memory store gone/)
+  patrol.stop()
+})
+
+check('runOnce: suggestions ride the daily digest (Slice CD)', async () => {
+  const deliveries = []
+  const seen = []
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('suggestions'),
+    config: { intervalMinutes: 15, digestHour: 9, target: 'h' },
+    collect: async () => OK,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => deliveries.push(delivery),
+    suggestionDigest: ({ candidates }) => {
+      seen.push(candidates)
+      return '建议：\n1. [R1] 处理巡检候选：根分区使用率偏高（依据：h · disk=91%）\n'
+        + '回复「做 #n」按正常审批流程发起，不会自动执行。'
+    },
+  })
+  const result = await patrol.runOnce()
+  assert.equal(result.pushed, 'digest')
+  assert.equal(seen.length, 1)
+  assert.deepEqual(seen[0], [])
+  assert.match(deliveries[0].text, /建议：\n1\. \[R1\] 处理巡检候选/)
+  assert.match(deliveries[0].text, /不会自动执行/)
+  patrol.stop()
+})
+
+check('runOnce: a throwing suggestion generator is isolated (Slice CD)', async () => {
+  const warnings = []
+  const deliveries = []
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('suggestions-throw'),
+    config: { intervalMinutes: 15, digestHour: 9, target: 'h' },
+    collect: async () => OK,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => deliveries.push(delivery),
+    logger: { warn: (message) => warnings.push(message) },
+    suggestionDigest: () => {
+      throw new Error('task index broken')
+    },
+  })
+  const result = await patrol.runOnce()
+  assert.equal(result.pushed, 'digest')
+  assert.doesNotMatch(deliveries[0].text, /建议：/)
+  assert.match(warnings.join('\n'), /suggestions failed: task index broken/)
+  patrol.stop()
+})
+
 for (const [name, fn] of checks) {
   try {
     const detail = await fn()

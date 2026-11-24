@@ -10,6 +10,7 @@ import {
   createMemoryStore,
   createPathProbe,
   createProjectLookupPort,
+  formatFactHealth,
   gateFact,
   prepareFact,
   projectMemoryContext,
@@ -440,6 +441,43 @@ await check('mem_health returns the five-class report', async () => {
     && value.scanned === store.liveFacts().length
     && value.counts.conflict === 0
     && Array.isArray(value.reviewCandidates)
+})
+
+await check('formatFactHealth: quiet hosts return null; findings/candidates/probes render', () => {
+  const quiet = formatFactHealth({
+    checkedAt: now.toISOString(),
+    scanned: 0,
+    status: 'ok',
+    counts: { conflict: 0, expired: 0, 'no-source': 0, orphan: 0, stale: 0 },
+    findings: [],
+    reviewCandidates: [],
+    probeUnavailable: 0,
+  })
+  const busy = formatFactHealth({
+    checkedAt: now.toISOString(),
+    scanned: 3,
+    status: 'warn',
+    counts: { conflict: 1, expired: 1, 'no-source': 0, orphan: 0, stale: 0 },
+    findings: [
+      { check: 'conflict', factId: 'f1', subject: 'gateway', predicate: 'port', detail: '' },
+      { check: 'expired', factId: 'f2', subject: 'host', predicate: 'unit', detail: '' },
+    ],
+    reviewCandidates: [{
+      factId: 'f3',
+      subject: 'old',
+      predicate: 'note',
+      lastInjectedAt: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      ageDays: 40,
+    }],
+    probeUnavailable: 2,
+  })
+  return quiet === null
+    && /扫描 3 条：冲突 1 \/ 过期 1 \/ 无来源 0 \/ 孤儿 0 \/ 失效 0/.test(busy)
+    && /- 冲突：gateway\.port（f1）/.test(busy)
+    && /- 复核候选 1 条（>30 天未被引用）/.test(busy)
+    && /探针不可用 2 条，未计失效/.test(busy)
+    && /只提示，不自动取代。/.test(busy)
 })
 
 // ---- cross-project boundary (08 §七 #3: 项目事实隔离、偏好共享) --------------

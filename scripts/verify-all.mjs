@@ -23,6 +23,7 @@ const only = argv.find((item) => item.startsWith('--only='))?.slice('--only='.le
 
 /** `ci: false` = needs credentials / systemd / docker / a live ops DB. */
 const SUITES = [
+  { name: 'docs', file: 'scripts/verify-docs.mjs', ci: true },
   { name: 'changes', file: 'plugins/changes/scripts/verify-changes.mjs', ci: true },
   { name: 'calendar', file: 'plugins/calendar/scripts/verify-calendar.mjs', ci: true },
   { name: 'search', file: 'scripts/verify-search.mjs', ci: true },

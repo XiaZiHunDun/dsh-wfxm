@@ -66,7 +66,7 @@ import {
   renderMailTodos,
   searchMail,
 } from '@dsh-wfxm/mail'
-import { createMemoryStore, createProjectLookupPort } from '@dsh-wfxm/knowledge'
+import { checkFacts, createMemoryStore, createPathProbe, createProjectLookupPort, formatFactHealth } from '@dsh-wfxm/knowledge'
 import { createReminderPort, createReminderStore } from '@dsh-wfxm/reminder'
 import {
   createDecisionRunner,
@@ -83,6 +83,8 @@ import {
   createInspectionPatrol,
   createResourceProbe,
   createSystemdAdapter,
+  deriveSuggestions,
+  formatSuggestions,
   probeListeningPorts,
   probeLogErrors,
   readInspectionConfig,
@@ -265,6 +267,8 @@ async function main() {
           timeoutMs: config.executorTimeoutMs,
           // Slice BK (I5): tokens always recorded; USD only when prices are set.
           pricing: config.pricing,
+          // Slice CC (M8): null = unlimited; the executor kills on overrun.
+          tokenBudget: config.taskTokenBudget > 0 ? config.taskTokenBudget : null,
           // One attempt = one checkpoint, so ④ pre-images and ⑤ rollback share
           // the same step id (13 §3.4 步级回滚).
           checkpoints: {
@@ -326,7 +330,10 @@ async function main() {
           haltFile: process.env.DSH_WFXM_HALT_FILE
             ?? join(process.env.DSH_WFXM_DATA_DIR ?? fileURLToPath(new URL('..', import.meta.url)), 'KILL'),
           worker: {
-            resourceLocks: config.resourceLocks,            verify: {
+            resourceLocks: config.resourceLocks,
+            // Slice CC (M8): 0 disables the daily gate.
+            dailyTokenBudget: config.dailyTokenBudget,
+            verify: {
               cwd: config.workdir,
               // R3 服务起停模板断言 `service_active` 的只读探针。适配器只认
               // 托管前缀；非托管 unit / 探测失败一律 'unknown' → 断言 skipped
@@ -824,6 +831,28 @@ async function main() {
       return text
     }
 
+    // Slice CC (M8): one line for today's spend; quiet when nothing was used
+    // and no cap is configured. Tokens are input+output.
+    const dayKey = (at) => {
+      const month = String(at.getMonth() + 1).padStart(2, '0')
+      const day = String(at.getDate()).padStart(2, '0')
+      return `${at.getFullYear()}-${month}-${day}`
+    }
+    // Slice CD (G4): the fact health read in this cycle feeds suggestions.
+    let lastFactReview = 0
+    const budgetLine = (at) => {
+      const usage = taskStore.dailyUsage(dayKey(at))
+      const tokens = usage.inputTokens + usage.outputTokens
+      if (tokens === 0 && config.taskTokenBudget === 0 && config.dailyTokenBudget === 0) return null
+      const caps = [
+        config.taskTokenBudget > 0 ? `单任务 ${config.taskTokenBudget}` : null,
+        config.dailyTokenBudget > 0 ? `每日 ${config.dailyTokenBudget}` : null,
+      ].filter((item) => item !== null)
+      const cap = caps.length === 0 ? '' : `（上限 ${caps.join(' / ')}）`
+      const cost = usage.costUsd > 0 ? ` · $${usage.costUsd.toFixed(2)}` : ''
+      return `预算：今日 tokens ${tokens}${cap}${cost}`
+    }
+
     try {
       patrol = createInspectionPatrol({
         dbPath: config.dbPath,
@@ -832,10 +861,12 @@ async function main() {
         expectedPorts: inspection.expectedPorts,
         // Slice M: task digest shares the daily gate with the inspection digest
         // but goes out as its own message; ⑤ owns the data, this root only reads.
-        taskDigest: ({ from, to }) => summarizeTaskDigest(
-          taskStore.listTasks(),
-          { from, to },
-        )?.text ?? null,
+        taskDigest: ({ from, to }) => {
+          const digest = summarizeTaskDigest(taskStore.listTasks(), { from, to })
+          const budget = budgetLine(to)
+          if (digest === null) return budget
+          return budget === null ? digest.text : `${digest.text}\n${budget}`
+        },
         // Slice N/O: conversation digest reads ① threads/inbox and ⑤ task links.
         // The structured body never carries message text; Slice O adds one
         // model-written paragraph on top, and any failure keeps the body.
@@ -865,6 +896,45 @@ async function main() {
           const health = gatewayStore.outboxHealth({ since: from, now: to })
           const retrying = health.retrying > 0 ? `（重试 ${health.retrying}）` : ''
           return `出站：失败 ${health.failed} · 积压 ${health.pending}${retrying}`
+        },
+        // Slice BU (O2): read-only fact health; the knowledge owner renders the
+        // section, the patrol only appends it and gates the conflict alert.
+        memoryHealth: async ({ to }) => {
+          const memoryStore = stores?.memory
+          if (memoryStore === undefined || memoryStore === null) return null
+          const report = await checkFacts({
+            store: memoryStore,
+            now: to,
+            probe: createPathProbe(),
+          })
+          lastFactReview = report.reviewCandidates.length
+          const text = formatFactHealth(report)
+          return text === null ? null : { text, conflicts: report.counts.conflict }
+        },
+        // Slice CD (G4): advisory only — derives from state already collected and
+        // never creates a task. "做 #n" still goes through the normal approval.
+        suggestionDigest: ({ to, candidates }) => {
+          const since = new Date(to.getTime() - 7 * 24 * 3_600_000)
+          const tasks = taskStore.listTasks()
+          const failed = tasks.filter(
+            (task) => task.status === 'failed'
+              && task.finishedAt !== null
+              && Date.parse(task.finishedAt) >= since.getTime(),
+          )
+          const usage = taskStore.dailyUsage(dayKey(to))
+          const budget = config.dailyTokenBudget > 0
+            ? { tokens: usage.inputTokens + usage.outputTokens, limit: config.dailyTokenBudget }
+            : null
+          return formatSuggestions(deriveSuggestions({
+            candidates,
+            failures: {
+              retryExhausted: failed.filter((task) => task.attempt >= task.maxAttempts).length,
+              nonRetryable: failed.filter((task) => task.attempt < task.maxAttempts).length,
+              conflicts: tasks.filter((task) => task.mergeState === 'conflict').length,
+            },
+            reviewFacts: lastFactReview,
+            budget,
+          }))
         },
         deliver: ({ text, dedupeKey }) => {
           // v1 has one owner; `listBindings` is ascending, so the newest live

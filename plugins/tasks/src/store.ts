@@ -376,6 +376,20 @@ ALTER TABLE task_assertions_v12 RENAME TO task_assertions;
 CREATE INDEX IF NOT EXISTS ix_task_assertions_task ON task_assertions(task_id);
 `
 
+/**
+ * v13 (Slice CC / M8): per-day usage rollup so the daily token budget survives
+ * restarts. The task row keeps the lifetime total; this table is the day view.
+ */
+const TASKS_V13_DDL = `
+CREATE TABLE IF NOT EXISTS task_usage_daily (
+  day           TEXT PRIMARY KEY,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd      REAL NOT NULL DEFAULT 0,
+  updated_at    TEXT NOT NULL
+);
+`
+
 const MIGRATIONS: ReadonlyArray<{ version: number; ddl: string }> = [
   {
     version: 1,
@@ -392,6 +406,7 @@ const MIGRATIONS: ReadonlyArray<{ version: number; ddl: string }> = [
   { version: 10, ddl: TASKS_V10_DDL },
   { version: 11, ddl: TASKS_V11_DDL },
   { version: 12, ddl: TASKS_V12_DDL },
+  { version: 13, ddl: TASKS_V13_DDL },
 ]
 
 /** Slice BK (I5): one attempt's observed usage, accumulated per task. */
@@ -519,7 +534,9 @@ export interface TaskStore {
   getTask(id: string): Task | null
   listTasks(filter?: TaskFilter): Task[]
   /** Slice BK (I5): add one attempt's usage; safe to call on every settle path. */
-  recordUsage(taskId: string, usage: TaskUsage): void
+  recordUsage(taskId: string, usage: TaskUsage, at?: Date): void
+  /** Slice CC (M8): tokens/cost accumulated on one local calendar day. */
+  dailyUsage(day: string): TaskUsage
   transition(taskId: string, input: TransitionInput): Task
   addAssertion(taskId: string, assertion: PreparedAssertion): TaskAssertion
   listAssertions(taskId: string): TaskAssertion[]
@@ -1013,8 +1030,14 @@ function toResourceLock(row: ResourceLockRow): ResourceLock {
   }
 }
 
-function isUniqueViolation(error: unknown): boolean {
-  return error instanceof Error && /UNIQUE constraint failed/.test(error.message)
+/** Slice CC (M8): local calendar day used by the daily usage rollup. */
+function localDay(at: Date): string {
+  const month = String(at.getMonth() + 1).padStart(2, '0')
+  const day = String(at.getDate()).padStart(2, '0')
+  return `${at.getFullYear()}-${month}-${day}`
+}
+
+function isUniqueViolation(error: unknown): boolean {  return error instanceof Error && /UNIQUE constraint failed/.test(error.message)
 }
 
 function migrate(db: Database): void {
@@ -1115,6 +1138,19 @@ export function createTaskStore(dbPath: string): TaskStore {
            cost_usd      = COALESCE(cost_usd, 0) + ?
      WHERE id = ?
   `)
+  // Slice CC (M8): the day rollup behind the daily budget gate.
+  const addDailyUsage = db.prepare(`
+    INSERT INTO task_usage_daily(day, input_tokens, output_tokens, cost_usd, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(day) DO UPDATE SET
+      input_tokens  = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cost_usd      = cost_usd + excluded.cost_usd,
+      updated_at    = excluded.updated_at
+  `)
+  const selectDailyUsage = db.prepare(
+    'SELECT input_tokens, output_tokens, cost_usd FROM task_usage_daily WHERE day = ?',
+  )
   const updateTransition = db.prepare(`
     UPDATE tasks
        SET status = ?, attempt = ?, started_at = ?, finished_at = ?,
@@ -1413,15 +1449,25 @@ export function createTaskStore(dbPath: string): TaskStore {
    * Slice BK (I5): record one attempt's usage. Invalid/negative values are
    * clamped rather than thrown — usage bookkeeping must never fail a task.
    */
-  const recordUsage = (taskId: string, usage: TaskUsage): void => {
+  const recordUsage = (taskId: string, usage: TaskUsage, at?: Date): void => {
     const clean = (value: number): number =>
       Number.isFinite(value) && value > 0 ? value : 0
-    addTaskUsage.run(
-      Math.floor(clean(usage.inputTokens)),
-      Math.floor(clean(usage.outputTokens)),
-      clean(usage.costUsd),
-      taskId,
-    )
+    const input = Math.floor(clean(usage.inputTokens))
+    const output = Math.floor(clean(usage.outputTokens))
+    const cost = clean(usage.costUsd)
+    addTaskUsage.run(input, output, cost, taskId)
+    // Slice CC (M8): the same attempt feeds the day rollup (local calendar day).
+    const when = at ?? new Date()
+    addDailyUsage.run(localDay(when), input, output, cost, when.toISOString())
+  }
+
+  const dailyUsage = (day: string): TaskUsage => {
+    const row = selectDailyUsage.get(day) as
+      | { input_tokens: number; output_tokens: number; cost_usd: number }
+      | undefined
+    return row === undefined
+      ? { inputTokens: 0, outputTokens: 0, costUsd: 0 }
+      : { inputTokens: row.input_tokens, outputTokens: row.output_tokens, costUsd: row.cost_usd }
   }
 
   function appendEvent(taskId: string, type: TaskEventType, payload?: Json): TaskEvent {
@@ -1851,6 +1897,8 @@ export function createTaskStore(dbPath: string): TaskStore {
     getTask,
 
     recordUsage,
+
+    dailyUsage,
 
     listTasks(filter) {
       const limit = filter?.limit === undefined ? undefined : Math.max(1, Math.floor(filter.limit))

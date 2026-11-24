@@ -2959,3 +2959,36 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
 - `verify-calendar`：窗口边界 `(now, now+lead]`、`reminded_at` 幂等、v1→v2 原地升级、
   文本渲染、无绑定不标记、入队失败不标记、`lead<=0` 关闭、改期重置。
 - 真机：创建 10+ 分钟后开始的事件 → 到时收到一条提醒；同事件不重复。
+
+## 二期 v1（BT / BU / CC / CD）
+
+### 1. 目标
+
+- **BT（N2）**：文档写的事实与代码不一致时，CI 直接失败。
+- **BU（O2）**：事实冲突/过期/孤儿进入每日巡检，不再依赖「有人想起来去问模型」。
+- **CC（M8）**：token 花超就停，单任务与每日两级；重启不丢当日用量。
+- **CD（G4）**：日报给出 ≤3 条有依据的建议，只读、不自动执行。
+
+### 2. 机制
+
+- BT：`docs/status.json` 为能力状态真源；`scripts/verify-docs.mjs` 校验链接、行内路径、
+  `DSH_WFXM_*`、脚本命令、`09 §9.3` 一致性、`README`/`00` 套件数；注册为 verify-all 第 1 套件。
+- BU：`patrol.memoryHealth` 回调（组合根注入 `checkFacts`）→ 日报「事实体检」段；
+  仅 `conflict>0` 即时告警，复用 30 分钟静默窗；异常只 warn。
+- CC：执行器累计 `step_end` usage，超 `taskTokenBudget` 杀子进程 → `failed(budget_exceeded)`；
+  worker 领取前查 `task_usage_daily`，超 `dailyTokenBudget` 返回 `skipped:'budget'`，任务保持 `queued`。
+- CD：`deriveSuggestions` 规则优先，顺序为冲突 → 重试耗尽 → 不可重试 → 预算 ≥80% →
+  巡检候选（fail 优先）→ 事实复核；`formatSuggestions` 渲染并声明不自动执行。
+
+### 3. 边界
+
+- 预算默认 `0`（不限制）；每日闸不解冻历史失败任务，只影响新领取。
+- 建议不创建/修改任务；「做 #n」仍走 R2/R3。
+- 体检不自动取代/归档事实；探针不可用只计数。
+- 文档门禁不校验易变数字；历史文档 `01/03/04` 的行内路径豁免。
+
+### 4. 验证
+
+- 套件：`verify-docs`、`verify-knowledge`、`verify-patrol`、`verify-svcops`、
+  `verify-executor`、`verify-tasks` 新增用例；全量 49 passed / 0 failed / 1 advisory。
+- 真机：巡检日报可见体检/预算/建议段；预算超限任务被硬停；`systemctl restart` 后当日用量不丢。

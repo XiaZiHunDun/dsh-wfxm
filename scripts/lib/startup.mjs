@@ -207,6 +207,9 @@ export function parseServeConfig(env = process.env) {
   config.pricing = priceIn === 0 && priceOut === 0
     ? null
     : { inputPerMTok: priceIn, outputPerMTok: priceOut }
+  // Slice CC (M8): 0 = unlimited. Tokens are input+output from `step_end`.
+  config.taskTokenBudget = readInt(env, 'DSH_WFXM_TASK_TOKEN_BUDGET', 0, problems, [0, 1_000_000_000])
+  config.dailyTokenBudget = readInt(env, 'DSH_WFXM_DAILY_TOKEN_BUDGET', 0, problems, [0, 1_000_000_000])
   // Slice BI (A8): optional OpenAI-compatible ASR. The key is a *file path*
   // (docs/16 §二: secrets never go in env), readable by the service user.
   // Base URL and key file or neither; absent keeps the "转写未启用" note.

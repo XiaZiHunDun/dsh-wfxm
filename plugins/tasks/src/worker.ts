@@ -20,6 +20,8 @@ export type FailureKind =
   | 'not_found'
   | 'invalid_input'
   | 'conflict'
+  /** Slice CC (M8): the attempt crossed the token budget and was killed. */
+  | 'budget_exceeded'
   | 'unknown'
 
 /** Slice AS (A4): a produced file the host should deliver as an attachment. */
@@ -113,6 +115,8 @@ export type WorkerSkipReason
     | 'paused'
     /** H4: the host's global stop is on; no new task may be claimed. */
     | 'halted'
+    /** Slice CC (M8): today's token budget is exhausted; wait for tomorrow. */
+    | 'budget'
 
 export interface TaskRunReport {
   taskId: string | null
@@ -154,6 +158,11 @@ export interface TaskWorkerOptions {
   resourceTtlSec?: number
   /** Delay before a resource-blocked task is retried. */
   resourceRetryMs?: number
+  /**
+   * Slice CC (M8): tokens (input+output) allowed per local calendar day.
+   * `0`/absent disables the gate; blocked tasks stay queued for tomorrow.
+   */
+  dailyTokenBudget?: number
   /**
    * Slice AS (A4): called with files the attempt produced, after the Verifier
    * accepted the result. A delivery failure never changes the task outcome.
@@ -204,6 +213,7 @@ function classify(error: unknown): FailureKind {
     || kind === 'not_found'
     || kind === 'invalid_input'
     || kind === 'conflict'
+    || kind === 'budget_exceeded'
   ) {
     return kind
   }
@@ -221,6 +231,13 @@ function errorCodeOf(error: unknown): string | null {
 
 function idle(): TaskRunReport {
   return { taskId: null, outcome: 'skipped', failure: null, skipped: 'idle', attempt: null, wakeAt: null }
+}
+
+/** Slice CC (M8): the local calendar day the daily budget is scoped to. */
+function localDay(at: Date): string {
+  const month = String(at.getMonth() + 1).padStart(2, '0')
+  const day = String(at.getDate()).padStart(2, '0')
+  return `${at.getFullYear()}-${month}-${day}`
 }
 
 export interface TaskWorker {
@@ -242,6 +259,9 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
   const backoff = options.backoffMs ?? DEFAULT_BACKOFF_MS
   const now = options.now ?? (() => new Date())
+  const dailyTokenBudget = options.dailyTokenBudget !== undefined && options.dailyTokenBudget > 0
+    ? options.dailyTokenBudget
+    : null
 
   let timer: ReturnType<typeof setInterval> | null = null
   let running = false
@@ -276,7 +296,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     // needs-input, so cost is not lost when a run ends early.
     if (outcome.usage !== undefined) {
       try {
-        store.recordUsage(task.id, outcome.usage)
+        store.recordUsage(task.id, outcome.usage, now())
       } catch (error) {
         options.onError?.(error)
       }
@@ -407,6 +427,21 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
 
   async function runOnce(): Promise<TaskRunReport> {
     store.recoverExpiredLeases({ now: now() })
+    // Slice CC (M8): the daily gate runs before claiming, so blocked tasks stay
+    // queued (and are picked up after midnight) instead of failing.
+    if (dailyTokenBudget !== null) {
+      const used = store.dailyUsage(localDay(now()))
+      if (used.inputTokens + used.outputTokens >= dailyTokenBudget) {
+        return {
+          taskId: null,
+          outcome: 'skipped',
+          failure: null,
+          skipped: 'budget',
+          attempt: null,
+          wakeAt: null,
+        }
+      }
+    }
     const task = store.claimTask({ owner, leaseMs, now: now() })
     if (task === null) return idle()
 

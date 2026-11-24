@@ -1,0 +1,93 @@
+{
+  "note": "Capability status source of truth for docs/00 §7 and docs/09 §9.3. Checked by scripts/verify-docs.mjs; keep evidence paths real.",
+  "capabilities": [
+    {
+      "id": "A8",
+      "name": "语音转写",
+      "state": "done",
+      "phase": "done",
+      "evidence": ["plugins/feishu/src/asr.ts", "scripts/serve.mjs"],
+      "note": "Slice BI/BJ：ASR seam 可选 + 零后端引导；微信语音仍不做"
+    },
+    {
+      "id": "O2",
+      "name": "事实体检",
+      "state": "done",
+      "phase": "done",
+      "evidence": ["plugins/knowledge/src/health.ts", "plugins/svcops/src/patrol.ts", "scripts/serve.mjs"],
+      "note": "Slice BU：mem_health R0 + 巡检日报接入；冲突即时告警，不自动取代"
+    },
+    {
+      "id": "N8",
+      "name": "契约版本化与迁移",
+      "state": "partial",
+      "phase": "v2",
+      "evidence": ["plugins/gateway/src/store.ts", "docs/15-数据与契约.md"],
+      "note": "已有 schema_migrations(module, version)；缺 migrations/NNN_*.sql + checksum"
+    },
+    {
+      "id": "N2",
+      "name": "文档漂移检测",
+      "state": "done",
+      "phase": "done",
+      "evidence": ["scripts/verify-docs.mjs", "docs/status.json"],
+      "note": "Slice BT：链接/路径/环境变量/命令/状态/套件数门禁"
+    },
+    {
+      "id": "M8",
+      "name": "预算与配额硬限制",
+      "state": "done",
+      "phase": "done",
+      "evidence": ["plugins/executor/src/executor.ts", "plugins/tasks/src/worker.ts", "plugins/tasks/src/store.ts"],
+      "note": "Slice CC：单任务 step_end 硬停 + 每日 task_usage_daily 闸；日报预算行"
+    },
+    {
+      "id": "G4",
+      "name": "建议",
+      "state": "done",
+      "phase": "done",
+      "evidence": ["plugins/svcops/src/suggestions.ts", "plugins/svcops/src/patrol.ts", "scripts/serve.mjs"],
+      "note": "Slice CD：规则优先生成 ≤3 条日报建议，只读、不自动建任务"
+    },
+    {
+      "id": "G5",
+      "name": "记忆维护",
+      "state": "planned",
+      "phase": "v2",
+      "evidence": [],
+      "note": "依赖 G4 的确认交互"
+    },
+    {
+      "id": "O1",
+      "name": "领域路由与专家接入",
+      "state": "planned",
+      "phase": "v2",
+      "evidence": ["plugins/knowledge/src/store.ts"],
+      "note": "projects.default_expert 字段已有；缺 ExpertExecutor"
+    },
+    {
+      "id": "N6",
+      "name": "生成物治理",
+      "state": "planned",
+      "phase": "v2",
+      "evidence": [],
+      "note": "当前无 codegen 产物"
+    },
+    {
+      "id": "M10",
+      "name": "供应链与许可证治理",
+      "state": "planned",
+      "phase": "v2",
+      "evidence": [],
+      "note": "可作运维脚本，不进 v1"
+    },
+    {
+      "id": "WX-P1",
+      "name": "微信 P1 兜底",
+      "state": "planned",
+      "phase": "v2",
+      "evidence": [],
+      "note": "主通道是飞书；无需求前不做"
+    }
+  ]
+}

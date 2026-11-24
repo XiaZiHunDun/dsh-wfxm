@@ -117,7 +117,8 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     && names.includes('task_inputs')
     && names.includes('task_checkpoints')
     && names.includes('resource_locks')
-    && version.version === 12
+    && names.includes('task_usage_daily')
+    && version.version === 13
     && ['input_tokens', 'output_tokens', 'cost_usd'].every((column) => columns.includes(column))
     && objects.includes('ux_task_events_seq')
     && objects.includes('task_events_no_update')
@@ -146,6 +147,34 @@ await check('BK usage accumulates token/cost across attempts', () => {
   return task.inputTokens === 2_000
     && task.outputTokens === 500
     && Math.abs(task.costUsd - 0.003) < 1e-9
+})
+
+await check('CC daily usage rolls up per local day (M8)', () => {
+  const usageTask = store.createTask({ intent: 'daily rollup', riskLevel: 'R1' })
+  store.recordUsage(
+    usageTask.id,
+    { inputTokens: 1_000, outputTokens: 200, costUsd: 0.001 },
+    new Date(2026, 2, 10, 9, 0, 0),
+  )
+  store.recordUsage(
+    usageTask.id,
+    { inputTokens: 500, outputTokens: 100, costUsd: 0.0005 },
+    new Date(2026, 2, 10, 18, 0, 0),
+  )
+  store.recordUsage(
+    usageTask.id,
+    { inputTokens: 300, outputTokens: 50, costUsd: 0.0002 },
+    new Date(2026, 2, 11, 1, 0, 0),
+  )
+  const today = store.dailyUsage('2026-03-10')
+  const tomorrow = store.dailyUsage('2026-03-11')
+  const empty = store.dailyUsage('2026-03-12')
+  return today.inputTokens === 1_500
+    && today.outputTokens === 300
+    && Math.abs(today.costUsd - 0.0015) < 1e-9
+    && tomorrow.inputTokens === 300
+    && empty.inputTokens === 0
+    && empty.costUsd === 0
 })
 
 await check('a v1 database upgrades in place to v3 without rebuilding old tables', () => {
@@ -200,7 +229,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     && keptTask.taskRef === null
     && fresh.taskRef !== null
     && fresh.taskRef.length === 10
-    && version.version === 12
+    && version.version === 13
     && keptTask.isolation === 'serial'
     && fresh.isolation === 'serial'
     && fresh.worktreePath === null

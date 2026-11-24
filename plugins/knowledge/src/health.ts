@@ -183,3 +183,51 @@ export async function checkFacts(options: HealthOptions): Promise<HealthReport> 
     probeUnavailable,
   }
 }
+
+const HEALTH_LABELS: Record<HealthCheck, string> = {
+  conflict: '冲突',
+  expired: '过期',
+  'no-source': '无来源',
+  orphan: '孤儿',
+  stale: '失效',
+}
+
+export interface HealthDigestOptions {
+  maxFindings?: number
+  maxReviewCandidates?: number
+}
+
+/**
+ * O2 (Slice BU): one digest section for the patrol. Returns `null` when there
+ * is nothing to say (no findings and no review candidates) so quiet hosts stay
+ * quiet. Probe-unavailable is shown as a note, never as a finding.
+ */
+export function formatFactHealth(
+  report: HealthReport,
+  options: HealthDigestOptions = {},
+): string | null {
+  const total = Object.values(report.counts).reduce((sum, count) => sum + count, 0)
+  if (total === 0 && report.reviewCandidates.length === 0) return null
+  const maxFindings = options.maxFindings ?? 5
+  const maxReviewCandidates = options.maxReviewCandidates ?? 3
+  const lines = [
+    `扫描 ${report.scanned} 条：冲突 ${report.counts.conflict} / 过期 ${report.counts.expired}`
+    + ` / 无来源 ${report.counts['no-source']} / 孤儿 ${report.counts.orphan} / 失效 ${report.counts.stale}`,
+  ]
+  for (const finding of report.findings.slice(0, maxFindings)) {
+    lines.push(
+      `- ${HEALTH_LABELS[finding.check]}：${finding.subject}.${finding.predicate}（${finding.factId}）`,
+    )
+  }
+  if (report.reviewCandidates.length > 0) {
+    lines.push(`- 复核候选 ${report.reviewCandidates.length} 条（>30 天未被引用）`)
+    for (const candidate of report.reviewCandidates.slice(0, maxReviewCandidates)) {
+      lines.push(`  - ${candidate.subject}.${candidate.predicate}（${candidate.ageDays} 天）`)
+    }
+  }
+  if (report.probeUnavailable > 0) {
+    lines.push(`探针不可用 ${report.probeUnavailable} 条，未计失效`)
+  }
+  lines.push('只提示，不自动取代。')
+  return lines.join('\n')
+}

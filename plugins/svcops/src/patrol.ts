@@ -10,6 +10,7 @@
 import { hostname } from 'node:os'
 import { gradeInspection, type AlertDecision } from './inspection/alerting.js'
 import { deriveCandidates } from './inspection/candidates.js'
+import type { CandidateInput } from './inspection/candidates.js'
 import {
   DEFAULT_THRESHOLDS,
   evaluate,
@@ -182,6 +183,12 @@ export interface PatrolDelivery {
   dedupeKey: string
 }
 
+/** O2 (Slice BU): the memory owner renders the section; `conflicts` gates the alert. */
+export interface MemoryHealthDigest {
+  text: string
+  conflicts: number
+}
+
 export interface InspectionPatrolOptions {
   dbPath: string
   config: PatrolConfig
@@ -221,6 +228,23 @@ export interface InspectionPatrolOptions {
    * composition root formats them; a throw leaves the digest intact.
    */
   outboxDigest?: (window: { from: Date; to: Date }) => string | null
+  /**
+   * O2 (Slice BU): read-only fact health, rendered by the memory owner. Called
+   * once per cycle so a conflict can alert immediately; `null` keeps the daily
+   * digest unchanged. A throw/rejection is isolated like the other sections.
+   */
+  memoryHealth?: (
+    window: { from: Date; to: Date },
+  ) => MemoryHealthDigest | null | Promise<MemoryHealthDigest | null>
+  /**
+   * G4 v1 (Slice CD): advisory suggestions for the daily digest. Receives the
+   * candidates observed in this cycle; must not create or modify tasks.
+   */
+  suggestionDigest?: (context: {
+    from: Date
+    to: Date
+    candidates: CandidateInput[]
+  }) => string | null | Promise<string | null>
   logger?: {
     info?: (message: string) => void
     warn?: (message: string) => void
@@ -230,7 +254,7 @@ export interface InspectionPatrolOptions {
 export interface PatrolRunResult {
   record: InspectionRecord
   alert: AlertDecision
-  /** `alert`, `digest`, `tasks`, `conversations`, `weekly`, or their `+` combinations; `null` when nothing was pushed. */
+  /** `alert`, `memory`, `digest`, `tasks`, `conversations`, `weekly`, or their `+` combinations; `null` when nothing was pushed. */
   pushed: string | null
 }
 
@@ -311,6 +335,19 @@ export function createInspectionPatrol(options: InspectionPatrolOptions): Inspec
     store.recordCandidates(candidates, at)
     store.resolveCandidates(candidates, target, at)
     const alert = gradeInspection(report)
+    // O2 (Slice BU): a fact-health snapshot per cycle; the window is passed for
+    // symmetry with the other readers. A failure leaves the cycle intact.
+    let memory: MemoryHealthDigest | null = null
+    try {
+      memory = (await options.memoryHealth?.({
+        from: new Date(at.getTime() - DEFAULT_DIGEST_WINDOW_HOURS * 3_600_000),
+        to: at,
+      })) ?? null
+    } catch (error) {
+      options.logger?.warn?.(
+        `memory health failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
     let pushed: string | null = null
 
     if (alert.level === 'immediate') {
@@ -338,6 +375,23 @@ export function createInspectionPatrol(options: InspectionPatrolOptions): Inspec
         })
         lastAlertAt.set(key, at.getTime())
         pushed = 'alert'
+      }
+    }
+
+    // Only conflicts are severe enough for an immediate push; the rest waits
+    // for the daily digest. Same quiet window as the host alert.
+    if (memory !== null && memory.conflicts > 0) {
+      const key = `patrol-memory:${target}`
+      const last = lastAlertAt.get(key) ?? 0
+      if (at.getTime() - last < quietMs) {
+        options.logger?.info?.(`memory alert suppressed by the ${Math.round(quietMs / 60_000)}min quiet window`)
+      } else {
+        push({
+          text: `[事实体检] ${target} · 冲突 ${memory.conflicts} 条\n${memory.text}`,
+          dedupeKey: `${key}:${Math.floor(at.getTime() / quietMs)}`,
+        })
+        lastAlertAt.set(key, at.getTime())
+        pushed = pushed === null ? 'memory' : `${pushed}+memory`
       }
     }
 
@@ -389,10 +443,25 @@ export function createInspectionPatrol(options: InspectionPatrolOptions): Inspec
         })
         if (digest.runs > 0) {
           const candidateSection = formatCandidateDigest(store.candidateDigest(from.toISOString()))
+          // G4 v1 (Slice CD): advisory only; a throw must not lose the digest.
+          let suggestionSection: string | null = null
+          try {
+            suggestionSection = (await options.suggestionDigest?.({
+              from,
+              to: at,
+              candidates,
+            })) ?? null
+          } catch (error) {
+            options.logger?.warn?.(
+              `suggestions failed: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          }
           push({
             text: [
               formatInspectionDigest(digest, target),
               candidateSection ?? '',
+              memory === null ? '' : `事实体检：\n${memory.text}`,
+              suggestionSection ?? '',
               readOutboxLine(from, at) ?? '',
             ]
               .filter((line) => line !== '')
