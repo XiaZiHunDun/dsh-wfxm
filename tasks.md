@@ -2184,3 +2184,5 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 日报「事实体检」段追加待确认提案（最多 3 个 id）
 - [x] `verify-knowledge` 57 例（新增 11 例）
 - [x] 文档回写：00 / 09 / 16（12.62）/ 20 / status.json / AGENTS / spec / tasks
+- [x] 全量 `verify-all`：50 passed / 0 failed / 1 advisory
+- [x] 发布 `2026.11.24-2`：prepare → verify（8/8）→ switch → restart；memory v4 已应用、`NRestarts=0`
