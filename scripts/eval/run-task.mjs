@@ -6,7 +6,9 @@
  *
  * stdin payload：
  *   { id, turns: [string], timeoutMs?, runtimeHints: { dsh: { profile?, cwd?, env? } } }
- * stdout：最后一行 `__EVAL_RESULT__{ ndjson, stderr, exitCode, durationMs, sessionId? }`
+ * stdout：最后一行 `__EVAL_RESULT__{ turns:[{ndjson, sessionId?}], ndjson, stderr, exitCode, durationMs, sessionId? }`
+ *
+ * 多轮：首轮拿 `session` 事件里的 sessionId，后续轮用 `--session-id` 续接同一会话。
  *
  * 环境变量：
  *   DSH_EVAL_DSH        dsh 可执行文件（默认 dsh）
@@ -39,6 +41,65 @@ function emit(result) {
   process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(result)}\n`)
 }
 
+function sessionIdFrom(ndjson) {
+  for (const line of ndjson.split(/\r?\n/)) {
+    try {
+      const event = JSON.parse(line)
+      if (event?.type === "session" && typeof event.sessionId === "string") {
+        return event.sessionId
+      }
+    } catch {
+      // 非 JSON 行忽略。
+    }
+  }
+  return undefined
+}
+
+/** 跑一轮；sessionId 存在时续接已有会话。 */
+function runTurn({ bin, profile, cwd, env: extraEnv, prompt, sessionId, timeoutMs }) {
+  return new Promise((resolve) => {
+    const args = ["--profile", profile, "--json"]
+    if (sessionId) args.push("--session-id", sessionId)
+    args.push("-")
+
+    const child = spawn(bin, args, {
+      cwd,
+      env: { ...process.env, ...extraEnv },
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+
+    let ndjson = ""
+    let stderr = ""
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ ndjson, stderr, ...result })
+    }
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      finish({ error: `dsh 超时（${timeoutMs}ms）`, exitCode: null })
+    }, timeoutMs)
+
+    child.stdout.on("data", (chunk) => {
+      ndjson += chunk.toString()
+    })
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString()
+    })
+    child.on("error", (err) => {
+      finish({ error: `无法启动 dsh（${bin}）：${err.message}`, exitCode: null })
+    })
+    child.on("close", (code) => {
+      finish({ exitCode: code, sessionId: sessionIdFrom(ndjson) })
+    })
+
+    child.stdin.write(prompt)
+    child.stdin.end()
+  })
+}
+
 async function main() {
   let payload
   try {
@@ -49,8 +110,8 @@ async function main() {
   }
 
   const turns = Array.isArray(payload.turns) ? payload.turns : []
-  if (turns.length !== 1) {
-    emit({ error: `unsupported:multi-turn（当前驱动只支持单轮，收到 ${turns.length} 轮）` })
+  if (turns.length === 0) {
+    emit({ error: "payload.turns 为空" })
     return
   }
 
@@ -61,71 +122,56 @@ async function main() {
   const timeoutMs = Number(payload.timeoutMs) > 0 ? Number(payload.timeoutMs) : 180_000
 
   const began = Date.now()
-  const child = spawn(bin, ["--profile", profile, "--json", "-"], {
-    cwd,
-    env: { ...process.env, ...(hints.env ?? {}) },
-    stdio: ["pipe", "pipe", "pipe"],
-  })
+  const results = []
+  let sessionId
+  let lastExitCode = 0
+  let lastStderr = ""
 
-  let ndjson = ""
-  let stderr = ""
-  let settled = false
-  const timer = setTimeout(() => {
-    if (settled) return
-    settled = true
-    child.kill("SIGKILL")
-    emit({
-      error: `dsh 超时（${timeoutMs}ms）`,
-      ndjson,
-      stderr,
-      durationMs: Date.now() - began,
-    })
-  }, timeoutMs)
-
-  child.stdout.on("data", (chunk) => {
-    ndjson += chunk.toString()
-  })
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk.toString()
-  })
-
-  child.on("error", (err) => {
-    if (settled) return
-    settled = true
-    clearTimeout(timer)
-    emit({
-      error: `无法启动 dsh（${bin}）：${err.message}`,
-      stderr,
-      durationMs: Date.now() - began,
-    })
-  })
-
-  child.on("close", (code) => {
-    if (settled) return
-    settled = true
-    clearTimeout(timer)
-    let sessionId
-    for (const line of ndjson.split(/\r?\n/)) {
-      try {
-        const event = JSON.parse(line)
-        if (event?.type === "session" && typeof event.sessionId === "string") {
-          sessionId = event.sessionId
-        }
-      } catch {
-        // 非 JSON 行忽略；由 agent-eval 侧统一过滤。
-      }
-    }
-    emit({
-      ndjson,
-      stderr,
-      exitCode: code,
-      durationMs: Date.now() - began,
+  for (const prompt of turns) {
+    const turn = await runTurn({
+      bin,
+      profile,
+      cwd,
+      env: hints.env ?? {},
+      prompt,
       ...(sessionId ? { sessionId } : {}),
+      timeoutMs,
     })
-  })
+    results.push({ ndjson: turn.ndjson, ...(turn.sessionId ? { sessionId: turn.sessionId } : {}) })
+    if (turn.error) {
+      emit({
+        error: turn.error,
+        turns: results,
+        ndjson: results.map((item) => item.ndjson).join(""),
+        stderr: turn.stderr,
+        durationMs: Date.now() - began,
+      })
+      return
+    }
+    // 首轮或使用显式 sessionId 时，后续轮续接。
+    sessionId = turn.sessionId ?? sessionId
+    lastExitCode = turn.exitCode ?? 0
+    lastStderr = turn.stderr
+    if (!sessionId) {
+      emit({
+        error: "dsh 未返回 sessionId，无法续接多轮",
+        turns: results,
+        ndjson: results.map((item) => item.ndjson).join(""),
+        stderr: turn.stderr,
+        durationMs: Date.now() - began,
+      })
+      return
+    }
+  }
 
-  child.stdin.write(turns[0])
-  child.stdin.end()
+  emit({
+    turns: results,
+    ndjson: results.map((item) => item.ndjson).join(""),
+    stderr: lastStderr,
+    exitCode: lastExitCode,
+    durationMs: Date.now() - began,
+    sessionId,
+  })
 }
 
 main()
