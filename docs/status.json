@@ -76,10 +76,10 @@
     {
       "id": "M10",
       "name": "供应链与许可证治理",
-      "state": "planned",
-      "phase": "v2",
-      "evidence": [],
-      "note": "可作运维脚本，不进 v1"
+      "state": "done",
+      "phase": "done",
+      "evidence": ["scripts/verify-supply.mjs"],
+      "note": "Slice CE：清单协议/版本区间/来源/许可证门禁；4 个既有 importer 漂移为显式基线"
     },
     {
       "id": "WX-P1",

@@ -51,7 +51,7 @@
   项目注册已自动推导 VCS/`prepareCmd`/`rulesDoc`（Slice BR）；`/use` 项目粘性写 `threads.project_id`
   且锚点只在回复任务消息时继承（Slice BS）；真机 worktree 灰度通过。结项口径见 [09 §九](docs/09-能力对照与实现路径.md)。
 - **二期 v1 已完成（2026-11-24，生产 `2026.11.24-1`）** —— BT 文档漂移门禁、BU 事实体检入巡检、CC 预算硬限、CD 日报建议；
-  范围与验收见 [20](docs/20-二期范围.md)，能力状态真源为 `docs/status.json`；`verify-all` 50 套件。
+  范围与验收见 [20](docs/20-二期范围.md)，能力状态真源为 `docs/status.json`；`verify-all` 51 套件。
 - **产品能力构想（08，122 项）与能力对照（09）均已完成** —— 09 含逐条判定、工程量分级，以及对 01-08 的复核修正。
 - **核心机制方案（13）已写** —— 两个决定性痛点是「对话与记忆不乱」和「任务成功率」；
   主解不在更花哨的检索，而在**装配预算 + 作用域隔离 + 事实版本化**、**Verifier + 前置快照 + 重试分级 + Outbox**；
@@ -586,6 +586,11 @@
       不自动建任务；生成异常只 warn。
     - 验证：`verify-docs`/`verify-knowledge`/`verify-patrol`/`verify-svcops`/`verify-executor`/`verify-tasks`
       新增用例；`verify-all` 50 套件。
+  - **二期 v2（Slice CE / M10，2026-11-24）**：新增 `scripts/verify-supply.mjs`（verify-all 第 2 套件）：
+    内部依赖必须 `workspace:` 且目标存在；外部依赖禁用 `file:`/`link:`/`git`/`http`/`npm:` 别名与 `*`/`latest`，
+    必须在 `pnpm-lock.yaml` 有记录；已安装直接依赖许可证需在白名单；声明依赖但缺 importer 的包失败，
+    既有 4 个漂移（`calendar`/`changes`/`mail`/`reminder`）为显式基线告警，锁文件重生成后须删除基线项。
+    不改运行时、不发布；`verify-all` 51 套件。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

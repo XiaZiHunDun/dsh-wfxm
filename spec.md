@@ -2992,3 +2992,26 @@ J1/J2 已能只读搜索、摘要、归档、提取待办，但没有写入邮�
 - 套件：`verify-docs`、`verify-knowledge`、`verify-patrol`、`verify-svcops`、
   `verify-executor`、`verify-tasks` 新增用例；全量 49 passed / 0 failed / 1 advisory。
 - 真机：巡检日报可见体检/预算/建议段；预算超限任务被硬停；`systemctl restart` 后当日用量不丢。
+
+## 二期 v2（Slice CE / M10）
+
+### 1. 目标
+
+- 依赖来源、版本区间、锁文件记录与许可证在 CI 可校验，不依赖人工记忆。
+
+### 2. 机制
+
+- `scripts/verify-supply.mjs`：内部依赖 `workspace:` + 目标存在；外部依赖禁非 registry 协议与
+  `*`/`latest`；每个外部依赖在 `pnpm-lock.yaml` 有记录；已安装直接依赖许可证须在白名单。
+- 声明依赖但锁文件缺 importer 的包失败；既有 4 个漂移为 `IMPORTER_BASELINE` 告警。
+- 注册为 `verify-all` 第 2 套件；纯离线、只读。
+
+### 3. 边界
+
+- 不扫描传递依赖 SBOM，不做漏洞库比对，不在本仓库执行 `pnpm install`。
+- 锁文件未重生成前，4 条基线告警常驻；重生成后必须删除基线项。
+
+### 4. 验证
+
+- 脚本自带 7 个反例（协议/浮动区间/内部目标缺失/锁文件缺记录/GPL/未登记 importer/基线）。
+- 真实仓库 `findings=0`、4 条基线告警；`verify-docs` 套件数 51 一致。

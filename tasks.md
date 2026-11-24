@@ -2167,3 +2167,11 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 提交并以 ailearn 身份推送（`0b4b193`，`6977c18..0b4b193 main`）
 - [x] 发布 `2026.11.24-1`：prepare → verify（8/8）→ switch；`systemctl restart dsh-wfxm`
       → `active`、`NRestarts=0`、startup 8/8、飞书长连接 ready
+
+## CA3 二期 v2：M10 供应链门禁（Slice CE）
+
+- [x] `scripts/verify-supply.mjs`：协议 / 版本区间 / 锁文件来源 / 许可证四类硬检查 + 7 个反例
+- [x] importer 覆盖检查：既有 4 个漂移（calendar/changes/mail/reminder）显式基线告警，新增漂移失败
+- [x] 注册 verify-all 第 2 套件（51 套件）
+- [x] 文档回写：00 / 09 §9.3 / 16（12.61）/ 20 / status.json / AGENTS / README
+- [x] 不改运行时、不发布
