@@ -2175,3 +2175,12 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] 注册 verify-all 第 2 套件（51 套件）
 - [x] 文档回写：00 / 09 §9.3 / 16（12.61）/ 20 / status.json / AGENTS / README
 - [x] 不改运行时、不发布
+
+## CA4 二期 v2：G5 记忆维护（Slice CF）
+
+- [x] knowledge 迁移 v4 `memory_proposals` + `ProposalInput`/`MemoryProposal` 模型
+- [x] `mem_propose`（R1）/ `mem_proposals`（R0）/ `mem_resolve`（R1）三工具，复用 `gateFact` 写入
+- [x] 整理策略：同值去重、单条冲突建议取代、多条冲突拒绝、7 天过期、同键同值待确认复用
+- [x] 日报「事实体检」段追加待确认提案（最多 3 个 id）
+- [x] `verify-knowledge` 57 例（新增 11 例）
+- [x] 文档回写：00 / 09 / 16（12.62）/ 20 / status.json / AGENTS / spec / tasks

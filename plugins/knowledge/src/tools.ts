@@ -2,9 +2,17 @@ import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { MemoryError, prepareFact, type FactKind, type FactScope, type FactSource } from './facts.js'
+import {
+  MemoryError,
+  prepareFact,
+  type FactKind,
+  type FactScope,
+  type FactSource,
+  type PreparedFact,
+} from './facts.js'
 import { checkFacts } from './health.js'
 import { createPathProbe } from './probes.js'
+import { proposalExpiry, type MemoryProposal } from './proposals.js'
 import { createMemoryStore, type MemoryStore } from './store.js'
 import { DEFAULT_ENVIRONMENT_PREDICATES, gateFact, type FactProbe } from './verify.js'
 
@@ -22,6 +30,9 @@ export const inject = ['tools']
 export const MEMORY_TOOL_RISK = {
   mem_facts: 'R0',
   mem_remember: 'R1',
+  mem_propose: 'R1',
+  mem_proposals: 'R0',
+  mem_resolve: 'R1',
   mem_health: 'R0',
 } as const satisfies Record<string, 'R0' | 'R1'>
 
@@ -145,6 +156,78 @@ const HEALTH_SCHEMA = {
   },
 } as const
 
+const PROPOSAL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    proposalId: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+    status: { type: 'string', required: true },
+    reason: { type: 'string', required: true },
+    existingFactId: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+    existingValue: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+    supersedes: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+    alreadyPending: { type: 'boolean', required: true },
+    expiresAt: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+  },
+} as const
+
+const PROPOSALS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    total: { type: 'integer', required: true },
+    proposals: {
+      type: 'array',
+      required: true,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          subject: { type: 'string', required: true },
+          predicate: { type: 'string', required: true },
+          value: { type: 'string', required: true },
+          kind: { type: 'string', required: true },
+          scope: { type: 'string', required: true },
+          projectId: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+          reason: { type: 'string', required: true },
+          ageDays: { type: 'number', required: true },
+          expiresAt: { type: 'string', required: true },
+          supersedes: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+        },
+      },
+    },
+  },
+} as const
+
+const RESOLVE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    resolved: { type: 'boolean', required: true },
+    status: { type: 'string', required: true },
+    factId: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true },
+    superseded: { type: 'boolean', required: true },
+    reason: { type: 'string', required: true },
+  },
+} as const
+
+/** A proposal stores exactly the `PreparedFact` columns, so confirmation reuses the gate. */
+function factOf(proposal: MemoryProposal): PreparedFact {
+  return {
+    scope: proposal.scope,
+    projectId: proposal.projectId,
+    subject: proposal.subject,
+    predicate: proposal.predicate,
+    value: proposal.value,
+    source: proposal.source,
+    kind: proposal.kind,
+    evidence: proposal.evidence,
+    confidence: proposal.confidence,
+    validFrom: proposal.validFrom,
+  }
+}
+
 function renderFacts(facts: Array<{
   subject: string
   predicate: string
@@ -186,8 +269,9 @@ function renderHealth(report: {
 }
 
 /**
- * Register the memory tools. `mem_facts` / `mem_health` are read-only; writing a
- * fact is local and reversible, so `mem_remember` is R1 and does not ask approval.
+ * Register the memory tools. `mem_facts` / `mem_proposals` / `mem_health` are
+ * read-only; writing a fact is local and reversible (supersede), so
+ * `mem_remember` / `mem_propose` / `mem_resolve` are R1 and do not ask approval.
  */
 export function registerMemoryTools(ctx: ContextLike, deps: MemoryToolsDeps): void {
   const registry = ctx.tools
@@ -334,6 +418,261 @@ export function registerMemoryTools(ctx: ContextLike, deps: MemoryToolsDeps): vo
         factId: stored.id,
         superseded,
         redactions: prepared.redactions.length,
+      }
+    },
+  }))
+
+  registry.register(defineTool({
+    name: 'mem_propose',
+    description: 'Propose one fact for the owner to confirm (G5 memory maintenance). Nothing is written now: tell the owner the proposal id, and when they answer "记住 <id>"/"不记 <id>" call mem_resolve. An identical live fact returns duplicate; a different live value returns conflict and will supersede on confirm; two or more different live values must be cleaned up first.',
+    parameters: {
+      subject: { type: 'string', required: true, description: 'What the fact is about, e.g. "dsh-wfxm".' },
+      predicate: { type: 'string', required: true, description: 'The attribute, e.g. "package-manager" / "path".' },
+      value: { type: 'string', required: true, description: 'The proposed value.' },
+      kind: { type: 'string', required: true, enum: ['environment', 'preference'], description: 'environment = probe-verifiable; preference = owner-confirmed only.' },
+      source: { type: 'string', required: true, enum: ['user-confirmed', 'observed', 'inferred', 'summary'], description: 'Provenance. inferred requires confidence.' },
+      reason: { type: 'string', required: true, description: 'Why this is worth remembering, shown to the owner.' },
+      scope: { type: 'string', enum: ['project', 'global'], description: 'Defaults to global.' },
+      projectId: { type: 'string', description: 'Required when scope=project.' },
+      confidence: { type: 'number', description: 'In (0, 1]; required for source=inferred.' },
+      probe: { type: 'string', description: 'Probe name for environment facts; defaults to predicate.' },
+      observedValue: { type: 'string', description: 'What the probe saw; defaults to value.' },
+      observedAt: { type: 'string', description: 'ISO timestamp; defaults to now.' },
+      fingerprint: { type: 'string', description: 'Environment fingerprint; derived from the observation when omitted.' },
+    },
+    output: {
+      schema: PROPOSAL_SCHEMA,
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.status === 'duplicate'
+          ? `already known (${value.existingFactId}): ${value.reason}`
+          : value.proposalId === null
+            ? `not proposed (${value.status}): ${value.reason}`
+            : `proposal ${value.proposalId} (${value.status}): ${value.reason}\n`
+              + 'Ask the owner to reply 记住/不记 with this id.',
+      }],
+    },
+    async execute(args) {
+      const at = now()
+      const prepared = prepareFact({
+        subject: args.subject,
+        predicate: args.predicate,
+        value: args.value,
+        kind: args.kind as FactKind,
+        source: args.source as FactSource,
+        ...args.scope === undefined ? {} : { scope: args.scope as FactScope },
+        ...args.projectId === undefined ? {} : { projectId: args.projectId },
+        ...args.confidence === undefined ? {} : { confidence: args.confidence },
+        evidence: args.kind === 'environment'
+          ? {
+              ...args.probe === undefined ? {} : { probe: args.probe },
+              ...args.observedValue === undefined ? {} : { value: args.observedValue },
+              ...args.observedAt === undefined ? {} : { observedAt: args.observedAt },
+              ...args.fingerprint === undefined ? {} : { fingerprint: args.fingerprint },
+            }
+          : null,
+      }, at)
+      const fact = prepared.fact
+
+      // 整理策略 1/3：同键的活事实先查，同值不再重复提案。
+      const live = deps.store.liveFacts({
+        scope: fact.scope,
+        ...fact.projectId === null ? {} : { projectId: fact.projectId },
+        subject: fact.subject,
+        predicate: fact.predicate,
+      })
+      const identical = live.find((row) => row.value === fact.value)
+      if (identical !== undefined) {
+        return {
+          proposalId: null,
+          status: 'duplicate',
+          reason: `same value is already live as ${identical.id}`,
+          existingFactId: identical.id,
+          existingValue: identical.value,
+          supersedes: null,
+          alreadyPending: false,
+          expiresAt: null,
+        }
+      }
+      const different = live.filter((row) => row.value !== fact.value)
+      // 整理策略 2/3：已经多条冲突时先让人清理，不叠加第三条。
+      if (different.length > 1) {
+        return {
+          proposalId: null,
+          status: 'conflict',
+          reason: `${different.length} live values already conflict; resolve them first (mem_facts / mem_health)`,
+          existingFactId: null,
+          existingValue: null,
+          supersedes: null,
+          alreadyPending: false,
+          expiresAt: null,
+        }
+      }
+      // 整理策略 3/3：同键同值的待确认提案直接复用。
+      const sameKeyValue = (proposal: MemoryProposal): boolean =>
+        proposal.scope === fact.scope
+        && proposal.projectId === fact.projectId
+        && proposal.subject === fact.subject
+        && proposal.predicate === fact.predicate
+        && proposal.value === fact.value
+      const pending = deps.store.listProposals({ status: 'pending' }).find(sameKeyValue)
+      if (pending !== undefined) {
+        return {
+          proposalId: pending.id,
+          status: 'pending',
+          reason: 'an identical proposal is already waiting for confirmation',
+          existingFactId: different[0]?.id ?? null,
+          existingValue: different[0]?.value ?? null,
+          supersedes: pending.supersedes,
+          alreadyPending: true,
+          expiresAt: pending.expiresAt,
+        }
+      }
+
+      const proposal = deps.store.insertProposal({
+        fact,
+        reason: args.reason,
+        expiresAt: proposalExpiry(at),
+        supersedes: different[0]?.id ?? null,
+      })
+      return {
+        proposalId: proposal.id,
+        status: different.length === 1 ? 'conflict' : 'pending',
+        reason: different.length === 1
+          ? `will supersede ${different[0].id} (current: ${different[0].value}) on confirm`
+          : 'new fact; waiting for owner confirmation',
+        existingFactId: different[0]?.id ?? null,
+        existingValue: different[0]?.value ?? null,
+        supersedes: proposal.supersedes,
+        alreadyPending: false,
+        expiresAt: proposal.expiresAt,
+      }
+    },
+  }))
+
+  registry.register(defineTool({
+    name: 'mem_proposals',
+    description: 'List pending memory proposals (G5). Read-only; expired proposals are marked expired before listing. The owner confirms with mem_resolve using these ids.',
+    parameters: {
+      limit: { type: 'integer', description: 'Max pending proposals, 1-50. Defaults to 20.' },
+    },
+    output: {
+      schema: PROPOSALS_SCHEMA,
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.total === 0
+          ? 'no pending memory proposals'
+          : value.proposals
+            .map((item) => `- ${item.id} ${item.subject}.${item.predicate} = ${item.value} (${item.kind}, ${item.ageDays}d) — ${item.reason}`)
+            .join('\n'),
+      }],
+    },
+    async execute(args) {
+      const at = now()
+      deps.store.expireProposals(at.toISOString())
+      const limit = Math.min(50, Math.max(1, args.limit ?? 20))
+      const rows = deps.store.listProposals({ status: 'pending', limit })
+      return {
+        total: rows.length,
+        proposals: rows.map((proposal) => ({
+          id: proposal.id,
+          subject: proposal.subject,
+          predicate: proposal.predicate,
+          value: proposal.value,
+          kind: proposal.kind,
+          scope: proposal.scope,
+          projectId: proposal.projectId,
+          reason: proposal.reason,
+          ageDays: Math.max(0, (at.getTime() - Date.parse(proposal.createdAt)) / 86_400_000),
+          expiresAt: proposal.expiresAt,
+          supersedes: proposal.supersedes,
+        })),
+      }
+    },
+  }))
+
+  registry.register(defineTool({
+    name: 'mem_resolve',
+    description: 'Resolve one pending memory proposal (G5) after the owner answers in chat. confirm re-runs the same write gate as mem_remember (probe contradiction keeps the old fact); reject writes nothing. Only pending proposals can be resolved; expired ones stay expired.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Proposal id from mem_propose / mem_proposals.' },
+      decision: { type: 'string', required: true, enum: ['confirm', 'reject'], description: 'Owner decision.' },
+    },
+    output: {
+      schema: RESOLVE_SCHEMA,
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.resolved
+          ? `${value.status}${value.factId === null ? '' : ` -> fact ${value.factId}`}${value.superseded ? ', previous fact superseded' : ''}: ${value.reason}`
+          : `not resolved (${value.status}): ${value.reason}`,
+      }],
+    },
+    async execute(args) {
+      const at = now()
+      deps.store.expireProposals(at.toISOString())
+      const proposal = deps.store.getProposal(args.id)
+      if (proposal === null) {
+        throw new MemoryError('not-found', `proposal ${JSON.stringify(args.id)} does not exist`)
+      }
+      if (proposal.status !== 'pending') {
+        return {
+          resolved: false,
+          status: proposal.status,
+          factId: proposal.factId,
+          superseded: false,
+          reason: `proposal is already ${proposal.status}`,
+        }
+      }
+      if (args.decision === 'reject') {
+        deps.store.resolveProposal(proposal.id, 'rejected', { at: at.toISOString() })
+        return {
+          resolved: true,
+          status: 'rejected',
+          factId: null,
+          superseded: false,
+          reason: 'owner declined',
+        }
+      }
+
+      const fact = factOf(proposal)
+      const gate = await gateFact(fact, {
+        ...deps.probe === undefined ? {} : { probe: deps.probe },
+        ...deps.predicates === undefined ? {} : { predicates: deps.predicates },
+      })
+      if (gate.decision === 'reject') {
+        deps.store.resolveProposal(proposal.id, 'rejected', { at: at.toISOString() })
+        return {
+          resolved: false,
+          status: 'rejected',
+          factId: null,
+          superseded: false,
+          reason: gate.reason,
+        }
+      }
+
+      const stored = deps.store.insertFact({
+        ...fact,
+        evidence: fact.evidence === null
+          ? null
+          : { ...fact.evidence, verification: gate.verification },
+      })
+      let superseded = false
+      if (proposal.supersedes !== null) {
+        const target = deps.store.getFact(proposal.supersedes)
+        if (target !== null && target.supersededBy === null) {
+          superseded = deps.store.supersedeFact(target.id, stored.id)
+        }
+      }
+      deps.store.resolveProposal(proposal.id, 'confirmed', {
+        factId: stored.id,
+        at: at.toISOString(),
+      })
+      return {
+        resolved: true,
+        status: 'confirmed',
+        factId: stored.id,
+        superseded,
+        reason: gate.reason,
       }
     },
   }))

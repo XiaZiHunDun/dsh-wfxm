@@ -11,6 +11,7 @@ import {
   createPathProbe,
   createProjectLookupPort,
   formatFactHealth,
+  formatPendingProposals,
   gateFact,
   prepareFact,
   projectMemoryContext,
@@ -69,8 +70,9 @@ await check('migration creates projects, memory_facts, memory_edges', () => {
     && names.includes('memory_facts')
     && names.includes('memory_edges')
     && names.includes('project_aliases')
+    && names.includes('memory_proposals')
     && names.includes('schema_migrations')
-    && version.version === 3
+    && version.version === 4
 })
 
 await check('migration is idempotent on reopen', () => {
@@ -353,13 +355,19 @@ const { ctx, registered } = makeCtx()
 registerMemoryTools(ctx, { store, probe: createPathProbe(), now: () => now })
 const tools = new Map(registered.map((tool) => [tool.name, tool]))
 
-await check('registers three tools with their risk baseline', () => {
-  return registered.length === 3
+await check('registers six tools with their risk baseline', () => {
+  return registered.length === 6
     && tools.has('mem_facts')
     && tools.has('mem_remember')
+    && tools.has('mem_propose')
+    && tools.has('mem_proposals')
+    && tools.has('mem_resolve')
     && tools.has('mem_health')
     && MEMORY_TOOL_RISK.mem_facts === 'R0'
     && MEMORY_TOOL_RISK.mem_remember === 'R1'
+    && MEMORY_TOOL_RISK.mem_propose === 'R1'
+    && MEMORY_TOOL_RISK.mem_proposals === 'R0'
+    && MEMORY_TOOL_RISK.mem_resolve === 'R1'
     && MEMORY_TOOL_RISK.mem_health === 'R0'
 })
 
@@ -441,6 +449,207 @@ await check('mem_health returns the five-class report', async () => {
     && value.scanned === store.liveFacts().length
     && value.counts.conflict === 0
     && Array.isArray(value.reviewCandidates)
+})
+
+// ---- G5 proposals (Slice CF) ------------------------------------------------
+
+let demoProposalId = null
+
+await check('mem_propose files a pending proposal without writing a fact', async () => {
+  const value = await tools.get('mem_propose').execute({
+    subject: 'proposal-demo',
+    predicate: 'reply-language',
+    value: 'zh-CN',
+    kind: 'preference',
+    source: 'inferred',
+    confidence: 0.8,
+    reason: 'owner used Chinese in every turn this week',
+  })
+  demoProposalId = value.proposalId
+  return value.status === 'pending'
+    && value.proposalId !== null
+    && value.alreadyPending === false
+    && store.liveFacts({ subject: 'proposal-demo' }).length === 0
+    && store.getProposal(value.proposalId)?.status === 'pending'
+})
+
+await check('mem_propose returns duplicate for an identical live fact', async () => {
+  const live = store.insertFact(prepareFact({
+    subject: 'proposal-dup',
+    predicate: 'note',
+    value: 'same',
+    kind: 'preference',
+    source: 'user-confirmed',
+  }, now).fact)
+  const value = await tools.get('mem_propose').execute({
+    subject: 'proposal-dup',
+    predicate: 'note',
+    value: 'same',
+    kind: 'preference',
+    source: 'user-confirmed',
+    reason: 'same value again',
+  })
+  return value.status === 'duplicate'
+    && value.proposalId === null
+    && value.existingFactId === live.id
+    && store.listProposals({ status: 'pending' }).every((item) => item.subject !== 'proposal-dup')
+})
+
+await check('mem_propose flags a conflict and suggests supersede', async () => {
+  const old = store.insertFact(prepareFact({
+    subject: 'proposal-conflict',
+    predicate: 'path',
+    value: '/srv/old',
+    kind: 'environment',
+    source: 'observed',
+    evidence: { probe: 'path', value: '/srv/old' },
+  }, now).fact)
+  const value = await tools.get('mem_propose').execute({
+    subject: 'proposal-conflict',
+    predicate: 'path',
+    value: existingPath,
+    kind: 'environment',
+    source: 'observed',
+    probe: 'path',
+    reason: 'the workspace moved',
+  })
+  const proposal = store.getProposal(value.proposalId)
+  return value.status === 'conflict'
+    && value.supersedes === old.id
+    && value.existingValue === '/srv/old'
+    && proposal?.supersedes === old.id
+})
+
+await check('a second conflicting value is refused until the owner cleans up', async () => {
+  for (const value of ['/srv/a', '/srv/b']) {
+    store.insertFact(prepareFact({
+      subject: 'proposal-two',
+      predicate: 'path',
+      value,
+      kind: 'environment',
+      source: 'observed',
+      evidence: { probe: 'path', value },
+    }, now).fact)
+  }
+  const value = await tools.get('mem_propose').execute({
+    subject: 'proposal-two',
+    predicate: 'path',
+    value: '/srv/c',
+    kind: 'environment',
+    source: 'observed',
+    probe: 'path',
+    reason: 'third value',
+  })
+  return value.status === 'conflict'
+    && value.proposalId === null
+    && store.listProposals({ status: 'pending' }).every((item) => item.subject !== 'proposal-two')
+})
+
+await check('mem_proposals lists pending proposals with their reason', async () => {
+  const value = await tools.get('mem_proposals').execute({})
+  const listed = value.proposals.find((item) => item.id === demoProposalId)
+  return value.total >= 1
+    && listed !== undefined
+    && listed.subject === 'proposal-demo'
+    && listed.reason.includes('Chinese')
+    && listed.ageDays === 0
+})
+
+await check('mem_resolve confirm writes the fact and closes the proposal', async () => {
+  const value = await tools.get('mem_resolve').execute({ id: demoProposalId, decision: 'confirm' })
+  const proposal = store.getProposal(demoProposalId)
+  const stored = store.getFact(value.factId)
+  return value.resolved
+    && value.status === 'confirmed'
+    && stored?.value === 'zh-CN'
+    && proposal?.status === 'confirmed'
+    && proposal.factId === value.factId
+    && store.liveFacts({ subject: 'proposal-demo' }).length === 1
+})
+
+await check('mem_resolve confirm supersedes the conflicting fact', async () => {
+  const conflict = store.listProposals({ status: 'pending' })
+    .find((item) => item.subject === 'proposal-conflict')
+  const value = await tools.get('mem_resolve').execute({ id: conflict.id, decision: 'confirm' })
+  const old = store.getFact(conflict.supersedes)
+  return value.resolved
+    && value.superseded === true
+    && old?.supersededBy === value.factId
+    && store.liveFacts({ subject: 'proposal-conflict' }).length === 1
+})
+
+await check('mem_resolve reject writes nothing', async () => {
+  const created = await tools.get('mem_propose').execute({
+    subject: 'proposal-reject',
+    predicate: 'tone',
+    value: 'formal',
+    kind: 'preference',
+    source: 'inferred',
+    confidence: 0.6,
+    reason: 'maybe',
+  })
+  const value = await tools.get('mem_resolve').execute({ id: created.proposalId, decision: 'reject' })
+  return value.resolved
+    && value.status === 'rejected'
+    && store.liveFacts({ subject: 'proposal-reject' }).length === 0
+    && store.getProposal(created.proposalId)?.status === 'rejected'
+})
+
+await check('an expired proposal cannot be confirmed', async () => {
+  const expired = store.insertProposal({
+    fact: prepareFact({
+      subject: 'proposal-expired',
+      predicate: 'tone',
+      value: 'short',
+      kind: 'preference',
+      source: 'user-confirmed',
+    }, now).fact,
+    reason: 'too old',
+    expiresAt: '2026-11-01T00:00:00.000Z',
+    supersedes: null,
+  })
+  const value = await tools.get('mem_resolve').execute({ id: expired.id, decision: 'confirm' })
+  return value.resolved === false
+    && value.status === 'expired'
+    && store.liveFacts({ subject: 'proposal-expired' }).length === 0
+})
+
+await check('pending proposals survive a reopen and stay out of facts', () => {
+  const path = join(dir, 'proposal-reopen.sqlite')
+  const first = createMemoryStore(path)
+  const proposal = first.insertProposal({
+    fact: prepareFact({
+      subject: 'persisted',
+      predicate: 'note',
+      value: 'v',
+      kind: 'preference',
+      source: 'user-confirmed',
+    }, now).fact,
+    reason: 'persist me',
+    expiresAt: '2027-01-01T00:00:00.000Z',
+    supersedes: null,
+  })
+  first.close()
+  const again = createMemoryStore(path)
+  const row = again.getProposal(proposal.id)
+  const facts = again.liveFacts({ subject: 'persisted' })
+  again.close()
+  return row?.status === 'pending' && facts.length === 0
+})
+
+await check('formatPendingProposals is quiet when empty and renders the reply hint', () => {
+  const quiet = formatPendingProposals([], now)
+  const busy = formatPendingProposals([{
+    id: 'mp-1',
+    subject: 'owner',
+    predicate: 'tone',
+    value: 'short',
+    createdAt: '2026-11-07T08:00:00.000Z',
+  }], now)
+  return quiet === null
+    && /记忆提案：1 条待确认（最早 2 天）/.test(busy)
+    && /mp-1 owner\.tone = short/.test(busy)
+    && /回复「记住 <id>」或「不记 <id>」/.test(busy)
 })
 
 await check('formatFactHealth: quiet hosts return null; findings/candidates/probes render', () => {
@@ -677,7 +886,7 @@ await check('a v1 memory database upgrades to the latest schema', () => {
   reopened.addProjectAlias({ projectId: 'p-zeta', alias: 'z' })
   const hit = reopened.resolveProjectAlias('z')
   reopened.close()
-  return version.version === 3
+  return version.version === 4
     && upgraded?.vcs === 'none'
     && upgraded?.mergeMode === 'manual'
     && hit?.id === 'p-zeta'

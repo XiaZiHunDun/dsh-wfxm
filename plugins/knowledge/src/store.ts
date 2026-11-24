@@ -18,6 +18,12 @@ import {
   type MemoryFact,
   type PreparedFact,
 } from './facts.js'
+import type {
+  MemoryProposal,
+  ProposalInput,
+  ProposalListOptions,
+  ProposalStatus,
+} from './proposals.js'
 
 const MIGRATION_MODULE = 'memory'
 
@@ -87,6 +93,36 @@ CREATE TABLE IF NOT EXISTS project_aliases (
 CREATE INDEX IF NOT EXISTS ix_aliases_project ON project_aliases(project_id);
 `
 
+/**
+ * v4：记忆提案（G5）。提案不写事实；owner 确认后才走 `gateFact` + `insertFact`。
+ * 过期只是状态迁移，不删除行。
+ */
+const PROPOSALS_DDL = `
+CREATE TABLE IF NOT EXISTS memory_proposals (
+  id             TEXT PRIMARY KEY,
+  scope          TEXT NOT NULL CHECK (scope IN ('project','global')),
+  project_id     TEXT,
+  subject        TEXT NOT NULL,
+  predicate      TEXT NOT NULL,
+  value_json     TEXT NOT NULL,
+  source         TEXT NOT NULL CHECK (source IN
+                   ('user-confirmed','observed','inferred','summary')),
+  kind           TEXT NOT NULL CHECK (kind IN ('environment','preference')),
+  evidence_json  TEXT,
+  confidence     REAL,
+  valid_from     TEXT NOT NULL,
+  reason         TEXT NOT NULL,
+  status         TEXT NOT NULL CHECK (status IN ('pending','confirmed','rejected','expired')),
+  fact_id        TEXT,
+  supersedes     TEXT,
+  created_at     TEXT NOT NULL,
+  expires_at     TEXT NOT NULL,
+  resolved_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_proposals_status
+  ON memory_proposals(status, created_at);
+`
+
 interface Migration {
   version: number
   ddl: string[]
@@ -108,6 +144,7 @@ const MIGRATIONS: readonly Migration[] = [
          CHECK (merge_mode IN ('manual','pr'));`,
     ],
   },
+  { version: 4, ddl: [PROPOSALS_DDL] },
 ]
 
 export interface Project {
@@ -186,6 +223,18 @@ export interface MemoryStore {
   liveFacts(filter?: FactFilter): MemoryFact[]
   /** Record this round's injection; drives the 30-day review candidates (19 D19-4). */
   touchInjected(ids: string[], at?: string): number
+  /** G5: file a proposal; the fact is written only after the owner confirms. */
+  insertProposal(input: ProposalInput): MemoryProposal
+  getProposal(id: string): MemoryProposal | null
+  listProposals(options?: ProposalListOptions): MemoryProposal[]
+  /** Lazily expire pending proposals; returns the number transitioned. */
+  expireProposals(now?: string): number
+  /** Confirm/reject one pending proposal; false when it is no longer pending. */
+  resolveProposal(
+    id: string,
+    status: 'confirmed' | 'rejected' | 'expired',
+    options?: { factId?: string | null; at?: string },
+  ): boolean
   addEdge(input: { fromFactId: string; relation: string; toFactId: string }): MemoryEdge
   edgesOf(factId: string): MemoryEdge[]
   close(): void
@@ -235,6 +284,27 @@ interface EdgeRow {
   to_fact_id: string
 }
 
+interface ProposalRow {
+  id: string
+  scope: FactScope
+  project_id: string | null
+  subject: string
+  predicate: string
+  value_json: string
+  source: FactSource
+  kind: FactKind
+  evidence_json: string | null
+  confidence: number | null
+  valid_from: string
+  reason: string
+  status: ProposalStatus
+  fact_id: string | null
+  supersedes: string | null
+  created_at: string
+  expires_at: string
+  resolved_at: string | null
+}
+
 function toProject(row: ProjectRow): Project {
   return {
     id: row.id,
@@ -277,6 +347,30 @@ function toEdge(row: EdgeRow): MemoryEdge {
     fromFactId: row.from_fact_id,
     relation: row.relation,
     toFactId: row.to_fact_id,
+  }
+}
+
+function toProposal(row: ProposalRow): MemoryProposal {
+  const parsed: unknown = JSON.parse(row.value_json)
+  return {
+    id: row.id,
+    scope: row.scope,
+    projectId: row.project_id,
+    subject: row.subject,
+    predicate: row.predicate,
+    value: typeof parsed === 'string' ? parsed : String(parsed),
+    source: row.source,
+    kind: row.kind,
+    evidence: row.evidence_json === null ? null : JSON.parse(row.evidence_json) as FactEvidence,
+    confidence: row.confidence,
+    validFrom: row.valid_from,
+    reason: row.reason,
+    status: row.status,
+    factId: row.fact_id,
+    supersedes: row.supersedes,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    resolvedAt: row.resolved_at,
   }
 }
 
@@ -383,6 +477,23 @@ export function createMemoryStore(dbPath: string): MemoryStore {
   )
   const edgesOfStmt = db.prepare(
     'SELECT * FROM memory_edges WHERE from_fact_id = ? ORDER BY rowid ASC',
+  )
+
+  const insertProposalStmt = db.prepare(`
+    INSERT INTO memory_proposals(
+      id, scope, project_id, subject, predicate, value_json, source, kind,
+      evidence_json, confidence, valid_from, reason, status, fact_id, supersedes,
+      created_at, expires_at, resolved_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL)
+  `)
+  const selectProposal = db.prepare('SELECT * FROM memory_proposals WHERE id = ?')
+  const expireProposalsStmt = db.prepare(
+    `UPDATE memory_proposals SET status = 'expired', resolved_at = ?
+      WHERE status = 'pending' AND expires_at <= ?`,
+  )
+  const resolveProposalStmt = db.prepare(
+    `UPDATE memory_proposals SET status = ?, fact_id = ?, resolved_at = ?
+      WHERE id = ? AND status = 'pending'`,
   )
 
   return {
@@ -575,6 +686,68 @@ export function createMemoryStore(dbPath: string): MemoryStore {
         for (const id of ids) touched += touchStmt.run(stamp, id).changes
         return touched
       })()
+    },
+    insertProposal(input) {
+      const record: MemoryProposal = {
+        id: randomUUID(),
+        ...input.fact,
+        reason: input.reason,
+        status: 'pending',
+        factId: null,
+        supersedes: input.supersedes,
+        createdAt: new Date().toISOString(),
+        expiresAt: input.expiresAt,
+        resolvedAt: null,
+      }
+      insertProposalStmt.run(
+        record.id,
+        record.scope,
+        record.projectId,
+        record.subject,
+        record.predicate,
+        JSON.stringify(record.value),
+        record.source,
+        record.kind,
+        record.evidence === null ? null : JSON.stringify(record.evidence),
+        record.confidence,
+        record.validFrom,
+        record.reason,
+        record.supersedes,
+        record.createdAt,
+        record.expiresAt,
+      )
+      return record
+    },
+    getProposal(id) {
+      const row = selectProposal.get(id) as ProposalRow | undefined
+      return row === undefined ? null : toProposal(row)
+    },
+    listProposals(options) {
+      const clauses: string[] = []
+      const params: unknown[] = []
+      if (options?.status !== undefined) {
+        clauses.push('status = ?')
+        params.push(options.status)
+      }
+      const where = clauses.length === 0 ? '' : ` WHERE ${clauses.join(' AND ')}`
+      const limit = options?.limit === undefined ? '' : ' LIMIT ?'
+      if (options?.limit !== undefined) params.push(Math.max(1, Math.floor(options.limit)))
+      const rows = db
+        .prepare(`SELECT * FROM memory_proposals${where} ORDER BY created_at ASC, rowid ASC${limit}`)
+        .all(...params) as ProposalRow[]
+      return rows.map(toProposal)
+    },
+    expireProposals(now) {
+      const stamp = now ?? new Date().toISOString()
+      return expireProposalsStmt.run(stamp, stamp).changes
+    },
+    resolveProposal(id, status, options) {
+      return resolveProposalStmt.run(
+        status,
+        options?.factId ?? null,
+        options?.at ?? new Date().toISOString(),
+        id,
+      ).changes > 0
     },
     addEdge(input) {
       const edge: MemoryEdge = { id: randomUUID(), ...input }

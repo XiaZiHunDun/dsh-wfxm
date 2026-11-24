@@ -128,7 +128,8 @@
   `projects` / `memory_facts` / `memory_edges` / `project_aliases` 四表（同一 `ops.sqlite`，`schema_migrations(module='memory', v2)`，只取代不删除）；
   **A1 写时校验**（`environment` 缺 `evidence` 拒写、`project` 缺 `projectId` 拒写、`inferred` 缺 `confidence` 拒写）；
   **A3 三态闸**（吻合写入 / 矛盾拒绝且不删旧值 / 探不到写为 `unverified`，探针只读 fail-soft）+ `redact` 第四处挂载；
-  **A2 五类体检 + 复核候选**（`mem_health` R0，只提示不降权）；工具 `mem_facts`(R0) / `mem_remember`(R1) / `mem_health`(R0)，45 例通过。
+  **A2 五类体检 + 复核候选**（`mem_health` R0，只提示不降权）；工具 `mem_facts`(R0) / `mem_remember`(R1) /
+  `mem_propose`(R1) / `mem_proposals`(R0) / `mem_resolve`(R1) / `mem_health`(R0)，57 例通过。
   **项目别名（11 §5.3.1 片 1）**：`addProjectAlias` / `removeProjectAlias` / `listProjectAliases` / `resolveProjectAlias` /
   `listProjectChoices` —— 小写归一、同项目幂等、跨项目与"遮蔽真名"均 `conflict`、归档不删但不再匹配；解析先别名后真名。
   **跨项目边界已定（08 §七 #3）：项目事实隔离、偏好共享** —— `kind=preference` 恒为全局（带 `projectId` 拒写）；
@@ -591,6 +592,10 @@
     必须在 `pnpm-lock.yaml` 有记录；已安装直接依赖许可证需在白名单；声明依赖但缺 importer 的包失败，
     既有 4 个漂移（`calendar`/`changes`/`mail`/`reminder`）为显式基线告警，锁文件重生成后须删除基线项。
     不改运行时、不发布；`verify-all` 51 套件。
+  - **二期 v2（Slice CF / G5，2026-11-24）**：knowledge 迁移 v4 新增 `memory_proposals`；`mem_propose` 只落提案、
+    `mem_resolve` 确认时才复用 `gateFact` + `insertFact`；同键同值去重、单条异值建议取代、≥2 条异值拒绝、
+    7 天未确认自动过期、同键同值待确认复用 id；日报「事实体检」段追加待确认提案（最多 3 个 id）。
+    v1 用对话确认（不做飞书按钮卡片）；`verify-knowledge` 57 例。
   - **健康告警**：`scripts/health-alert.mjs` + `dsh-wfxm-health.{service,timer}`（2 分钟，进程外检查 `systemctl is-active`），
     主服务 `OnFailure=` 兜崩溃循环；同状态 30 分钟冷却、状态变化立即发；不替 owner 重启（见 [16 §12.29](docs/16-部署与运行.md)）。
   - **边界**：systemd 实际创建用户与装 unit **需 root**（文件已静态校验）；**真实 `serve` 飞书长连接 + 消息闭环已跑通**（2026-11-11：`/bind` 配对 → 真实消息 →

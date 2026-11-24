@@ -52,10 +52,10 @@
     {
       "id": "G5",
       "name": "记忆维护",
-      "state": "planned",
-      "phase": "v2",
-      "evidence": [],
-      "note": "依赖 G4 的确认交互"
+      "state": "done",
+      "phase": "done",
+      "evidence": ["plugins/knowledge/src/proposals.ts", "plugins/knowledge/src/tools.ts", "plugins/knowledge/src/store.ts", "scripts/serve.mjs"],
+      "note": "Slice CF：mem_propose/mem_proposals/mem_resolve；owner 对话确认后才写入，去重/冲突/7 天过期，日报提醒"
     },
     {
       "id": "O1",

@@ -258,12 +258,12 @@ await check('B2: an explicit rulesDoc must be an existing file inside the root',
   return true
 })
 
-await check('projects table stays at migration v3 after CLI writes', () => {
+await check('projects table stays at migration v4 after CLI writes', () => {
   const db = new DatabaseConstructor(dbPath, { readonly: true })
   const version = db.prepare('SELECT version FROM schema_migrations WHERE module = ?').get('memory')
   const rows = db.prepare('SELECT COUNT(*) AS total FROM projects').get()
   db.close()
-  assert.equal(version.version, 3)
+  assert.equal(version.version, 4)
   assert.ok(rows.total >= 3, `projects rows: ${rows.total}`)
   return true
 })

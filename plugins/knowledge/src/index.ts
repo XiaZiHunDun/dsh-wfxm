@@ -31,6 +31,14 @@ export {
 } from './context.js'
 export type { HealthCheck, HealthDigestOptions, HealthFinding, HealthOptions, HealthReport, ReviewCandidate } from './health.js'
 export { checkFacts, formatFactHealth } from './health.js'
+export type {
+  MemoryProposal,
+  ProposalDecision,
+  ProposalInput,
+  ProposalListOptions,
+  ProposalStatus,
+} from './proposals.js'
+export { PROPOSAL_TTL_DAYS, formatPendingProposals, proposalExpiry } from './proposals.js'
 export {
   MEMORY_TOOL_PORT,
   MEMORY_TOOL_RISK,

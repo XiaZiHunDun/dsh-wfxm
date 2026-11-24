@@ -66,7 +66,7 @@ import {
   renderMailTodos,
   searchMail,
 } from '@dsh-wfxm/mail'
-import { checkFacts, createMemoryStore, createPathProbe, createProjectLookupPort, formatFactHealth } from '@dsh-wfxm/knowledge'
+import { checkFacts, createMemoryStore, createPathProbe, createProjectLookupPort, formatFactHealth, formatPendingProposals } from '@dsh-wfxm/knowledge'
 import { createReminderPort, createReminderStore } from '@dsh-wfxm/reminder'
 import {
   createDecisionRunner,
@@ -908,8 +908,16 @@ async function main() {
             probe: createPathProbe(),
           })
           lastFactReview = report.reviewCandidates.length
-          const text = formatFactHealth(report)
-          return text === null ? null : { text, conflicts: report.counts.conflict }
+          // G5 (Slice CF): pending proposals are a reminder, not a finding —
+          // they ride the same read-only section so a forgotten proposal is
+          // visible once a day without blocking the patrol.
+          memoryStore.expireProposals(to.toISOString())
+          const pending = memoryStore.listProposals({ status: 'pending', limit: 20 })
+          const sections = [formatFactHealth(report), formatPendingProposals(pending, to)]
+            .filter((section) => section !== null)
+          return sections.length === 0
+            ? null
+            : { text: sections.join('\n'), conflicts: report.counts.conflict }
         },
         // Slice CD (G4): advisory only — derives from state already collected and
         // never creates a task. "做 #n" still goes through the normal approval.
