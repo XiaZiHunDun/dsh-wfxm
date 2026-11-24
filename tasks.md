@@ -2164,5 +2164,6 @@ serve 12、release 7、deploy 7、`verify-invariants` 11 —— 全绿。
 - [x] `verify-docs` 首次捕获 30 处真实漂移，修正后 `docs ok`
 - [x] `check-style` 206 files 通过
 - [x] 全量 `verify-all`：49 passed / 0 failed / 1 advisory（preimages）
-- [ ] 提交并以 ailearn 身份推送
-- [ ] 发布新版本并 `serve --check` 8/8
+- [x] 提交并以 ailearn 身份推送（`0b4b193`，`6977c18..0b4b193 main`）
+- [x] 发布 `2026.11.24-1`：prepare → verify（8/8）→ switch；`systemctl restart dsh-wfxm`
+      → `active`、`NRestarts=0`、startup 8/8、飞书长连接 ready
