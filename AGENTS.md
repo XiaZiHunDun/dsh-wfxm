@@ -52,7 +52,7 @@
   项目注册已自动推导 VCS/`prepareCmd`/`rulesDoc`（Slice BR）；`/use` 项目粘性写 `threads.project_id`
   且锚点只在回复任务消息时继承（Slice BS）；真机 worktree 灰度通过。一期结项口径见 [09 §九](docs/09-能力对照与实现路径.md)。
 - **能力状态真源为 `docs/status.json`** —— 由 `scripts/verify-docs.mjs`（verify-all 第 1 套件）校验；
-  当前 `verify-all` 51 套件。
+  当前 `verify-all` 52 套件（P2-1 新增 `eval-loop`）。
 - **产品能力构想（08，122 项）与能力对照（09）均已完成** —— 09 含逐条判定、工程量分级，以及对 01-08 的复核修正。
 - **核心机制方案（13）已写** —— 两个决定性痛点是「对话与记忆不乱」和「任务成功率」；
   主解不在更花哨的检索，而在**装配预算 + 作用域隔离 + 事实版本化**、**Verifier + 前置快照 + 重试分级 + Outbox**；

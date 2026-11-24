@@ -98,9 +98,14 @@
         "scripts/eval/run-task.mjs",
         "scripts/eval/stub-dsh.mjs",
         "scripts/eval/driver-selftest.mjs",
+        "scripts/eval/snapshot.mjs",
+        "scripts/verify-eval-loop.mjs",
+        "eval/latest.json",
+        "plugins/gateway/src/eval-command.ts",
+        "plugins/host/src/eval.ts",
         "docs/16-部署与运行.md"
       ],
-      "note": "第二阶段 P0+P1 已完成：薄驱动（多轮续接）+ agent-eval 的 L1–L3；PR 离线五套件，真实 capability/repo/conversation 每晚 advisory；基线 capability 16/20、repo 5/5、conversation 6/6、trajectory 3/3。P2（生产轨迹替换、/eval 闭环、advisory 转硬门禁）待做"
+      "note": "第二阶段 P0+P1+P2-1 已完成：薄驱动（多轮续接）+ agent-eval 的 L1–L3；飞书 /eval 只读摘要（owner、5s 限流、快照缺失不推断通过）。剩余 P2-2 落库/自动写入、P2-3 flag/promote、P2-4 硬门禁；基线 capability 16/20、repo 5/5、conversation 6/6、trajectory 3/3"
     }
   ]
 }

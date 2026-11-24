@@ -77,6 +77,7 @@ const SUITES = [
   } },
   { name: 'patrol', file: 'scripts/verify-patrol.mjs', ci: true },
   { name: 'release', file: 'scripts/verify-release.mjs', ci: true },
+  { name: 'eval-loop', file: 'scripts/verify-eval-loop.mjs', ci: true },
   { name: 'serve', file: 'scripts/verify-serve.mjs', ci: true },
 ]
 

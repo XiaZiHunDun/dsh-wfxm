@@ -30,6 +30,7 @@ import {
   type ApprovalDetailPort,
 } from './approval.js'
 import { relayToTask, type TaskRelayPort, type TaskRelayReport } from './task-relay.js'
+import { parseEvalCommand, type EvalCommand } from './eval-command.js'
 import {
   controlGlobally,
   controlTask,
@@ -121,6 +122,7 @@ export type BypassReason =
   | 'approval'
   | 'control'
   | 'project'
+  | 'eval'
   | 'system-message'
   | 'task-anchor'
   | 'ambiguous-task'
@@ -141,6 +143,7 @@ export type RouteTarget =
     name: string | null
     candidates: ProjectChoice[]
   }
+  | { kind: 'eval'; command: EvalCommand }
   | { kind: 'ask'; candidates: string[] }
   | { kind: 'none' }
 
@@ -941,6 +944,30 @@ export async function ingestInbound(
   // 1.5 Explicit project commands (`/use <alias>` / `/projects`): bypass the
   // model and, on a hit, move this chat's sticky project (11 §5.3.1).
   if (intent === 'command') {
+    // P2-1: `/eval` 是测评只读命令，不进模型。owner 校验在 host（这里不丢 actor）。
+    const evalCommand = parseEvalCommand(textOf(input.content) ?? '')
+    if (evalCommand !== null) {
+      const disposition = store.appendRouteDecision({
+        triggerId: inbox.id,
+        action: 'ack',
+        reason: `eval command: ${evalCommand.kind}`,
+        threadId,
+      })
+      return {
+        inbox: store.updateInboxStatus(inbox.id, 'triaged'),
+        duplicate: false,
+        actor: resolved.actor,
+        thread,
+        intent,
+        target: { kind: 'eval', command: evalCommand },
+        bypassReason: 'eval',
+        disposition,
+        followUp: null,
+        project: null,
+        error: null,
+      }
+    }
+
     const command = parseProjectCommand(textOf(input.content))
     if (command !== null) {
       const resolution: ProjectResolution = command.kind === 'list'

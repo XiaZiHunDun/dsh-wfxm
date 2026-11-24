@@ -17,6 +17,20 @@ export {
   createHostPorts,
 } from './ports.js'
 export type {
+  EvalRealSummary,
+  EvalSnapshot,
+  EvalSnapshotLoad,
+  EvalSuiteSummary,
+} from './eval.js'
+export {
+  defaultEvalSnapshotPath,
+  formatEvalFindings,
+  formatEvalHelp,
+  formatEvalStatus,
+  formatEvalUnsupported,
+  loadEvalSnapshot,
+} from './eval.js'
+export type {
   HostDispatcherOptions,
   HostIngestResult,
   HostMailDigestOptions,

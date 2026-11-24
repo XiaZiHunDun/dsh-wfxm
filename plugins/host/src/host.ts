@@ -25,6 +25,7 @@ import {
   ingestInbound,
   redactedText,
   type DispatchReport,
+  type EvalCommand,
   type GatewayStore,
   type IngestInboundInput,
   type IngestResult,
@@ -67,6 +68,15 @@ import {
 } from '@dsh-wfxm/tasks'
 import { createRuleForeground, type ForegroundHandler, type ForegroundOutcome } from './foreground.js'
 import { createHostPorts, type HostPorts } from './ports.js'
+import {
+  defaultEvalSnapshotPath,
+  formatEvalFindings,
+  formatEvalHelp,
+  formatEvalStatus,
+  formatEvalUnsupported,
+  loadEvalSnapshot,
+  type EvalSnapshotLoad,
+} from './eval.js'
 
 /** How a degraded foreground turn is recorded in `route_decisions`. */
 const TURN_ROUTE_ACTION: Record<ForegroundOutcome['action'], RouteAction> = {
@@ -253,6 +263,11 @@ export interface WfxmHostOptions {
   pumpIntervalMs?: number
   /** Slice AO.1: identical-message dedupe window; `0` disables, defaults to 60s. */
   duplicateWindowMs?: number
+  /**
+   * P2-1: `/eval` 只读快照。`null` disables the command; absent uses
+   * `eval/latest.json` (repo root) and a 5s per-chat read limit.
+   */
+  eval?: { snapshotPath?: string | null; rateLimitMs?: number } | null
   now?: () => Date
   logger?: {
     info?: (message: string) => void
@@ -325,6 +340,13 @@ function payloadString(payload: Json, key: string): string | null {
 export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   const now = options.now ?? (() => new Date())
   const logger = options.logger ?? null
+  const evalConfig = options.eval === undefined ? {} : options.eval
+  const evalEnabled = evalConfig !== null
+  const evalSnapshotPath = evalConfig?.snapshotPath === undefined
+    ? defaultEvalSnapshotPath()
+    : evalConfig.snapshotPath
+  const evalRateLimitMs = evalConfig?.rateLimitMs ?? 5000
+  const evalLastReadAt = new Map<string, number>()
 
   const gateway = createGatewayStore(options.dbPath)
   const tasks = createTaskStore(options.dbPath)
@@ -824,6 +846,55 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     }
   }
 
+  /**
+   * P2-1: `/eval` 是只读命令——不建任务、不进模型、不执行测评。
+   * 生产读随发布生成的 `eval/latest.json`；缺快照就明说，绝不推断通过。
+   */
+  function handleEvalCommand(result: IngestResult, target: { kind: 'eval'; command: EvalCommand }): void {
+    const threadId = result.thread?.id ?? null
+    const replyToMsgId = result.inbox.replyToMsgId ?? null
+    const reply = (text: string, suffix: string): void => {
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text },
+        threadId,
+        replyToMsgId,
+        dedupeKey: `eval:${result.inbox.id}:${suffix}`,
+      })
+    }
+
+    if (result.actor === null || result.actor.kind !== 'owner') {
+      reply('仅 owner 可使用 /eval。', 'denied')
+      return
+    }
+
+    if (target.command.kind === 'help') {
+      reply(formatEvalHelp(), 'help')
+      return
+    }
+    if (target.command.kind === 'unsupported') {
+      reply(formatEvalUnsupported(target.command.detail), 'unsupported')
+      return
+    }
+
+    const key = result.thread?.chatId ?? result.actor.id
+    const at = now().getTime()
+    const last = evalLastReadAt.get(key) ?? 0
+    if (evalRateLimitMs > 0 && at - last < evalRateLimitMs) {
+      reply('请求过于频繁，请稍后再试。', 'limited')
+      return
+    }
+    evalLastReadAt.set(key, at)
+
+    const load: EvalSnapshotLoad = evalSnapshotPath === null
+      ? { ok: false, reason: 'missing' }
+      : loadEvalSnapshot(evalSnapshotPath)
+    reply(
+      target.command.kind === 'findings' ? formatEvalFindings(load) : formatEvalStatus(load),
+      target.command.kind,
+    )
+  }
+
   async function ingest(input: IngestInboundInput): Promise<HostIngestResult> {
     const result = await ingestInbound(
       {
@@ -849,6 +920,12 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       },
       input,
     )
+
+    // P2-1: `/eval` 是只读命令，直接回执，不进前台、不建任务。
+    if (result.target.kind === 'eval') {
+      handleEvalCommand(result, result.target)
+      return { result, foreground: null, error: null }
+    }
 
     // Read-only "details" click (Slice L): a separate card, never a decision.
     // Nothing here touches ③, so the pending approval and its nonce survive.

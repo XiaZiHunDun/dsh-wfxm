@@ -118,9 +118,24 @@ function linkDependencies(sourceRoot, destRoot) {
   return { linked, copied }
 }
 
+/**
+ * P2-1: `/eval` 读随发布走的 `eval/latest.json`。有 agent-eval 就重跑离线门禁；
+ * 没有则保留已有快照。失败只告警，不阻断发布。
+ */
+function snapshotEval() {
+  const script = join(repoRoot, 'scripts/eval/snapshot.mjs')
+  if (!existsSync(script)) return
+  try {
+    execFileSync(process.execPath, [script], { stdio: 'pipe', timeout: 180_000 })
+  } catch (error) {
+    console.warn(`release: eval snapshot skipped — ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 function prepare() {
   checkVersion(version)
   const dest = releasePath(version)
+  snapshotEval()
   if (existsSync(dest)) fail(`release already exists: ${dest}`)
   const staging = `${dest}.staging-${process.pid}`
   rmSync(staging, { recursive: true, force: true })
