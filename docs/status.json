@@ -92,10 +92,15 @@
     {
       "id": "EVAL-DSH",
       "name": "dsh 测评体系",
-      "state": "done",
+      "state": "partial",
       "phase": "done",
-      "evidence": ["scripts/eval/run-task.mjs", "docs/16-部署与运行.md"],
-      "note": "第二阶段 P0：薄驱动 + agent-eval 的 L1/L2/L3；PR 跑离线四套件，真实能力每晚 advisory，首轮 16/20"
+      "evidence": [
+        "scripts/eval/run-task.mjs",
+        "scripts/eval/stub-dsh.mjs",
+        "scripts/eval/driver-selftest.mjs",
+        "docs/16-部署与运行.md"
+      ],
+      "note": "第二阶段 P0+P1 已完成：薄驱动（多轮续接）+ agent-eval 的 L1–L3；PR 离线五套件，真实 capability/repo/conversation 每晚 advisory；基线 capability 16/20、repo 5/5、conversation 6/6、trajectory 3/3。P2（生产轨迹替换、/eval 闭环、advisory 转硬门禁）待做"
     }
   ]
 }

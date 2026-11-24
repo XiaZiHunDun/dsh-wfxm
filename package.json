@@ -28,6 +28,8 @@
     "restore:drill": "node scripts/restore-drill.mjs",
     "bench:run": "node bench/run.mjs",
     "bench:report": "node bench/report.mjs",
-    "verify:bench": "node bench/verify.mjs"
+    "verify:bench": "node bench/verify.mjs",
+    "eval:driver": "node scripts/eval/run-task.mjs",
+    "eval:driver:selftest": "node scripts/eval/driver-selftest.mjs"
   }
 }
