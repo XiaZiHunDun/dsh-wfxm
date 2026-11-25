@@ -99,7 +99,9 @@ async function worktreeTask(projectId, resolver, project, intent = 'edit app') {
 }
 
 function succeed(taskId) {
-  store.transition(taskId, { to: 'running' })
+  // L0: `running` is entered only through `claimTask`.
+  const claimed = store.claimTask({ owner: 'verify-merge', leaseMs: 60_000, taskId })
+  if (claimed === null) throw new Error(`task ${taskId} is not claimable`)
   store.transition(taskId, { to: 'succeeded', summary: 'done' })
 }
 

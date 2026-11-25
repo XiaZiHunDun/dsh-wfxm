@@ -431,13 +431,13 @@ export function registerTaskTools(ctx: ContextLike, deps: TaskToolsDeps): void {
 
   registry.register(defineTool({
     name: 'task_control',
-    description: 'Drive one task (module ⑤): start / pause / resume / cancel / fail / verify / complete. `complete` runs the Verifier and only then allows succeeded; a failed or undecidable assertion refuses success. Terminal transitions write a receipt.',
+    description: 'Drive one task (module ⑤): pause / resume / cancel / fail / verify / complete. Execution is started only by the worker claiming the task; `resume` merely re-queues a paused task, and approval is decided by the owner, never by this tool. `complete` runs the Verifier and only then allows succeeded; a failed or undecidable assertion refuses success. Terminal transitions write a receipt.',
     parameters: {
       taskId: { type: 'string', required: true, description: 'Target task id.' },
       action: {
         type: 'string',
         required: true,
-        enum: ['start', 'pause', 'resume', 'cancel', 'fail', 'verify', 'complete'],
+        enum: ['pause', 'resume', 'cancel', 'fail', 'verify', 'complete'],
         description: 'Control action.',
       },
       reason: { type: 'string', description: 'Why (written to the event trail / receipt).' },
@@ -459,13 +459,22 @@ export function registerTaskTools(ctx: ContextLike, deps: TaskToolsDeps): void {
       if (current === null) throw new TaskError('invalid-task', `task ${args.taskId} not found`)
 
       switch (args.action) {
-        case 'start':
         case 'resume': {
-          const task = deps.store.transition(args.taskId, {
-            to: 'running',
-            ...args.reason === undefined ? {} : { reason: args.reason },
-          })
-          return { action: args.action, task, verification: null }
+          // L0: this tool never starts execution. A queued task is already
+          // waiting for the worker; a paused one goes back to the queue.
+          if (current.status === 'queued') {
+            return { action: args.action, task: current, verification: null }
+          }
+          if (current.status === 'paused') {
+            return { action: args.action, task: deps.store.resumeTask(args.taskId), verification: null }
+          }
+          const hint = current.status === 'waiting_approval'
+            ? 'approval is decided by the owner through the approval card'
+            : 'execution starts only when the worker claims the task'
+          throw new TaskError(
+            'invalid-transition',
+            `resume requires paused (or queued); ${args.taskId} is ${current.status}; ${hint}`,
+          )
         }
         case 'pause': {
           const task = deps.store.transition(args.taskId, {
@@ -504,6 +513,13 @@ export function registerTaskTools(ctx: ContextLike, deps: TaskToolsDeps): void {
           })
           return { action: args.action, task, verification }
         }
+        default:
+          // Enum validation normally catches this; keep the runtime fail-closed
+          // too (a direct caller must not get `undefined` back).
+          throw new TaskError(
+            'invalid-input',
+            `unknown action ${JSON.stringify(args.action)}; execution starts only when the worker claims the task`,
+          )
       }
     },
   }))

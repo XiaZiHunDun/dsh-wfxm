@@ -529,10 +529,39 @@ export interface ResumeFromApprovalResult {
   reason?: 'not-found' | 'not-waiting'
 }
 
+/**
+ * Lifecycle audit (L0): the structural invariants that make "no zombie task"
+ * checkable instead of assumed. Every finding is read-only evidence.
+ */
+export type LifecycleFindingKind =
+  | 'running-without-lease'
+  | 'expired-lease'
+  | 'stuck-queued'
+  | 'event-seq-gap'
+  | 'terminal-without-receipt'
+
+export interface LifecycleFinding {
+  kind: LifecycleFindingKind
+  taskId: string
+  detail: string
+}
+
+export interface LifecycleAudit {
+  checkedAt: string
+  findings: LifecycleFinding[]
+  counts: Record<LifecycleFindingKind, number>
+}
+
 export interface TaskStore {
   createTask(input: CreateTaskInput): Task
   getTask(id: string): Task | null
   listTasks(filter?: TaskFilter): Task[]
+  /**
+   * Read-only health check for the task lifecycle: no lease-less `running`, no
+   * unclaimable `queued`, no event seq gap, no terminal row without a receipt.
+   * Never writes; callers decide whether to warn or alert.
+   */
+  auditLifecycle(input?: { now?: Date; limit?: number }): LifecycleAudit
   /** Slice BK (I5): add one attempt's usage; safe to call on every settle path. */
   recordUsage(taskId: string, usage: TaskUsage, at?: Date): void
   /** Slice CC (M8): tokens/cost accumulated on one local calendar day. */
@@ -630,8 +659,9 @@ export interface TaskStore {
 
   /**
    * Worker lease API (13 §3.3). `claimTask` is the only way a task enters
-   * `running` on its own: it picks the oldest wakeable `queued` row, takes the
-   * lease and increments `attempt` in one transaction.
+   * `running`: it picks the oldest wakeable `queued` row (or `input.taskId`),
+   * takes the lease and increments `attempt` in one transaction. `transition`
+   * refuses `running` outright, so no second entry exists.
    */
   claimTask(input: ClaimTaskInput): Task | null
   /** Extends the lease; false when the lease was lost (another worker owns it). */
@@ -645,9 +675,10 @@ export interface TaskStore {
    */
   deferTask(input: DeferTaskInput): Task
   /**
-   * Reclaims tasks whose lease expired without a heartbeat. Attempts left →
-   * queued (no backoff: the worker died, it never reported a port error).
-   * Out of attempts → failed with a receipt, so it is never silently stuck.
+   * Reclaims tasks whose lease expired without a heartbeat, plus legacy
+   * `running` rows that carry no lease at all. Attempts left → queued (no
+   * backoff: the worker died, it never reported a port error). Out of
+   * attempts → failed with a receipt, so it is never silently stuck.
    */
   recoverExpiredLeases(input?: { now?: Date; limit?: number }): {
     requeued: string[]
@@ -760,6 +791,11 @@ export interface BeginCheckpointInput {
 export interface ClaimTaskInput {
   owner: string
   leaseMs: number
+  /**
+   * Claim exactly this queued row. Absent keeps the batch semantics (oldest
+   * wakeable task first). Either way `claimTask` is the only way into `running`.
+   */
+  taskId?: string
   now?: Date
 }
 
@@ -1170,6 +1206,12 @@ export function createTaskStore(dbPath: string): TaskStore {
      ORDER BY created_at ASC, rowid ASC
      LIMIT 1
   `)
+  const selectWakeableById = db.prepare(`
+    SELECT id, attempt, max_attempts FROM tasks
+     WHERE status = 'queued'
+       AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+       AND id = ?
+  `)
   const claimTaskRow = db.prepare(`
     UPDATE tasks
        SET status = 'running', attempt = attempt + 1, lease_owner = ?,
@@ -1194,16 +1236,46 @@ export function createTaskStore(dbPath: string): TaskStore {
            attempt = CASE WHEN attempt > 0 THEN attempt - 1 ELSE 0 END
      WHERE id = ? AND status = 'running' AND lease_owner = ?
   `)
+  // A `running` row without a lease can only come from a pre-L0 writer (every
+  // `claimTask` stamps one). It is just as orphaned as an expired lease, so the
+  // recovery sweep must not skip it.
   const listExpiredLeases = db.prepare(`
-    SELECT id, attempt, max_attempts FROM tasks
-     WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+    SELECT id, attempt, max_attempts, lease_expires_at FROM tasks
+     WHERE status = 'running'
+       AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
      ORDER BY lease_expires_at ASC
      LIMIT ?
   `)
   const recoverExpiredRow = db.prepare(`
     UPDATE tasks
        SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL
-     WHERE id = ? AND status = 'running' AND lease_expires_at <= ?
+     WHERE id = ? AND status = 'running'
+       AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+  `)
+
+  const auditRunningWithoutLease = db.prepare(`
+    SELECT id FROM tasks WHERE status = 'running' AND lease_expires_at IS NULL LIMIT ?
+  `)
+  const auditExpiredLease = db.prepare(`
+    SELECT id, lease_expires_at FROM tasks
+     WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+     LIMIT ?
+  `)
+  const auditStuckQueued = db.prepare(`
+    SELECT id, attempt, max_attempts FROM tasks
+     WHERE status = 'queued' AND attempt >= max_attempts
+     LIMIT ?
+  `)
+  const auditEventSeqGap = db.prepare(`
+    SELECT task_id, MAX(seq) AS max_seq, COUNT(*) AS n FROM task_events
+     GROUP BY task_id HAVING MAX(seq) <> COUNT(*)
+     LIMIT ?
+  `)
+  const auditTerminalWithoutReceipt = db.prepare(`
+    SELECT t.id, t.status FROM tasks t
+     WHERE t.status IN ('succeeded','failed','cancelled')
+       AND NOT EXISTS (SELECT 1 FROM receipts r WHERE r.task_id = t.id)
+     LIMIT ?
   `)
 
   const releaseExpiredLocks = db.prepare(`
@@ -1764,6 +1836,12 @@ export function createTaskStore(dbPath: string): TaskStore {
   function doTransition(taskId: string, input: TransitionInput): Task {
     const task = getTask(taskId)
     if (task === null) throw new TaskError('invalid-task', `task ${taskId} not found`)
+    // L0: `claimTask` is the only way in — a generic transition would leave the
+    // row without a lease, and a lease-less `running` task is invisible to the
+    // expiry sweep (nobody owns it, nobody reclaims it).
+    if (input.to === 'running') {
+      throw new TaskError('invalid-transition', 'running is entered only through claimTask')
+    }
     assertTransition(task.status, input.to)
 
     const at = new Date().toISOString()
@@ -1771,8 +1849,10 @@ export function createTaskStore(dbPath: string): TaskStore {
     if (terminal && (input.summary === undefined || input.summary.trim() === '')) {
       throw new TaskError('invalid-task', 'terminal transitions require a receipt summary')
     }
-    const attempt = input.to === 'running' ? task.attempt + 1 : task.attempt
-    const startedAt = task.startedAt ?? (input.to === 'running' ? at : null)
+    // `running` is refused above, so a transition never starts an attempt:
+    // `claimTask` already owns attempt+1 and the first `started_at`.
+    const attempt = task.attempt
+    const startedAt = task.startedAt
     const finishedAt = terminal ? at : null
 
     db.transaction(() => {
@@ -1926,7 +2006,9 @@ export function createTaskStore(dbPath: string): TaskStore {
       const nowIso = now.toISOString()
       const leaseUntil = new Date(now.getTime() + input.leaseMs).toISOString()
       return db.transaction(() => {
-        const candidate = selectWakeable.get(nowIso) as { id: string } | undefined
+        const candidate = (input.taskId === undefined
+          ? selectWakeable.get(nowIso)
+          : selectWakeableById.get(nowIso, input.taskId)) as { id: string } | undefined
         if (candidate === undefined) return null
         const claimed = claimTaskRow.run(owner, leaseUntil, nowIso, candidate.id)
         if (claimed.changes !== 1) return null
@@ -2008,12 +2090,16 @@ export function createTaskStore(dbPath: string): TaskStore {
         id: string
         attempt: number
         max_attempts: number
+        lease_expires_at: string | null
       }>
       for (const row of expired) {
         if (row.attempt < row.max_attempts) {
           const changed = recoverExpiredRow.run(row.id, now)
           if (changed.changes === 1) {
-            appendEvent(row.id, 'task.retried', { reason: 'lease-expired', attempt: row.attempt })
+            appendEvent(row.id, 'task.retried', {
+              reason: row.lease_expires_at === null ? 'lease-missing' : 'lease-expired',
+              attempt: row.attempt,
+            })
             requeued.push(row.id)
           }
           continue
@@ -2027,6 +2113,67 @@ export function createTaskStore(dbPath: string): TaskStore {
         failed.push(row.id)
       }
       return { requeued, failed }
+    },
+
+    auditLifecycle(input) {
+      const checkedAt = (input?.now ?? new Date()).toISOString()
+      const limit = Math.max(1, Math.floor(input?.limit ?? 200))
+      const findings: LifecycleFinding[] = []
+
+      for (const row of auditRunningWithoutLease.all(limit) as Array<{ id: string }>) {
+        findings.push({
+          kind: 'running-without-lease',
+          taskId: row.id,
+          detail: 'running row has no lease; nobody owns or reclaims it',
+        })
+      }
+      for (const row of auditExpiredLease.all(checkedAt, limit) as Array<{ id: string; lease_expires_at: string }>) {
+        findings.push({
+          kind: 'expired-lease',
+          taskId: row.id,
+          detail: `lease expired at ${row.lease_expires_at}; recovery has not run yet`,
+        })
+      }
+      for (const row of auditStuckQueued.all(limit) as Array<{
+        id: string
+        attempt: number
+        max_attempts: number
+      }>) {
+        findings.push({
+          kind: 'stuck-queued',
+          taskId: row.id,
+          detail: `attempt ${row.attempt}/${row.max_attempts}; claimTask can never pick this row`,
+        })
+      }
+      for (const row of auditEventSeqGap.all(limit) as Array<{
+        task_id: string
+        max_seq: number
+        n: number
+      }>) {
+        findings.push({
+          kind: 'event-seq-gap',
+          taskId: row.task_id,
+          detail: `max(seq)=${row.max_seq} but ${row.n} event row(s); the trail has a gap`,
+        })
+      }
+      for (const row of auditTerminalWithoutReceipt.all(limit) as Array<{ id: string; status: string }>) {
+        findings.push({
+          kind: 'terminal-without-receipt',
+          taskId: row.id,
+          detail: `terminal ${row.status} row has no receipt`,
+        })
+      }
+
+      const counts: Record<LifecycleFindingKind, number> = {
+        'running-without-lease': 0,
+        'expired-lease': 0,
+        'stuck-queued': 0,
+        'event-seq-gap': 0,
+        'terminal-without-receipt': 0,
+      }
+      for (const finding of findings) counts[finding.kind] += 1
+
+      return { checkedAt, findings, counts }
     },
 
     transition(taskId, input) {

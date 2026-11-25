@@ -347,7 +347,7 @@ const e2eTask = e2eTasks.createTask({
   originMsgId: 'root_e2e',
 })
 e2eTasks.bindThread({ taskId: e2eTask.id, threadId: e2eThread.id, relation: 'default_owner' })
-e2eTasks.transition(e2eTask.id, { to: 'running' })
+e2eTasks.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: e2eTask.id })
 e2eTasks.transition(e2eTask.id, { to: 'succeeded', summary: 'v1 delivered' })
 
 const e2eGrant = e2eGrants.create({
@@ -421,7 +421,7 @@ await check('AR37 E2E: a re-verified reply wakes the task, bumps the round and q
     && relayCalls.some((call) => call.op === 'enqueue' && call.taskId === e2eTask.id)
 })
 
-e2eTasks.transition(e2eTask.id, { to: 'running' })
+e2eTasks.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: e2eTask.id })
 e2eTasks.transition(e2eTask.id, { to: 'succeeded', summary: 'v2 delivered' })
 
 await check('AR37 E2E: after revoke the reply is unowned — no wake, no attach, back to the foreground', async () => {

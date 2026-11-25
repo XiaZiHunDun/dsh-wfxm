@@ -502,7 +502,7 @@ await check('a paused (rejected) task does not absorb later messages', async () 
     relation: 'default_owner',
     anchorMsgId: 'm_rejected',
   })
-  host.stores.tasks.transition(parked.id, { to: 'running', reason: 'manual' })
+  host.stores.tasks.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: parked.id })
   host.stores.tasks.transition(parked.id, { to: 'paused', reason: 'approval-rejected' })
 
   const foreground = createOrchestratorForeground({

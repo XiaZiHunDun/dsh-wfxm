@@ -179,7 +179,7 @@ await check('thread context is appended after the intent on stdin', async () => 
   const thread = 'thread-stdin'
   const earlier = makeTask({ intent: '第一轮：写 greet' })
   store.bindThread({ taskId: earlier.id, threadId: thread, relation: 'default_owner' })
-  store.transition(earlier.id, { to: 'running' })
+  store.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: earlier.id })
   store.transition(earlier.id, { to: 'succeeded', summary: '第一轮已完成：greet 已写入' })
 
   const followUp = makeTask({ intent: '第二轮：把 greet 改成中文' })

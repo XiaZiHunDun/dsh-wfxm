@@ -1101,8 +1101,10 @@ await check('审批 12: a never-clicked approval expires, fails its task and pat
   const said = await say(host, '帮我重启 nginx')
   const threadId = said.result.result.thread.id
   const taskId = said.result.foreground.taskId
-  host.stores.tasks.transition(taskId, { to: 'running', reason: 'manual' })
-  host.stores.tasks.transition(taskId, { to: 'waiting_approval', reason: 'risk:R3' })
+  const beforeApproval = host.stores.tasks.getTask(taskId)
+  if (beforeApproval?.status === 'queued') {
+    host.stores.tasks.holdForApproval({ taskId, reason: 'risk:R3' })
+  }
 
   const issued = host.requestApproval({
     level: 'R3',
@@ -1513,7 +1515,7 @@ await check('AV 1: startup recovery keeps a change whose task already succeeded'
   const changes = createChangeStore(dbPath)
   const { host } = makeHost({ dbPath, options: { changes } })
   const task = host.stores.tasks.createTask({ intent: '已完成但没记账', riskLevel: 'R1' })
-  host.stores.tasks.transition(task.id, { to: 'running' })
+  host.stores.tasks.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: task.id })
   host.stores.tasks.transition(task.id, { to: 'succeeded', summary: 'already finished' })
   changes.begin({ taskId: task.id, target: '/srv/app' })
 
@@ -1547,7 +1549,7 @@ await check('AV 2: a failed task is rolled back through the preimage port, not b
     },
   })
   const task = host.stores.tasks.createTask({ intent: '改坏了一半', riskLevel: 'R2' })
-  host.stores.tasks.transition(task.id, { to: 'running' })
+  host.stores.tasks.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: task.id })
   host.stores.tasks.transition(task.id, { to: 'failed', summary: 'executor failed' })
   changes.begin({ taskId: task.id, target: '/srv/app' })
   changes.markFailed(task.id, 'executor failed')
@@ -1586,7 +1588,7 @@ await check('AV 3: a recorded snapshot restores the workspace instead of replayi
     },
   })
   const task = host.stores.tasks.createTask({ intent: 'R3 半应用', riskLevel: 'R3' })
-  host.stores.tasks.transition(task.id, { to: 'running' })
+  host.stores.tasks.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: task.id })
   host.stores.tasks.transition(task.id, { to: 'failed', summary: 'boom' })
   changes.begin({ taskId: task.id, target: '/srv/app', snapshotId: 'snap_av_host' })
 
@@ -1618,7 +1620,7 @@ await check('AV 4: a rollback that cannot run is recorded as failed and warned, 
     },
   })
   const task = host.stores.tasks.createTask({ intent: '快照还不了', riskLevel: 'R3' })
-  host.stores.tasks.transition(task.id, { to: 'running' })
+  host.stores.tasks.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: task.id })
   host.stores.tasks.transition(task.id, { to: 'failed', summary: 'boom' })
   changes.begin({ taskId: task.id, target: '/srv/app', snapshotId: 'restic:abc:/srv/app' })
 
@@ -1660,7 +1662,7 @@ await check('H4 1: 全局停止 writes the kill file, parks running work and blo
   await pair(host)
 
   const running = host.stores.tasks.createTask({ intent: '长任务', riskLevel: 'R1' })
-  host.stores.tasks.transition(running.id, { to: 'running' })
+  host.stores.tasks.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: running.id })
   const thread = (await say(host, '在吗')).result.result.thread
   const due = reminders.create({
     threadId: thread.id,
@@ -1707,7 +1709,7 @@ await check('H4 2: 全局恢复 releases the stop but never re-runs paused work'
   await pair(host)
 
   const running = host.stores.tasks.createTask({ intent: '被停的任务', riskLevel: 'R1' })
-  host.stores.tasks.transition(running.id, { to: 'running' })
+  host.stores.tasks.claimTask({ owner: 'verify', leaseMs: 60_000, taskId: running.id })
   await say(host, '全局停止')
   const resumed = await say(host, '全局恢复')
   const queued = host.stores.tasks.createTask({ intent: '恢复后的新任务', riskLevel: 'R1' })

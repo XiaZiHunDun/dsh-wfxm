@@ -79,6 +79,7 @@ import {
   createTaskStore,
   createTaskWorker,
   type CheckpointRollbackPort,
+  type LifecycleAudit,
   type SnapshotPort,
   type TaskExecutor,
   type TaskRunReport,
@@ -322,6 +323,8 @@ export interface WfxmHost {
    * so a retry never starts on top of a half-applied workspace.
    */
   recoverChanges(): Promise<{ kept: number; rolledBack: number; failed: number }>
+  /** L0: read-only task lifecycle audit; `start()` also runs it once. */
+  auditLifecycle(at?: Date): LifecycleAudit
   /** H4: true while the global stop file exists (survives restarts). */
   isHalted(): boolean
   pump(): Promise<HostPumpReport>
@@ -1502,6 +1505,8 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     ingest,
     requestApproval,
     recoverChanges,
+    /** L0 read-only lifecycle audit (also run once at `start()`). */
+    auditLifecycle: (at?: Date) => tasks.auditLifecycle({ now: at }),
     isHalted,
     pump,
     drainEval: async () => {
@@ -1521,6 +1526,19 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
 
     start() {
       workerStarted = true
+      // L0: surface structural drift before new work starts. Read-only and
+      // non-blocking — a noisy audit must never keep the host from serving.
+      try {
+        const audit = tasks.auditLifecycle()
+        if (audit.findings.length > 0) {
+          const lines = audit.findings.slice(0, 10).map((finding) => (
+            `${finding.kind}: ${finding.taskId}: ${finding.detail}`
+          ))
+          logger?.warn?.(`task lifecycle audit: ${audit.findings.length} finding(s)\n${lines.join('\n')}`)
+        }
+      } catch (error) {
+        logger?.warn?.(`task lifecycle audit failed: ${messageOf(error)}`)
+      }
       // A restart while the halt file exists stays stopped; the pump still
       // runs so the owner can receive `全局恢复`.
       if (!isHalted()) worker.start({ intervalMs: workerOptions.intervalMs ?? 1_000 })

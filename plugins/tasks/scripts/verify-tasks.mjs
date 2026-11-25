@@ -84,6 +84,12 @@ const submit = (args) => tools.get('task_submit').execute(args)
 const status = (args) => tools.get('task_status').execute(args)
 const control = (args) => tools.get('task_control').execute(args)
 const rollback = (args) => tools.get('task_rollback').execute(args)
+/** L0: `running` is entered only through `claimTask`; tests claim a specific row. */
+const startTask = (taskId, target = store, owner = 'verify') => {
+  const claimed = target.claimTask({ owner, leaseMs: 60_000, taskId })
+  if (claimed === null) throw new Error(`task ${taskId} is not claimable`)
+  return claimed
+}
 
 const R2 = (overrides = {}) => ({
   intent: 'reload nginx and confirm the config is live',
@@ -483,47 +489,68 @@ await check('relative file paths are rejected', () => {
 
 const machineTask = (await submit({ intent: 'state machine walk', riskLevel: 'R1' })).task
 
-await check('queued -> running increments attempt and stamps started_at', async () => {
-  const value = await control({ taskId: machineTask.id, action: 'start' })
+await check('queued -> running only through claimTask (lease + attempt + started_at)', () => {
+  const claimed = startTask(machineTask.id)
   const events = store.listEvents(machineTask.id)
-  return value.task.status === 'running'
-    && value.task.attempt === 1
-    && value.task.startedAt !== null
+  return claimed.status === 'running'
+    && claimed.attempt === 1
+    && claimed.startedAt !== null
+    && claimed.leaseOwner === 'verify'
+    && claimed.leaseExpiresAt !== null
     && events.some((event) => event.type === 'task.started')
 })
 
-await check('starting a running task is refused', async () => {
-  await assert.rejects(
-    () => control({ taskId: machineTask.id, action: 'start' }),
+await check('transition refuses to start a task (single entry)', () => {
+  const queued = store.createTask({ intent: 'edge probe', riskLevel: 'R1' })
+  assert.throws(
+    () => store.transition(queued.id, { to: 'running' }),
     (error) => error instanceof TaskError && error.code === 'invalid-transition',
   )
-  return true
+  assert.throws(
+    () => store.transition(machineTask.id, { to: 'running' }),
+    (error) => error instanceof TaskError && error.code === 'invalid-transition',
+  )
+  return store.getTask(queued.id).status === 'queued'
 })
 
-await check('pause and resume walk the allowed edges', async () => {
+await check('task_control no longer advertises or accepts start', async () => {
+  const advertised = tools.get('task_control').parameters?.action?.enum ?? []
+  // Schema validation is the first line of defence; the runtime default below
+  // it stays fail-closed for direct callers.
+  await assert.rejects(
+    () => control({ taskId: machineTask.id, action: 'start' }),
+    /must be one of/,
+  )
+  return !advertised.includes('start')
+})
+
+await check('resume re-queues a paused task instead of starting it', async () => {
   const paused = await control({ taskId: machineTask.id, action: 'pause', reason: 'waiting for window' })
   const resumed = await control({ taskId: machineTask.id, action: 'resume' })
+  const again = await control({ taskId: machineTask.id, action: 'resume' })
   const events = store.listEvents(machineTask.id).map((event) => event.type)
   return paused.task.status === 'paused'
-    && resumed.task.status === 'running'
-    && resumed.task.attempt === 2
+    && resumed.task.status === 'queued'
+    && again.task.status === 'queued'
+    && resumed.task.attempt === 0
     && events.includes('task.paused')
     && events.includes('task.resumed')
 })
 
 await check('an illegal edge is refused by the store', () => {
-  // running → queued is legal now (transient retry); a terminal row has no out-edges.
+  // A queued row cannot jump to succeeded; a terminal move needs a receipt summary.
   assert.throws(
     () => store.transition(machineTask.id, { to: 'succeeded', summary: '' }),
-    (error) => error instanceof TaskError && error.code === 'invalid-task',
-  )
-  const temp = store.createTask({ intent: 'edge probe', riskLevel: 'R1' })
-  store.transition(temp.id, { to: 'running' })
-  store.transition(temp.id, { to: 'cancelled', summary: 'probe' })
-  assert.throws(
-    () => store.transition(temp.id, { to: 'running' }),
     (error) => error instanceof TaskError && error.code === 'invalid-transition',
   )
+  const temp = store.createTask({ intent: 'edge probe 2', riskLevel: 'R1' })
+  assert.throws(
+    () => store.transition(temp.id, { to: 'cancelled' }),
+    (error) => error instanceof TaskError && error.code === 'invalid-task',
+  )
+  startTask(temp.id)
+  store.transition(temp.id, { to: 'cancelled', summary: 'probe' })
+  assert.throws(() => startTask(temp.id), /not claimable/)
   return true
 })
 
@@ -557,9 +584,9 @@ await check('cancel is terminal, writes a receipt and refuses further moves', as
   const events = store.listEvents(machineTask.id)
   let refused = false
   try {
-    await control({ taskId: machineTask.id, action: 'start' })
+    startTask(machineTask.id)
   } catch (error) {
-    refused = error instanceof TaskError && error.code === 'invalid-transition'
+    refused = error instanceof Error && /not claimable/.test(error.message)
   }
   return value.task.status === 'cancelled'
     && value.task.finishedAt !== null
@@ -653,7 +680,7 @@ await check('bind rejects unknown tasks and empty threads', () => {
 
 await check('occupancy reports the default owner, live and wakeable tasks', async () => {
   const before = store.occupancy(threadId)
-  await control({ taskId: ownerTask.id, action: 'start' })
+  startTask(ownerTask.id)
   const running = store.occupancy(threadId)
   await control({ taskId: ownerTask.id, action: 'cancel', summary: 'done for now' })
   return before.defaultOwnerTaskId === ownerTask.id
@@ -715,7 +742,7 @@ await check('recentThreadResults lists only earlier succeeded receipts on the sa
     if (boundThread !== undefined) {
       contextStore.bindThread({ taskId: task.id, threadId: boundThread, relation: 'default_owner' })
     }
-    contextStore.transition(task.id, { to: 'running' })
+    startTask(task.id, contextStore)
     // A terminal transition writes the receipt for the task's round itself.
     contextStore.transition(task.id, { to: 'succeeded', summary })
     return task
@@ -725,7 +752,7 @@ await check('recentThreadResults lists only earlier succeeded receipts on the sa
   finished('别的线程', 'thread-results-other')
   const failed = contextStore.createTask({ intent: '失败任务', riskLevel: 'R1' })
   contextStore.bindThread({ taskId: failed.id, threadId: thread, relation: 'anchor', anchorMsgId: 'msg-failed' })
-  contextStore.transition(failed.id, { to: 'running' })
+  startTask(failed.id, contextStore)
   contextStore.transition(failed.id, { to: 'failed', summary: '失败回执' })
 
   const current = contextStore.createTask({ intent: '当前任务', riskLevel: 'R1' })
@@ -818,7 +845,7 @@ const wakeTarget = store.createTask({
   round: 2,
 })
 store.bindThread({ taskId: wakeTarget.id, threadId: 'thread-wake', relation: 'default_owner' })
-store.transition(wakeTarget.id, { to: 'running' })
+startTask(wakeTarget.id)
 store.transition(wakeTarget.id, { to: 'succeeded', summary: 'round one done' })
 
 await check('wakeTask re-queues a succeeded task into round + 1 and resets the attempt', () => {
@@ -841,7 +868,7 @@ await check('wakeTask re-queues a succeeded task into round + 1 and resets the a
 })
 
 await check('a woken task walks queued → running again inside the new round', () => {
-  const running = store.transition(wakeTarget.id, { to: 'running' })
+  const running = startTask(wakeTarget.id)
   return running.status === 'running' && running.attempt === 1 && running.round === 3
 })
 
@@ -857,7 +884,7 @@ await check('waking a task that is not succeeded is refused', () => {
 
 await check('waking without a live thread is refused and leaves the task succeeded', () => {
   const lonely = store.createTask({ intent: 'no thread to wake into', riskLevel: 'R1' })
-  store.transition(lonely.id, { to: 'running' })
+  startTask(lonely.id)
   store.transition(lonely.id, { to: 'succeeded', summary: 'done, nobody attached' })
   assert.throws(
     () => store.wakeTask({ taskId: lonely.id }),
@@ -873,7 +900,7 @@ await check('a released thread no longer wakes, and an unknown task is NotFound'
     threadId: 'thread-wake-released',
     relation: 'default_owner',
   })
-  store.transition(released.id, { to: 'running' })
+  startTask(released.id)
   store.transition(released.id, { to: 'succeeded', summary: 'done' })
   store.releaseThread({ taskId: released.id, threadId: 'thread-wake-released', reason: 'handback' })
   assert.throws(
@@ -1059,9 +1086,11 @@ await check('① receipt relay closes the loop back into ⑤', async () => {
 
 // ---- control commands (① → ⑤ task_control, 11 §5.3) ------------------------
 
-const CONTROL_TO_STATUS = { cancel: 'cancelled', pause: 'paused', resume: 'running' }
+const CONTROL_TO_STATUS = { cancel: 'cancelled', pause: 'paused' }
 const controlPort = {
   control: ({ taskId, action, checkpointId }) => {
+    // L0: like the real host port, "resume" re-queues; only claimTask runs.
+    if (action === 'resume') return { status: store.resumeTask(taskId).status }
     if (action === 'rollback') {
       const undone = rollbackTask({
         store,
@@ -1102,7 +1131,7 @@ async function controlFixture(suffix) {
   })
   const task = store.createTask({ intent: `control ${suffix}`, riskLevel: 'R1', originMsgId: rootMsgId })
   store.bindThread({ taskId: task.id, threadId: thread.id, relation: 'default_owner' })
-  store.transition(task.id, { to: 'running' })
+  startTask(task.id)
   return {
     gateway,
     task,
@@ -1150,10 +1179,11 @@ await check('① pause / resume / status map onto ⑤ without side effects for s
     && pausedTask.status === 'paused'
     && resumed.control?.executed === true
     && resumed.control.action === 'resume'
-    && resumedTask.status === 'running'
+    && resumedTask.status === 'queued'
+    && resumedTask.leaseOwner === null
     && status.control?.executed === false
     && status.control.skipped === 'status-only'
-    && afterStatus.status === 'running'
+    && afterStatus.status === 'queued'
     && receipts.length === 0
 })
 
@@ -1360,7 +1390,7 @@ await check('the worker hands earlier same-thread results to the executor', asyn
   const thread = 'thread-worker-context'
   const earlier = contextStore.createTask({ intent: '第一轮', riskLevel: 'R1' })
   contextStore.bindThread({ taskId: earlier.id, threadId: thread, relation: 'default_owner' })
-  contextStore.transition(earlier.id, { to: 'running' })
+  startTask(earlier.id, contextStore)
   contextStore.transition(earlier.id, { to: 'succeeded', summary: '第一轮已完成：写入了 hello.txt' })
 
   const current = contextStore.createTask({ intent: '接着改一下', riskLevel: 'R1' })
@@ -2089,7 +2119,7 @@ await check('holdForApproval parks a queued task and records the event', () => {
 await check('holding a task that is not queued is refused; unknown id is NotFound', () => {
   const gateStore = createTaskStore(join(dir, 'gate-hold-conflict.sqlite'))
   const task = gateStore.createTask({ intent: 'already running', riskLevel: 'R2' })
-  gateStore.transition(task.id, { to: 'running' })
+  startTask(task.id, gateStore)
   assert.throws(
     () => gateStore.holdForApproval({ taskId: task.id }),
     (error) => error instanceof TaskError && error.code === 'conflict',
@@ -2244,7 +2274,7 @@ await check('http_status compares the real response code and redacts the URL', a
     riskLevel: 'R2',
     assertions: [{ kind: 'http_status', url, expected: 200 }],
   })).task
-  await control({ taskId: task.id, action: 'start' })
+  startTask(task.id)
   await verifyTask(store, task.id)
   const stored = store.listAssertions(task.id)[0]
   const storedUrl = String(stored.evidence.url)
@@ -2307,7 +2337,7 @@ await check('a transient failure is retested exactly once', async () => {
       expect: 'ok',
     }],
   })).task
-  await control({ taskId: task.id, action: 'start' })
+  startTask(task.id)
   let calls = 0
   const result = await verifyTask(store, task.id, {
     browserContains: async () => {
@@ -2356,7 +2386,7 @@ await check('git_diff_matches fails when the expected change is absent', async (
 // ---- verify + complete ------------------------------------------------------
 
 const verified = (await submit(R2({ intent: 'verify persisted results' }))).task
-await control({ taskId: verified.id, action: 'start' })
+startTask(verified.id)
 
 await check('verifyTask persists assertion results and appends task.verified', async () => {
   const result = await verifyTask(store, verified.id)
@@ -2384,7 +2414,7 @@ const failing = (await submit(R2({
   intent: 'failing assertion path',
   assertions: [{ kind: 'file_exists', path: join(dir, 'never-existed.conf') }],
 }))).task
-await control({ taskId: failing.id, action: 'start' })
+startTask(failing.id)
 
 await check('complete refuses success when an assertion fails, task stays running', async () => {
   await assert.rejects(
@@ -2402,7 +2432,7 @@ const undecidable = (await submit({
   riskLevel: 'R2',
   assertions: [{ kind: 'service_active', unit: 'nginx.service' }],
 })).task
-await control({ taskId: undecidable.id, action: 'start' })
+startTask(undecidable.id)
 
 await check('skipped assertions block completion (incomplete, not success)', async () => {
   const result = await verifyTask(store, undecidable.id)
@@ -2431,7 +2461,7 @@ await check('task_control complete evaluates exit_code from recorded evidence', 
     riskLevel: 'R2',
     assertions: [{ kind: 'exit_code', expected: 0 }],
   })).task
-  await control({ taskId: task.id, action: 'start' })
+  startTask(task.id)
   const value = await control({ taskId: task.id, action: 'complete', execExitCode: 0 })
   return value.task.status === 'succeeded' && value.verification.overall === 'pass'
 })
@@ -2560,6 +2590,132 @@ await check('the owner reply wakes a waiting_input task back to queued', () => {
       && claimed.id === task.id
   } finally {
     parkStore.close()
+  }
+})
+
+// ---- L0: task kernel (single entry + recovery + lifecycle audit) ------------
+
+await check('resume on a task waiting for approval is refused', async () => {
+  const task = (await submit({
+    intent: 'approval probe',
+    riskLevel: 'R2',
+    assertions: [{ kind: 'file_exists', path: fixturePath }],
+  })).task
+  store.holdForApproval({ taskId: task.id, reason: 'risk:R2' })
+  let message = ''
+  try {
+    await control({ taskId: task.id, action: 'resume' })
+  } catch (error) {
+    message = error.message
+  }
+  const after = store.getTask(task.id)
+  store.transition(task.id, { to: 'cancelled', summary: 'probe cleanup' })
+  return after.status === 'waiting_approval'
+    && after.leaseOwner === null
+    && /approval/.test(message)
+})
+
+await check('claimTask({taskId}) claims exactly that row and refuses a second claim', () => {
+  const claimStore = createTaskStore(join(dir, 'kernel-claim.sqlite'))
+  try {
+    const first = claimStore.createTask({ intent: 'first', riskLevel: 'R1' })
+    const second = claimStore.createTask({ intent: 'second', riskLevel: 'R1' })
+    const claimed = claimStore.claimTask({ owner: 'w1', leaseMs: 60_000, taskId: second.id })
+    const again = claimStore.claimTask({ owner: 'w2', leaseMs: 60_000, taskId: second.id })
+    const untouched = claimStore.getTask(first.id)
+    return claimed !== null
+      && claimed.id === second.id
+      && claimed.attempt === 1
+      && claimed.leaseOwner === 'w1'
+      && claimed.leaseExpiresAt !== null
+      && again === null
+      && untouched.status === 'queued'
+      && untouched.attempt === 0
+  } finally {
+    claimStore.close()
+  }
+})
+
+await check('recovery requeues a running row that carries no lease', () => {
+  const path = join(dir, 'kernel-recover.sqlite')
+  const recoverStore = createTaskStore(path)
+  try {
+    const task = recoverStore.createTask({ intent: 'legacy orphan', riskLevel: 'R1' })
+    const raw = new DatabaseConstructor(path)
+    raw.prepare(
+      "UPDATE tasks SET status = 'running', lease_owner = NULL, lease_expires_at = NULL, attempt = 1 WHERE id = ?",
+    ).run(task.id)
+    raw.close()
+    const report = recoverStore.recoverExpiredLeases()
+    const after = recoverStore.getTask(task.id)
+    const retried = recoverStore.listEvents(task.id)
+      .find((event) => event.type === 'task.retried' && event.payload?.reason === 'lease-missing')
+    return report.requeued.includes(task.id)
+      && after.status === 'queued'
+      && after.leaseOwner === null
+      && retried !== undefined
+  } finally {
+    recoverStore.close()
+  }
+})
+
+await check('auditLifecycle reports zero findings on healthy rows', () => {
+  const healthyStore = createTaskStore(join(dir, 'kernel-audit-healthy.sqlite'))
+  try {
+    const task = healthyStore.createTask({ intent: 'healthy', riskLevel: 'R1' })
+    healthyStore.claimTask({ owner: 'w1', leaseMs: 60_000, taskId: task.id })
+    const audit = healthyStore.auditLifecycle()
+    return audit.findings.length === 0
+      && Object.values(audit.counts).every((count) => count === 0)
+  } finally {
+    healthyStore.close()
+  }
+})
+
+await check('auditLifecycle detects every structural anomaly', () => {
+  const path = join(dir, 'kernel-audit.sqlite')
+  const auditStore = createTaskStore(path)
+  const raw = new DatabaseConstructor(path)
+  try {
+    const noLease = auditStore.createTask({ intent: 'no lease', riskLevel: 'R1' })
+    raw.prepare(
+      "UPDATE tasks SET status = 'running', lease_owner = NULL, lease_expires_at = NULL, attempt = 1 WHERE id = ?",
+    ).run(noLease.id)
+
+    const expired = auditStore.createTask({ intent: 'expired', riskLevel: 'R1' })
+    raw.prepare(
+      "UPDATE tasks SET status = 'running', lease_owner = 'w', lease_expires_at = ?, attempt = 1 WHERE id = ?",
+    ).run('2020-01-01T00:00:00.000Z', expired.id)
+
+    const stuck = auditStore.createTask({ intent: 'stuck', riskLevel: 'R1' })
+    raw.prepare("UPDATE tasks SET status = 'queued', attempt = max_attempts WHERE id = ?").run(stuck.id)
+
+    const gap = auditStore.createTask({ intent: 'gap', riskLevel: 'R1' })
+    raw.prepare(
+      'INSERT INTO task_events (id, task_id, seq, type, payload_json, created_at) VALUES (?,?,?,?,?,?)',
+    ).run('evt-gap', gap.id, 9, 'task.created', null, new Date().toISOString())
+
+    const noReceipt = auditStore.createTask({ intent: 'no receipt', riskLevel: 'R1' })
+    raw.prepare(
+      'INSERT INTO task_events (id, task_id, seq, type, payload_json, created_at) VALUES (?,?,?,?,?,?)',
+    ).run('evt-nr', noReceipt.id, 2, 'task.completed', null, new Date().toISOString())
+    raw.prepare("UPDATE tasks SET status = 'succeeded', finished_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), noReceipt.id)
+
+    const audit = auditStore.auditLifecycle({ now: new Date('2026-01-01T00:00:00.000Z') })
+    const expected = [
+      'running-without-lease',
+      'expired-lease',
+      'stuck-queued',
+      'event-seq-gap',
+      'terminal-without-receipt',
+    ]
+    return expected.every((kind) => audit.counts[kind] === 1)
+      && audit.findings.length === expected.length
+      && new Set(audit.findings.map((finding) => finding.kind)).size === expected.length
+  } finally {
+    raw.close()
+    auditStore.close()
   }
 })
 
