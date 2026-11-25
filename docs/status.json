@@ -147,7 +147,7 @@
     {
       "id": "FIELD-PROOF",
       "name": "第五阶段 · 存量工程改造与合并交付验证",
-      "state": "partial",
+      "state": "done",
       "phase": "done",
       "evidence": [
         "scripts/projects.mjs",
@@ -156,7 +156,7 @@
         "plugins/executor/src/executor.ts",
         "docs/16-部署与运行.md"
       ],
-      "note": "2026-11-25：存量仓库 `fieldtest`（基线 `431a0e7`，14/14）经飞书单条需求加 CSV 导出。任务 `nhdn6m3wuh`：round 1 / attempt 1 / 65.8s，0 追补；`csv-stringify@6.9.0` 真实安装，`npm ci` + 16/16 全绿；diff 仅 5 个预期文件（+109/−5）；空库、逗号/引号/中文转义、405 三种 curl 实测正确；合并 `aafa54d` 后 main 回归 16/16。收回执后独立复核一致。**未通过项**：① 执行器在 worktree 内不提交改动，`isolation.mjs merge` 因 `worktree has uncommitted changes` 拒绝，需人工 `git commit` 才能合并（P1，合并交付缺口）；② 新增用例 +2（覆盖空库/转义/405 三个行为），未达方案 `baseline+3` 口径。本轮评分 C；验收记录见 `.trae/specs/phase5-acceptance/record.md`。**P1 已修复**：worker 收敛前调用 `commitWorktreeChanges` 把工作区改动提交到任务分支（干净不产生空提交、提交失败置 `failed`/`commit-failed`），`verify-merge` 增 3 项用例。"
+      "note": "2026-11-25：存量仓库 `fieldtest`（基线 `431a0e7`，14/14）经飞书单条需求加 CSV 导出。任务 `nhdn6m3wuh`：round 1 / attempt 1 / 65.8s，0 追补；`csv-stringify@6.9.0` 真实安装，`npm ci` + 16/16 全绿；diff 仅 5 个预期文件（+109/−5）；空库、逗号/引号/中文转义、405 三种 curl 实测正确；合并 `aafa54d` 后 main 回归 16/16。收回执后独立复核一致。**未通过项**：① 执行器在 worktree 内不提交改动，`isolation.mjs merge` 因 `worktree has uncommitted changes` 拒绝，需人工 `git commit` 才能合并（P1，合并交付缺口）；② 新增用例 +2（覆盖空库/转义/405 三个行为），未达方案 `baseline+3` 口径。本轮评分 C；验收记录见 `.trae/specs/phase5-acceptance/record.md`。**P1 已修复**：worker 收敛前调用 `commitWorktreeChanges` 把工作区改动提交到任务分支（干净不产生空提交、提交失败置 `failed`/`commit-failed`），`verify-merge` 增 3 项用例。修复发布为 `2026.11.25-3` 后复验：任务 `jkj93mp4a7`（feishu，30s）自动提交 `75e3923`，`isolation.mjs merge` 无需人工提交即成功（`ccca679`），worktree/分支自动清理，main 16/16 回归。"
     }
   ]
 }
