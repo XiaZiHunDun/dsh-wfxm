@@ -2199,6 +2199,34 @@ await check('真实 alias 优先匹配（resolveAlias 先 alias 再 name）', as
     && route.projectId === 'proj_alpha'
 })
 
+await check('正文「在 X 项目里」与 /use 同级：切项目并更新粘性', async () => {
+  // chat_alias 上一条 /use a 把粘性设成 alpha；这条正文指令应切到 beta
+  const result = await ingestInbound({ store: anchorStore, project: projectPort }, {
+    channelId: 'cli_anc',
+    msgId: 'evt_proj_directive',
+    externalUserId: 'open_anc',
+    content: { text: '在 beta 项目里加一个健康检查页面' },
+    chatId: 'chat_alias',
+  })
+  const route = anchorStore.getSessionRoute('cli_anc', 'chat_alias', 'orchestrator')
+  return result.project.projectId === 'proj_beta'
+    && result.project.matchedBy === 'explicit'
+    && route !== null
+    && route.projectId === 'proj_beta'
+})
+
+await check('未知项目名的正文指令被忽略，保持原粘性', async () => {
+  const result = await ingestInbound({ store: anchorStore, project: projectPort }, {
+    channelId: 'cli_anc',
+    msgId: 'evt_proj_directive_unknown',
+    externalUserId: 'open_anc',
+    content: { text: '在 不存在的项目里改点东西' },
+    chatId: 'chat_alias',
+  })
+  return result.project.projectId === 'proj_beta'
+    && result.project.matchedBy === 'sticky'
+})
+
 await check('锚点继承真实 project_id + nameOf 查真实 ⑥ 名字', async () => {
   // anchorStore fixture 里 task_two_b.project_id = 'proj_beta'
   // 真实 ⑥ store 里 proj_beta.name = 'beta'

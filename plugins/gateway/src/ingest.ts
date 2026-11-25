@@ -44,6 +44,7 @@ import type { AdmissionPort } from './admission.js'
 import {
   listProjectChoices,
   parseProjectCommand,
+  parseProjectDirective,
   resolveProject,
   type ProjectChoice,
   type ProjectLookupPort,
@@ -1207,15 +1208,33 @@ export async function ingestInbound(
   // 4.5 Project binding for this turn (11 §5.3.1): reply anchor → sticky → single → ask.
   // Only a reply to a task message inherits that task's project; a stale
   // `single-wakeable` anchor must not steal the project chosen via `/use`.
-  const project = resolveProject({
-    port: deps.project ?? null,
-    anchorProjectId: followUp?.matchedBy === 'anchor' ? followUp.projectId : null,
-    stickyProjectId: thread === null
-      ? null
-      : thread.projectId
-        ?? store.getSessionRoute(input.channelId, thread.chatId, 'orchestrator')?.projectId
-        ?? null,
-  })
+  // A literal `在 <alias> 项目里…` clause counts as explicit (same rank as
+  // `/use`); an unknown name falls back to the normal order — never guessed.
+  const directive = parseProjectDirective(textOf(input.content))
+  const directiveResolution = directive === null || deps.project === undefined || deps.project === null
+    ? null
+    : resolveProject({ port: deps.project, explicitAlias: directive })
+  const switched = directiveResolution !== null && directiveResolution.projectId !== null
+  if (switched && thread !== null) {
+    store.setThreadProject(thread.id, directiveResolution.projectId)
+    store.setSessionProject({
+      channelId: input.channelId,
+      chatId: thread.chatId,
+      sessionKind: 'orchestrator',
+      projectId: directiveResolution.projectId,
+    })
+  }
+  const project: ProjectResolution = switched
+    ? directiveResolution
+    : resolveProject({
+      port: deps.project ?? null,
+      anchorProjectId: followUp?.matchedBy === 'anchor' ? followUp.projectId : null,
+      stickyProjectId: thread === null
+        ? null
+        : thread.projectId
+          ?? store.getSessionRoute(input.channelId, thread.chatId, 'orchestrator')?.projectId
+          ?? null,
+    })
 
   if (followUp !== null && followUp.taskId !== null && threadId !== null) {
     const taskId = followUp.taskId

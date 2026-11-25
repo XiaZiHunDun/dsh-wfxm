@@ -5,10 +5,11 @@
  * context (13 §2.2), so every inbound message must answer "which project?".
  *
  * Signal order, first hit wins:
- *   explicit (`/use <alias>`) → reply anchor → chat stickiness → single project → ask
+ *   explicit (`/use <alias>` / `在 <alias> 项目里…`) → reply anchor → chat stickiness → single project → ask
  *
- * There is deliberately no text guessing: the resolver never inspects the
- * message body (13 §3.3 硬规则). Module ① also never reads ⑥'s tables — the
+ * No semantic inference: besides `/use`, only a literal leading clause
+ * (`在 <alias> 项目里` / `用 <alias> 项目`) counts as explicit, and only when
+ * `resolveAlias` knows the name. Module ① also never reads ⑥'s tables — the
  * lookup is injected (`ProjectLookupPort`), same pattern as `TaskRelayPort`.
  */
 
@@ -158,4 +159,19 @@ export function parseProjectCommand(text: string | null | undefined): ProjectCom
     if (alias !== '') return { kind: 'use', alias }
   }
   return null
+}
+
+/**
+ * Literal destination clause at the head of a normal message:
+ * `在 demo 项目里…` / `用 demo 项目…`. Returns the alias only; callers must
+ * resolve it and fall back to the normal order when it is unknown.
+ */
+const DIRECTIVE_PATTERN = /^(?:请|帮我|麻烦)?\s*(?:在|用|到|切换到|换到|改到)\s*([^\s，,。:：]{1,40}?)\s*(?:项目|project)(?:里|中|下)?\s*[，,：:]?\s*/i
+
+export function parseProjectDirective(text: string | null | undefined): string | null {
+  if (typeof text !== 'string') return null
+  const match = DIRECTIVE_PATTERN.exec(text.trim())
+  if (match === null) return null
+  const alias = match[1].replace(/[「」"'‘’]/g, '').trim()
+  return alias === '' ? null : alias
 }
