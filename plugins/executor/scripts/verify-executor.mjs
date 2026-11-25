@@ -718,6 +718,90 @@ await check('an aborted signal kills the sleeping child and reports conflict', a
     && !alive
 })
 
+// ---- L1: execution seam robustness ------------------------------------------------------
+
+await check('L1 stale attribution keys from the parent env never reach the child', async () => {
+  const task = makeTask()
+  const worker = makeWorker({
+    STUB_MODE: 'env-echo',
+    DSH_WFXM_CHECKPOINT_ID: 'stale-checkpoint',
+    DSH_WFXM_PROJECT_ID: 'stale-project',
+  }, { checkpoints: null })
+  const report = await worker.runOnce()
+  const summary = store.listReceipts(task.id)[0]?.summary ?? ''
+  return report.taskId === task.id
+    && report.outcome === 'succeeded'
+    && summary.includes('cp= attempt=1')
+    && summary.includes('project=none')
+})
+
+await check('L1 JSON that is not an event is ignored, not thrown on', async () => {
+  const task = makeTask()
+  const report = await makeWorker({ STUB_MODE: 'null-json' }).runOnce()
+  return report.taskId === task.id
+    && report.outcome === 'succeeded'
+    && store.listReceipts(task.id)[0]?.summary === 'survived null noise'
+})
+
+await check('L1 multibyte UTF-8 split across chunks is not corrupted', async () => {
+  const task = makeTask()
+  const report = await makeWorker({ STUB_MODE: 'utf8-split' }).runOnce()
+  const summary = store.listReceipts(task.id)[0]?.summary ?? ''
+  return report.taskId === task.id
+    && report.outcome === 'succeeded'
+    && summary === '中文回执：完成'
+    && !summary.includes('\uFFFD')
+})
+
+await check('L1 a throwing heartbeat fails closed instead of crashing', async () => {
+  let reported = 0
+  const execute = createDshExecutor({
+    dshBin: stubBin,
+    env: { STUB_MODE: 'sleep' },
+    timeoutMs: 5_000,
+    heartbeatMs: 20,
+    checkpoints: null,
+    onError: () => {
+      reported += 1
+    },
+  })
+  const outcome = await execute(
+    { id: 'heartbeat-throw', intent: 'never settles on its own' },
+    {
+      attempt: 1,
+      heartbeat: () => {
+        throw new Error('db is locked')
+      },
+    },
+  )
+  return outcome.status === 'failed'
+    && outcome.failure === 'conflict'
+    && outcome.summary.includes('lease lost')
+    && reported > 0
+})
+
+await check('L1 a store error in the worker keep-alive does not crash the run', async () => {
+  const task = makeTask()
+  const worker = makeWorker(
+    { STUB_MODE: 'sleep' },
+    { timeoutMs: 5_000, heartbeatMs: 20 },
+    { heartbeatMs: 20 },
+  )
+  const original = store.renewLease
+  store.renewLease = () => {
+    throw new Error('db is locked')
+  }
+  let report
+  try {
+    report = await worker.runOnce()
+  } finally {
+    store.renewLease = original
+  }
+  return report.taskId === task.id
+    && report.outcome === 'failed'
+    && report.failure === 'conflict'
+})
+
 // ---- teardown ---------------------------------------------------------------------------
 
 store.close()

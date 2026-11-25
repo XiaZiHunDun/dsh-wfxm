@@ -571,9 +571,9 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     // One keep-alive covers both the task lease and its resource leases: losing
     // either must stop the executor (its heartbeat returns false).
     const keepAlive = (): boolean => {
-      if (!store.renewLease({ taskId: task.id, owner, leaseMs, now: now() })) return false
-      if (lockIds.length === 0) return true
       try {
+        if (!store.renewLease({ taskId: task.id, owner, leaseMs, now: now() })) return false
+        if (lockIds.length === 0) return true
         const beatLocks = store.heartbeatResourceLocks({
           lockIds,
           ttlSec: resourceTtlSec,
@@ -585,8 +585,9 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         }
         return true
       } catch (error) {
+        // A throw here runs inside a timer: never let it reach the process.
+        // "Cannot confirm the lease" is treated as lost, so the executor kills.
         options.onError?.(error)
-        locksLost = true
         return false
       }
     }

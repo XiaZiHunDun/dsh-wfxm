@@ -121,7 +121,7 @@
         "plugins/tasks/src/worker.ts",
         "plugins/tasks/scripts/verify-tasks.mjs"
       ],
-      "note": "2026-11-25 起步：`running` 收敛为 `claimTask` 唯一入口（`transition` 拒绝、`task_control.start` 移除、`resume` 只入队）；`recoverExpiredLeases` 覆盖无租约遗留行；新增只读 `auditLifecycle` 五类结构异常并在宿主启动时告警。L1–L4（执行 seam/风险授权/对外契约/体验）待打磨"
+      "note": "2026-11-25：L0 完成——`running` 收敛为 `claimTask` 唯一入口（`transition` 拒绝、`task_control.start` 移除、`resume` 只入队）；`recoverExpiredLeases` 覆盖无租约遗留行；只读 `auditLifecycle` 五类结构异常并在宿主启动时告警。L1 完成——归因键隔离、UTF-8 跨块解码、非事件 JSON 容错、心跳/续租 fail-closed。L2–L4（风险授权/对外契约/体验）待打磨"
     }
   ]
 }

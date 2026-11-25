@@ -76,6 +76,25 @@ process.stdin.on('end', () => {
       emit({ type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } })
       emit({ type: 'final', text: 'recovered fine' })
       break
+    case 'null-json':
+      // Valid JSON that is not an event shape: must be ignored, not thrown on.
+      process.stdout.write('null\n42\n["not","an","event"]\n')
+      emit({ type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } })
+      emit({ type: 'final', text: 'survived null noise' })
+      break
+    case 'utf8-split': {
+      emit({ type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } })
+      // Split the final event in the middle of a multibyte character and write
+      // the halves in two separate chunks.
+      const payload = Buffer.from(JSON.stringify({ type: 'final', text: '中文回执：完成' }))
+      const cut = payload.indexOf(Buffer.from('中')) + 1
+      process.stdout.write(payload.subarray(0, cut))
+      setTimeout(() => {
+        process.stdout.write(payload.subarray(cut))
+        process.stdout.write('\n')
+      }, 30)
+      break
+    }
     case 'no-final':
       emit({ type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } })
       break

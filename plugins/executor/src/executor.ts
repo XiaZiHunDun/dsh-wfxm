@@ -33,6 +33,7 @@
 import { spawn } from 'node:child_process'
 import { realpathSync, statSync } from 'node:fs'
 import { basename, isAbsolute, resolve, sep } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 
 /** Structural twin of ⑤'s `FailureKind` (AR32: this module imports no ⑤ code). */
 export type FailureKind =
@@ -437,10 +438,16 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         DSH_WFXM_TASK_ID: task.id,
         DSH_WFXM_ATTEMPT: String(hooks.attempt),
       }
+      // Attribution keys only ever describe THIS attempt: a nested host could
+      // leave stale values in `process.env`, and inheriting them would stamp the
+      // child's pre-images onto the wrong checkpoint / project.
       if (checkpointId !== null) env.DSH_WFXM_CHECKPOINT_ID = checkpointId
+      else delete env.DSH_WFXM_CHECKPOINT_ID
       // E3: ③'s project allowlist reads this in the child (no ambient project).
       if (typeof task.projectId === 'string' && task.projectId !== '') {
         env.DSH_WFXM_PROJECT_ID = task.projectId
+      } else {
+        delete env.DSH_WFXM_PROJECT_ID
       }
       // ③ gate hand-off: R2/R3 tasks only reach `exec` after the owner approved
       // the plan, so the child may answer tool-level approvals for that task.
@@ -469,6 +476,11 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
       let runError: { code: string; message: string } | null = null
       let stderrText = ''
       let lineBuffer = ''
+      // A multibyte UTF-8 character can be split across two `data` chunks; a
+      // per-chunk `toString()` would corrupt every such boundary (Chinese
+      // receipts included). Decoders hold the partial sequence until it ends.
+      const stdoutDecoder = new StringDecoder('utf8')
+      const stderrDecoder = new StringDecoder('utf8')
       let timedOut = false
       let leaseLost = false
       let cancelled = false
@@ -488,7 +500,16 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
       }
 
       const heartbeat = setInterval(() => {
-        if (!hooks.heartbeat()) {
+        // A store hiccup must never escape a timer callback (that would kill the
+        // host). Treat it as "lease unconfirmed": stop the child, fail closed.
+        let alive: boolean
+        try {
+          alive = hooks.heartbeat()
+        } catch (error) {
+          options.onError?.(error)
+          alive = false
+        }
+        if (!alive) {
           leaseLost = true
           killChild()
         }
@@ -517,7 +538,11 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         if (trimmed.length === 0) return
         let event: RunEvent
         try {
-          event = JSON.parse(trimmed) as RunEvent
+          const parsed: unknown = JSON.parse(trimmed)
+          // Valid JSON is not necessarily an event: `null`, arrays or scalars
+          // would make `event.type` throw inside the stream handler.
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return
+          event = parsed as RunEvent
         } catch {
           return // dsh prints non-JSON noise on stdout occasionally; tolerate it.
         }
@@ -554,7 +579,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
       }
 
       child.stdout?.on('data', (chunk: Buffer) => {
-        lineBuffer += chunk.toString('utf8')
+        lineBuffer += stdoutDecoder.write(chunk)
         let index = lineBuffer.indexOf('\n')
         while (index >= 0) {
           handleLine(lineBuffer.slice(0, index))
@@ -563,7 +588,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         }
       })
       child.stderr?.on('data', (chunk: Buffer) => {
-        stderrText += chunk.toString('utf8')
+        stderrText += stderrDecoder.write(chunk)
         if (stderrText.length > 64_000) stderrText = stderrText.slice(-64_000)
       })
       child.on('error', (error: NodeJS.ErrnoException) => {
@@ -582,6 +607,10 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         if (killTimer.term !== null) clearTimeout(killTimer.term)
         if (killTimer.kill !== null) clearTimeout(killTimer.kill)
         hooks.signal?.removeEventListener('abort', onAbort)
+        // Flush decoder tails before the final line, so a trailing multibyte
+        // character is neither dropped nor turned into a replacement char.
+        lineBuffer += stdoutDecoder.end()
+        stderrText += stderrDecoder.end()
         if (lineBuffer.trim().length > 0) handleLine(lineBuffer)
 
         const evidenceLocator = sessionId === null ? null : `dsh-session:${sessionId}`
