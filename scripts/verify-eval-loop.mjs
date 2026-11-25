@@ -1,12 +1,13 @@
 /**
- * P2-1..P2-3 `/eval` 闭环验收：命令解析、快照、owner 限流、run 落库、flag/promote/ignore。
+ * P2-1..P2-4 `/eval` 闭环验收：命令解析、快照、限流、run 落库、flag/promote/ignore、
+ * 硬门禁与周报。
  *
  * 无网络、无模型、无 dsh；用真实 SQLite + 假 transport，验证的是接线本身。
- * promote 用临时 stub 的 `contract.mjs`，不依赖 agent-eval 是否在本机。
+ * promote/门禁用临时 stub，不依赖 agent-eval 是否在本机。
  */
 
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -37,7 +38,7 @@ ensureBuilt('gateway')
 ensureBuilt('host')
 
 const { parseEvalCommand } = await import('../plugins/gateway/lib/index.js')
-const { createEvalStore, digestText, createCandidatePromoter } = await import('../plugins/eval/lib/index.js')
+const { createEvalStore, digestText, createCandidatePromoter, formatEvalWeekly } = await import('../plugins/eval/lib/index.js')
 const {
   createWfxmHost,
   formatEvalFindings,
@@ -190,6 +191,27 @@ function makeStubEvalRoot(validateSource) {
   const stubRoot = join(dir, `agent-eval-${stubSeq}`)
   mkdirSync(join(stubRoot, 'src'), { recursive: true })
   writeFileSync(join(stubRoot, 'src', 'contract.mjs'), validateSource, 'utf8')
+  return stubRoot
+}
+
+/** 临时 agent-eval 门禁：写 gate.json 并按 `STUB_GATE_OK`/`--advisory` 决定退出码。 */
+function makeStubGateEngine() {
+  stubSeq += 1
+  const stubRoot = join(dir, `gate-engine-${stubSeq}`)
+  mkdirSync(join(stubRoot, 'src'), { recursive: true })
+  writeFileSync(join(stubRoot, 'src', 'cli.mjs'), `
+import { mkdirSync, writeFileSync } from 'node:fs'
+const out = process.argv[process.argv.indexOf('--out') + 1]
+const ok = process.env.STUB_GATE_OK === '1'
+const advisory = process.argv.includes('--advisory')
+mkdirSync(out, { recursive: true })
+writeFileSync(out + '/gate.json', JSON.stringify({
+  ok,
+  advisory,
+  suites: [{ name: 'smoke', passed: ok ? 6 : 5, total: 6, rate: ok ? 1 : 0.83 }],
+}))
+process.exit(ok || advisory ? 0 : 1)
+`, 'utf8')
   return stubRoot
 }
 
@@ -510,6 +532,57 @@ await check('/eval ignore closes the finding and promote needs an engine', async
   assert.equal(evalStore.listOpenFindings().length, 0)
   host.close()
   evalStore.close()
+  return true
+})
+
+// ---- P2-4 硬门禁与周报 -----------------------------------------------------------
+
+await check('snapshot hard gate blocks a failing gate', async () => {
+  const stub = makeStubGateEngine()
+  const out = join(dir, 'snap-hard.json')
+  const runSnapshot = (env) => spawnSync(
+    process.execPath,
+    [join(root, 'scripts/eval/snapshot.mjs'), '--engine', stub, '--out', out],
+    { env: { ...process.env, AGENT_EVAL_ROOT: stub, ...env }, encoding: 'utf8' },
+  )
+
+  const hard = runSnapshot({ EVAL_HARD_GATE: '1', STUB_GATE_OK: '0' })
+  assert.equal(hard.status, 1)
+  const hardSnapshot = JSON.parse(readFileSync(out, 'utf8'))
+  assert.equal(hardSnapshot.advisory, false)
+  assert.equal(hardSnapshot.gate.ok, false)
+
+  const advisory = runSnapshot({ EVAL_HARD_GATE: '0', STUB_GATE_OK: '0' })
+  assert.equal(advisory.status, 0)
+  assert.equal(JSON.parse(readFileSync(out, 'utf8')).advisory, true)
+
+  const pass = runSnapshot({ EVAL_HARD_GATE: '1', STUB_GATE_OK: '1' })
+  assert.equal(pass.status, 0)
+  assert.equal(JSON.parse(readFileSync(out, 'utf8')).gate.ok, true)
+  return true
+})
+
+await check('weekly report summarizes runs and open findings', async () => {
+  const store = createEvalStore(join(dir, 'weekly.sqlite'))
+  const to = new Date('2026-11-25T12:00:00.000Z')
+  const from = new Date(to.getTime() - 7 * 86_400_000)
+  const at = (days) => new Date(to.getTime() - days * 86_400_000).toISOString()
+  store.recordRun({ suite: 'l2', mode: 'l2', status: 'ok', passed: 5, total: 5, idempotencyKey: 'w-ok', startedAt: at(1) })
+  store.recordRun({ suite: 'l2', mode: 'l2', status: 'failed', passed: 4, total: 5, idempotencyKey: 'w-fail', startedAt: at(2) })
+  store.recordRun({ suite: 'l2', mode: 'l2', status: 'failed', passed: 0, total: 5, idempotencyKey: 'w-old', startedAt: at(30) })
+  const { finding } = store.recordFlag({ messageId: 'om_weekly', reason: '回答不对' })
+
+  const text = formatEvalWeekly({
+    runs: store.listRuns({ limit: 100 }),
+    findings: store.listOpenFindings(20),
+    from,
+    to,
+  })
+  assert.match(text, /run 2 · 通过 1 · 未通过\/超时 1 · 未处理 findings 1/)
+  assert.match(text, new RegExp(`\\[${finding.id.slice(0, 8)}\\]`))
+  assert.doesNotMatch(text, /om_weekly/)
+  assert.equal(formatEvalWeekly({ runs: [], findings: [], from, to }), null)
+  store.close()
   return true
 })
 

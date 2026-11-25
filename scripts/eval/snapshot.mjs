@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /**
- * 生成 `/eval` 的只读快照 `eval/latest.json`（P2-1）。
+ * 生成 `/eval` 的只读快照 `eval/latest.json`（P2-1，P2-4 起可切硬门禁）。
  *
- *   node scripts/eval/snapshot.mjs [--out eval/latest.json] [--engine <agent-eval>] [--no-gate] [--force]
+ *   node scripts/eval/snapshot.mjs [--out eval/latest.json] [--engine <agent-eval>]
+ *                                  [--no-gate] [--force] [--hard|--advisory]
  *
  * - 找得到 agent-eval：跑一次离线门禁（五套件，无模型），并摘录 `baselines/dsh-*.json`。
  * - 找不到：保留已有快照；确实没有才写 `source: "unavailable"`，绝不伪造通过。
- * - `release.mjs prepare` 会调用本脚本；失败只告警，不阻断发布。
+ * - 门禁模式：默认按 `EVAL_HARD_GATE` / 观察期截止（2026-12-08）判定；硬门禁时
+ *   不传 `--advisory`，gate 未通过或引擎不可用都以非 0 退出，`release prepare` 会阻断。
+ * - `release.mjs prepare` 会调用本脚本；advisory 期失败只告警。
  */
 
 import { execFileSync } from 'node:child_process'
@@ -27,6 +30,21 @@ const engineRoot = resolve(option('engine', process.env.AGENT_EVAL_ROOT ?? join(
 const noGate = args.includes('--no-gate')
 const force = args.includes('--force')
 const REAL_BASELINES = ['capability', 'repo', 'conversation']
+/** 观察期截止：默认此前 advisory，此后硬门禁；`EVAL_HARD_GATE=0/1` 可覆盖。 */
+const HARD_GATE_AFTER = Date.parse('2026-12-08T00:00:00+08:00')
+
+function hardGateEnabled() {
+  const override = process.env.EVAL_HARD_GATE
+  if (override === '1') return true
+  if (override === '0') return false
+  if (args.includes('--hard')) return true
+  if (args.includes('--advisory')) return false
+  return Date.now() >= HARD_GATE_AFTER
+}
+
+const hard = hardGateEnabled()
+// 显式 --no-gate 是人工兜底（只摘基线），不参与硬门禁阻断。
+const enforce = hard && !noGate
 
 function readJson(file) {
   try {
@@ -75,6 +93,8 @@ function runGate() {
       'dsh-wfxm',
       '--out',
       runDir,
+      // advisory 期保留不阻断；硬门禁期必须让 gate 真正失败。
+      ...(hard ? [] : ['--advisory']),
     ], {
       cwd: engineRoot,
       stdio: 'pipe',
@@ -144,7 +164,7 @@ function build() {
     version: 1,
     recordedAt: new Date().toISOString(),
     source,
-    advisory: true,
+    advisory: !enforce,
     gate,
     ...(gateError === null ? {} : { gateError }),
     real,
@@ -158,5 +178,12 @@ if (snapshot !== null) {
   const tmp = `${out}.tmp-${process.pid}`
   writeFileSync(tmp, `${JSON.stringify(snapshot, null, 2)}\n`)
   renameSync(tmp, out)
-  console.log(`eval snapshot: ${out}（source=${snapshot.source}，gate=${snapshot.gate === null ? 'none' : snapshot.gate.ok ? 'pass' : 'fail'}，失败 ${snapshot.failures.length}）`)
+  console.log(`eval snapshot: ${out}（source=${snapshot.source}，gate=${snapshot.gate === null ? 'none' : snapshot.gate.ok ? 'pass' : 'fail'}，失败 ${snapshot.failures.length}，${enforce ? '硬门禁' : 'advisory'}）`)
+  if (enforce && (snapshot.gate === null || snapshot.gate.ok !== true)) {
+    console.error('eval snapshot: 硬门禁未通过（gate 缺失或 fail），release 必须阻断')
+    process.exitCode = 1
+  }
+} else if (enforce) {
+  console.error(`eval snapshot: 硬门禁需要 agent-eval（${engineRoot}），且没有可用的现有快照`)
+  process.exitCode = 1
 }

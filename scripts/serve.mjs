@@ -26,7 +26,7 @@ import { dirname, join } from 'node:path'
 
 import { createDshExecutor } from '@dsh-wfxm/executor'
 import { createChangeStore } from '@dsh-wfxm/changes'
-import { createEvalStore, createL2Runner, createCandidatePromoter } from '@dsh-wfxm/eval'
+import { createEvalStore, createL2Runner, createCandidatePromoter, formatEvalWeekly } from '@dsh-wfxm/eval'
 import {
   countCalendarEvents,
   createCalendarReminderPatrol,
@@ -903,7 +903,16 @@ async function main() {
             title: '会话（近 7 天）',
             semantic: false,
           })
-          return [tasks, conversations]
+          // P2-4: 周报带上 open findings；没有 run/finding 时该段自动省略。
+          const evalSection = stores?.eval === undefined || stores?.eval === null
+            ? null
+            : formatEvalWeekly({
+                runs: stores.eval.listRuns({ limit: 100 }),
+                findings: stores.eval.listOpenFindings(20),
+                from,
+                to,
+              })
+          return [tasks, conversations, evalSection]
             .filter((section) => section !== null && section !== '')
             .join('\n') || null
         },

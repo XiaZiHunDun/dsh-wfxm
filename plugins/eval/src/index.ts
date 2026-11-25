@@ -48,4 +48,6 @@ export {
   formatEvalRunRealHint,
   formatEvalRunReused,
   formatEvalRunStarted,
+  formatEvalWeekly,
 } from './format.js'
+export type { EvalWeeklyInput } from './format.js'

@@ -120,15 +120,30 @@ function linkDependencies(sourceRoot, destRoot) {
 
 /**
  * P2-1: `/eval` 读随发布走的 `eval/latest.json`。有 agent-eval 就重跑离线门禁；
- * 没有则保留已有快照。失败只告警，不阻断发布。
+ * 没有则保留已有快照。
+ *
+ * P2-4：观察期（至 2026-12-08）内失败只告警；之后默认硬门禁，门禁失败即阻断发布。
+ * `EVAL_HARD_GATE=0/1` 可显式覆盖。
  */
+const EVAL_HARD_GATE_AFTER = Date.parse('2026-12-08T00:00:00+08:00')
+
+function evalHardGate() {
+  const override = process.env.EVAL_HARD_GATE
+  if (override === '1') return true
+  if (override === '0') return false
+  return Date.now() >= EVAL_HARD_GATE_AFTER
+}
+
 function snapshotEval() {
   const script = join(repoRoot, 'scripts/eval/snapshot.mjs')
   if (!existsSync(script)) return
+  const hard = evalHardGate()
   try {
     execFileSync(process.execPath, [script], { stdio: 'pipe', timeout: 180_000 })
   } catch (error) {
-    console.warn(`release: eval snapshot skipped — ${error instanceof Error ? error.message : String(error)}`)
+    const detail = error instanceof Error ? error.message : String(error)
+    if (hard) fail(`release: eval hard gate blocked — ${detail}`)
+    console.warn(`release: eval snapshot skipped — ${detail}`)
   }
 }
 

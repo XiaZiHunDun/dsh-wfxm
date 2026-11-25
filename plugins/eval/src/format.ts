@@ -85,6 +85,35 @@ export function formatEvalFindingAlready(finding: EvalFinding): string {
   return `finding [${finding.id.slice(0, 8)}] 已是 ${finding.status}，无需重复处理。`
 }
 
+export interface EvalWeeklyInput {
+  runs: readonly EvalRun[]
+  findings: readonly EvalFinding[]
+  from: Date
+  to: Date
+}
+
+/** P2-4: 周报里的测评段；没有运行时返回 null，避免空段占版面。 */
+export function formatEvalWeekly(input: EvalWeeklyInput): string | null {
+  const from = input.from.getTime()
+  const to = input.to.getTime()
+  const runs = input.runs.filter((run) => {
+    const at = Date.parse(run.startedAt)
+    return Number.isFinite(at) && at >= from && at < to
+  })
+  if (runs.length === 0 && input.findings.length === 0) return null
+
+  const failed = runs.filter((run) => run.status !== 'ok').length
+  const lines = [
+    `测评：近 7 天 run ${runs.length} · 通过 ${runs.length - failed} · 未通过/超时 ${failed} · 未处理 findings ${input.findings.length}`,
+  ]
+  for (const finding of input.findings.slice(0, 5)) {
+    const label = finding.taskId === '' ? finding.suite : finding.taskId
+    lines.push(`- [${finding.id.slice(0, 8)}] ${label} · ${finding.suite}`)
+  }
+  if (input.findings.length > 5) lines.push(`（其余 ${input.findings.length - 5} 项见 /eval findings）`)
+  return lines.join('\n')
+}
+
 export function formatEvalRunRealHint(): string {
   return '真实套件只在 CI/nightly 执行；当前结果见 /eval。'
 }

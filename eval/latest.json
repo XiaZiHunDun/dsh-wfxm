@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "recordedAt": "2026-11-25T02:12:20.374Z",
+  "recordedAt": "2026-11-25T02:22:21.810Z",
   "source": "agent-eval",
   "advisory": true,
   "gate": {
     "ok": true,
-    "advisory": false,
+    "advisory": true,
     "suites": [
       {
         "name": "smoke",
