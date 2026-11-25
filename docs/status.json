@@ -142,7 +142,7 @@
         "plugins/gateway/src/receipt-relay.ts",
         "plugins/host/src/host.ts"
       ],
-      "note": "2026-11-25：两轮真实验证。① 本地对话链（`scripts/dev-web.mjs` + 真实 dsh 执行器）从零开发 habit-tracker，分 3 轮下达自然语言需求：数据层 → HTTP → 浏览器界面；同一线程后两条消息以唤醒方式并入原任务（round 2/3），产物与终态回执均经 ① 送达。独立验收：`node --test` 17/17；API 与 streak 实测通过；路径穿越 404；浏览器实测新增/打卡/删除通过。② 真实飞书会话「崔阳 的北汇星河 AI 助手」复验（orchestrator 前台 + 生产 dsh 执行器）：发送 bookmarks 中文书签应用需求 → 任务 `z8aj2ckfrg`，进度消息、3 个文件附件与回执（`receipt-*.md`）均实际送达；独立跑测 14/14，浏览器实测新增/搜索/删除通过。产物分别在 `.wfxm/phase4/workspace/habit-tracker` 与生产 worktree `.agents/worktrees/z8aj2ckfrg/bookmarks`（均不入主库，`PORT`/`DATA_FILE` 可配）。约束记录：规则前台对 >500 字意图会拒绝（`createTask` 既有输入上限），长需求应拆条下达。"
+      "note": "2026-11-25：两轮真实验证。① 本地对话链（`scripts/dev-web.mjs` + 真实 dsh 执行器）从零开发 habit-tracker，分 3 轮下达自然语言需求：数据层 → HTTP → 浏览器界面；同一线程后两条消息以唤醒方式并入原任务（round 2/3），产物与终态回执均经 ① 送达。独立验收：`node --test` 17/17；API 与 streak 实测通过；路径穿越 404；浏览器实测新增/打卡/删除通过。② 真实飞书会话「崔阳 的北汇星河 AI 助手」复验（orchestrator 前台 + 生产 dsh 执行器）：发送 bookmarks 中文书签应用需求 → 任务 `z8aj2ckfrg`，进度消息、3 个文件附件与回执（`receipt-*.md`）均实际送达；独立跑测 14/14，浏览器实测新增/搜索/删除通过。产物分别在 `.wfxm/phase4/workspace/habit-tracker` 与生产 worktree `.agents/worktrees/z8aj2ckfrg/bookmarks`（均不入主库，`PORT`/`DATA_FILE` 可配）。约束记录：规则前台对 >500 字意图会拒绝（`createTask` 既有输入上限），长需求应拆条下达。验收发现的问题已修：① 正文首个字面项目指令（`在 <alias> 项目里…`）升级为与 `/use` 同级，未知项目名仍回落锚点/粘性；② 生产升级到 `2026.11.25-1`（commit `4df8662`），飞书复验任务 `2fc9un3egp` 落在 `demo` 项目，回执已带「任务 xxx 已完成」头部。遗留观察：同线程新指令在没有 Grant 时会先收到「无权重新唤醒 <旧任务>」提示再建新任务，属唤醒 fail-closed 的可读性问题。"
     }
   ]
 }
