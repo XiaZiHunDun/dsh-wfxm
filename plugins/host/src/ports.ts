@@ -174,14 +174,17 @@ export function createHostPorts(deps: HostPortDeps): HostPorts {
       if (!result.ok) return report
 
       // Slice I: the card is a view, so the task id comes from ③'s record.
-      const taskId = approvals.get(input.approvalId)?.taskId ?? null
-      if (taskId === null) return report
+      // L2: the record's level is the only thing that may become a grant.
+      const record = approvals.get(input.approvalId)
+      const taskId = record?.taskId ?? null
+      if (record === null || taskId === null) return report
 
       if (input.decision !== 'rejected') {
         const resumed = tasks.resumeFromApproval({
           taskId,
           approvalId: input.approvalId,
           actorId: input.actorId,
+          approvedLevel: record.level,
           now: clock(),
         })
         return {

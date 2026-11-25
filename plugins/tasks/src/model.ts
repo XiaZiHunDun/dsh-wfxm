@@ -86,6 +86,12 @@ export interface Task {
   startCursor: string | null
   intent: string
   riskLevel: RiskLevel
+  /**
+   * L2: the level a human approved for this task; null/undefined means no
+   * tool-level exemption. Written only by `resumeFromApproval` and cleared by
+   * any intent change or new round.
+   */
+  approvedLevel?: RiskLevel | null
   status: TaskStatus
   plan: Json | null
   attempt: number

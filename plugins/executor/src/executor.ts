@@ -94,6 +94,11 @@ export interface ExecutorTaskRef {
   projectId?: string | null
   riskLevel?: string
   /**
+   * L2: the level a human approved for this task. Absent/null means the child
+   * must ask for every tool approval itself — risk alone is not a grant.
+   */
+  approvedLevel?: string | null
+  /**
    * Slice AP: results already produced on the same thread. Appended after the
    * intent (never in front of it) so the actual request keeps priority.
    */
@@ -449,10 +454,12 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
       } else {
         delete env.DSH_WFXM_PROJECT_ID
       }
-      // ③ gate hand-off: R2/R3 tasks only reach `exec` after the owner approved
-      // the plan, so the child may answer tool-level approvals for that task.
-      if (task.riskLevel === 'R2' || task.riskLevel === 'R3') {
-        env.DSH_WFXM_APPROVED_LEVEL = task.riskLevel
+      // ③ gate hand-off: only an explicit human grant that matches this task's
+      // risk may let the child answer tool-level approvals. Risk level alone
+      // is not approval — an R2/R3 task without a grant asks per tool.
+      const granted = task.approvedLevel ?? null
+      if ((granted === 'R2' || granted === 'R3') && granted === task.riskLevel) {
+        env.DSH_WFXM_APPROVED_LEVEL = granted
       } else {
         delete env.DSH_WFXM_APPROVED_LEVEL
       }

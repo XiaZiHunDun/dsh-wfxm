@@ -251,7 +251,7 @@ hierarchyStore.close()
 
 // ---- ③ 任务级审批 → 工具级闸门（2026-11-11） --------------------------------
 
-await check('only approved R2/R3 tasks hand DSH_WFXM_APPROVED_LEVEL to the child', async () => {
+await check('only an explicit matching approval grants DSH_WFXM_APPROVED_LEVEL', async () => {
   // Separate store: these tasks are driven through the executor directly, so
   // they must not sit queued in the shared store and be claimed by later cases.
   const envStore = createTaskStore(join(dir, 'env-bridge.sqlite'))
@@ -263,15 +263,25 @@ await check('only approved R2/R3 tasks hand DSH_WFXM_APPROVED_LEVEL to the child
     checkpoints: envStore,
   })
   const hooks = { attempt: 1, heartbeat: () => true }
+  const unapproved = envStore.createTask({ intent: 'R3 未审批', riskLevel: 'R3' })
   const approved = envStore.createTask({ intent: '重启 demo 服务', riskLevel: 'R3' })
-  const plain = envStore.createTask({ intent: 'just echo', riskLevel: 'R1' })
-  const approvedOutcome = await execute(approved, hooks)
-  const plainOutcome = await execute(plain, hooks)
+  const mismatched = envStore.createTask({ intent: 'R2 错配 R3 票据', riskLevel: 'R2' })
+  const lowRisk = envStore.createTask({ intent: 'R1 带票据', riskLevel: 'R1' })
+
+  const unapprovedOutcome = await execute(unapproved, hooks)
+  const approvedOutcome = await execute({ ...approved, approvedLevel: 'R3' }, hooks)
+  const mismatchedOutcome = await execute({ ...mismatched, approvedLevel: 'R3' }, hooks)
+  const lowRiskOutcome = await execute({ ...lowRisk, approvedLevel: 'R2' }, hooks)
   envStore.close()
-  return approvedOutcome.status === 'succeeded'
+
+  return unapprovedOutcome.status === 'succeeded'
+    && unapprovedOutcome.summary.includes('approved=none')
+    && approvedOutcome.status === 'succeeded'
     && approvedOutcome.summary.includes('approved=R3')
-    && plainOutcome.status === 'succeeded'
-    && plainOutcome.summary.includes('approved=none')
+    && mismatchedOutcome.status === 'succeeded'
+    && mismatchedOutcome.summary.includes('approved=none')
+    && lowRiskOutcome.status === 'succeeded'
+    && lowRiskOutcome.summary.includes('approved=none')
 })
 
 // ---- Slice AR: the run asks for input --------------------------------------

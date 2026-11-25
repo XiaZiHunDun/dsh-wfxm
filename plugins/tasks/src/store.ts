@@ -390,6 +390,16 @@ CREATE TABLE IF NOT EXISTS task_usage_daily (
 );
 `
 
+/**
+ * v14 (L2 risk grant): the level a human approved for this task. Only written
+ * by `resumeFromApproval` when the approval's level matches the task's risk;
+ * NULL means "no tool-level exemption" — the executor must never infer one
+ * from `risk_level`.
+ */
+const TASKS_V14_DDL = `
+ALTER TABLE tasks ADD COLUMN approved_level TEXT CHECK (approved_level IN ('R2','R3'));
+`
+
 const MIGRATIONS: ReadonlyArray<{ version: number; ddl: string }> = [
   {
     version: 1,
@@ -407,6 +417,7 @@ const MIGRATIONS: ReadonlyArray<{ version: number; ddl: string }> = [
   { version: 11, ddl: TASKS_V11_DDL },
   { version: 12, ddl: TASKS_V12_DDL },
   { version: 13, ddl: TASKS_V13_DDL },
+  { version: 14, ddl: TASKS_V14_DDL },
 ]
 
 /** Slice BK (I5): one attempt's observed usage, accumulated per task. */
@@ -515,6 +526,11 @@ export interface HoldTaskInput {
 export interface ResumeFromApprovalInput {
   taskId: string
   approvalId: string
+  /**
+   * L2: the level the approval card was issued for. Only an R2/R3 level equal
+   * to the task's own risk becomes a grant; anything else resumes ungranted.
+   */
+  approvedLevel?: RiskLevel | null
   actorId?: string
   now?: Date
 }
@@ -823,6 +839,7 @@ interface TaskRow {
   start_cursor: string | null
   intent: string
   risk_level: RiskLevel
+  approved_level: RiskLevel | null
   status: TaskStatus
   plan_json: string | null
   attempt: number
@@ -953,6 +970,7 @@ function toTask(row: TaskRow): Task {
     startCursor: row.start_cursor,
     intent: row.intent,
     riskLevel: row.risk_level,
+    approvedLevel: row.approved_level,
     status: row.status,
     plan: parseJson(row.plan_json),
     attempt: row.attempt,
@@ -1458,6 +1476,7 @@ export function createTaskStore(dbPath: string): TaskStore {
   const wakeTaskRow = db.prepare(`
     UPDATE tasks
        SET status = 'queued', round = round + 1, attempt = 0,
+           approved_level = NULL,
            lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
            started_at = NULL, finished_at = NULL
      WHERE id = ? AND status = 'succeeded'
@@ -1469,13 +1488,13 @@ export function createTaskStore(dbPath: string): TaskStore {
   // Approval gate (Slice I): both moves are conditional on the exact status, so
   // a racing writer loses instead of silently re-queueing the wrong state.
   const holdTaskRow = db.prepare(`
-    UPDATE tasks SET status = 'waiting_approval'
+    UPDATE tasks SET status = 'waiting_approval', approved_level = NULL
      WHERE id = ? AND status = 'queued'
   `)
   const resumeFromApprovalRow = db.prepare(`
     UPDATE tasks
        SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
-           next_attempt_at = ?, finished_at = NULL
+           next_attempt_at = ?, finished_at = NULL, approved_level = ?
      WHERE id = ? AND status = 'waiting_approval'
   `)
   // B3 v2 owner resume. `started_at` is cleared too: `claimTask` keeps the old
@@ -1492,8 +1511,8 @@ export function createTaskStore(dbPath: string): TaskStore {
   // attempt budget resets so a supplement cannot be starved by prior failures.
   const steerRunningRow = db.prepare(`
     UPDATE tasks
-       SET intent = ?, status = 'queued', attempt = 0, lease_owner = NULL,
-           lease_expires_at = NULL, next_attempt_at = NULL,
+       SET intent = ?, status = 'queued', attempt = 0, approved_level = NULL,
+           lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
            started_at = NULL, finished_at = NULL
      WHERE id = ? AND status = 'running'
   `)
@@ -1501,12 +1520,14 @@ export function createTaskStore(dbPath: string): TaskStore {
   // running steer — the parked attempt never produced a result.
   const steerWaitingInputRow = db.prepare(`
     UPDATE tasks
-       SET intent = ?, status = 'queued', attempt = 0, lease_owner = NULL,
-           lease_expires_at = NULL, next_attempt_at = NULL,
+       SET intent = ?, status = 'queued', attempt = 0, approved_level = NULL,
+           lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
            started_at = NULL, finished_at = NULL
      WHERE id = ? AND status = 'waiting_input'
   `)
-  const rewriteIntentRow = db.prepare('UPDATE tasks SET intent = ? WHERE id = ?')
+  const rewriteIntentRow = db.prepare(
+    'UPDATE tasks SET intent = ?, approved_level = NULL WHERE id = ?',
+  )
   const markInputsReadForTask = db.prepare(`
     UPDATE task_inputs SET status = 'read', read_at = ?
      WHERE task_id = ? AND status = 'delivered'
@@ -1741,13 +1762,22 @@ export function createTaskStore(dbPath: string): TaskStore {
       return { resumed: false, task, reason: 'not-waiting' }
     }
     const nowIso = (input.now ?? new Date()).toISOString()
+    // L2: a grant exists only when a human approval names this task's exact
+    // risk level. A mismatch still resumes (the decision was "go"), but the
+    // child gets no tool-level exemption and must ask again per tool.
+    const granted =
+      (input.approvedLevel === 'R2' || input.approvedLevel === 'R3') &&
+      input.approvedLevel === task.riskLevel
+        ? input.approvedLevel
+        : null
     const resumed = db.transaction(() => {
-      const changed = resumeFromApprovalRow.run(nowIso, task.id)
+      const changed = resumeFromApprovalRow.run(nowIso, granted, task.id)
       if (changed.changes !== 1) return false
       appendEvent(task.id, 'task.resumed', {
         from: 'waiting_approval',
         to: 'queued',
         approvalId: input.approvalId,
+        ...granted === null ? {} : { approvedLevel: granted },
         ...input.actorId === undefined ? {} : { actorId: input.actorId },
       })
       return true

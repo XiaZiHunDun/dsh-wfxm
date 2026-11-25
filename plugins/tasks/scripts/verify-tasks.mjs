@@ -124,8 +124,9 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     && names.includes('task_checkpoints')
     && names.includes('resource_locks')
     && names.includes('task_usage_daily')
-    && version.version === 13
-    && ['input_tokens', 'output_tokens', 'cost_usd'].every((column) => columns.includes(column))
+    && version.version === 14
+    && ['input_tokens', 'output_tokens', 'cost_usd', 'approved_level'].every((column) =>
+      columns.includes(column))
     && objects.includes('ux_task_events_seq')
     && objects.includes('task_events_no_update')
     && objects.includes('task_events_no_delete')
@@ -212,6 +213,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     ALTER TABLE tasks DROP COLUMN input_tokens;
     ALTER TABLE tasks DROP COLUMN output_tokens;
     ALTER TABLE tasks DROP COLUMN cost_usd;
+    ALTER TABLE tasks DROP COLUMN approved_level;
     UPDATE schema_migrations SET version = 1 WHERE module = 'tasks';
   `)
   raw.close()
@@ -235,7 +237,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     && keptTask.taskRef === null
     && fresh.taskRef !== null
     && fresh.taskRef.length === 10
-    && version.version === 13
+    && version.version === 14
     && keptTask.isolation === 'serial'
     && fresh.isolation === 'serial'
     && fresh.worktreePath === null
@@ -2195,6 +2197,95 @@ await check('a second resume is a no-op; an unknown task reports NotFound', () =
     && missing.reason === 'not-found'
     && missing.task === null
     && resumes.length === 1
+})
+
+// ---- L2 risk grant: only a matching human approval becomes an exemption ----
+
+await check('an approval grants its level only when it matches the task risk', () => {
+  const grantStore = createTaskStore(join(dir, 'grant-match.sqlite'))
+  try {
+    const matching = grantStore.createTask({ intent: 'approved R2 task', riskLevel: 'R2' })
+    grantStore.holdForApproval({ taskId: matching.id })
+    const granted = grantStore.resumeFromApproval({
+      taskId: matching.id,
+      approvalId: 'ap_match',
+      approvedLevel: 'R2',
+    })
+    const grantEvent = grantStore
+      .listEvents(matching.id)
+      .find((item) => item.type === 'task.resumed')
+
+    const mismatched = grantStore.createTask({ intent: 'approval for another level', riskLevel: 'R2' })
+    grantStore.holdForApproval({ taskId: mismatched.id })
+    const notGranted = grantStore.resumeFromApproval({
+      taskId: mismatched.id,
+      approvalId: 'ap_mismatch',
+      approvedLevel: 'R3',
+    })
+
+    const bare = grantStore.createTask({ intent: 'no level supplied', riskLevel: 'R2' })
+    grantStore.holdForApproval({ taskId: bare.id })
+    const ungranted = grantStore.resumeFromApproval({ taskId: bare.id, approvalId: 'ap_bare' })
+
+    // Re-entering the gate drops a grant that is no longer the current decision.
+    const reheld = grantStore.holdForApproval({ taskId: matching.id })
+
+    return granted.resumed === true
+      && granted.task.approvedLevel === 'R2'
+      && grantEvent?.payload.approvedLevel === 'R2'
+      && notGranted.resumed === true
+      && notGranted.task.approvedLevel === null
+      && ungranted.resumed === true
+      && ungranted.task.approvedLevel === null
+      && reheld.status === 'waiting_approval'
+      && reheld.approvedLevel === null
+  } finally {
+    grantStore.close()
+  }
+})
+
+await check('steer and wake revoke an existing grant', () => {
+  const revokeStore = createTaskStore(join(dir, 'grant-revoke.sqlite'))
+  try {
+    const steered = revokeStore.createTask({ intent: 'R2 work', riskLevel: 'R2' })
+    revokeStore.holdForApproval({ taskId: steered.id })
+    revokeStore.resumeFromApproval({
+      taskId: steered.id,
+      approvalId: 'ap_steer',
+      approvedLevel: 'R2',
+    })
+    const input = revokeStore.enqueueInput({ taskId: steered.id, inboxId: 'inbox-grant-1' })
+    const steerResult = revokeStore.steerTask({
+      taskId: steered.id,
+      inputId: input.id,
+      text: '换个目录',
+    })
+
+    const woken = revokeStore.createTask({ intent: 'R2 round one', riskLevel: 'R2' })
+    revokeStore.bindThread({
+      taskId: woken.id,
+      threadId: 'thread-grant-wake',
+      relation: 'default_owner',
+    })
+    revokeStore.holdForApproval({ taskId: woken.id })
+    revokeStore.resumeFromApproval({
+      taskId: woken.id,
+      approvalId: 'ap_wake',
+      approvedLevel: 'R2',
+    })
+    const grantedBeforeRun = revokeStore.getTask(woken.id).approvedLevel
+    startTask(woken.id, revokeStore)
+    revokeStore.transition(woken.id, { to: 'succeeded', summary: 'round one done' })
+    const afterWake = revokeStore.wakeTask({ taskId: woken.id })
+
+    return steerResult.applied === 'merged'
+      && steerResult.task.approvedLevel === null
+      && grantedBeforeRun === 'R2'
+      && afterWake.status === 'queued'
+      && afterWake.approvedLevel === null
+  } finally {
+    revokeStore.close()
+  }
 })
 
 // ---- verifier: built-in probes ----------------------------------------------
