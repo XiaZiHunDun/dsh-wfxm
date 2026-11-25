@@ -14,6 +14,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  commitWorktreeChanges,
   createIsolationResolver,
   createIsolationService,
   createTaskStore,
@@ -239,6 +240,46 @@ await check('worktree 有未提交改动：拒绝合并，状态保持 none', as
   )
   assert.equal(store.getTask(task.id).mergeState, 'none')
   return 'refused'
+})
+
+await check('收敛前提交：脏 worktree 提交到任务分支，干净后可直接合并', async () => {
+  const root = makeRepo('commit-dirty')
+  const project = makeProject('commit-dirty', root)
+  const { task, cwd } = await worktreeTask('commit-dirty', resolver, project, 'add export')
+  writeFileSync(join(cwd, 'app.txt'), 'committed by worker\n')
+  writeFileSync(join(cwd, 'new.txt'), 'new file\n')
+
+  const result = await commitWorktreeChanges(store.getTask(task.id))
+  assert.equal(result.committed, true)
+  assert.equal(git(cwd, ['status', '--porcelain']).trim(), '')
+  assert.equal(git(cwd, ['rev-parse', 'HEAD']).trim(), result.commit)
+  assert.match(git(cwd, ['log', '-1', '--pretty=%s']), new RegExp(task.taskRef))
+
+  succeed(task.id)
+  const merged = await service.merge(task.id, project)
+  assert.equal(merged.state, 'merged')
+  assert.equal(readFileSync(join(root, 'new.txt'), 'utf8'), 'new file\n')
+  return `${result.commit.slice(0, 12)} → main`
+})
+
+await check('干净 worktree：提交步骤不产生空提交', async () => {
+  const root = makeRepo('commit-clean')
+  const project = makeProject('commit-clean', root)
+  const { task, cwd } = await worktreeTask('commit-clean', resolver, project)
+  const before = git(cwd, ['rev-parse', 'HEAD']).trim()
+  const result = await commitWorktreeChanges(store.getTask(task.id))
+  assert.equal(result.committed, false)
+  assert.equal(result.commit, null)
+  assert.equal(git(cwd, ['rev-parse', 'HEAD']).trim(), before)
+  return 'no-op'
+})
+
+await check('非 worktree 任务：提交步骤直接跳过', async () => {
+  const serial = store.createTask({ intent: 'serial work', riskLevel: 'R0', projectId: 'state' })
+  const result = await commitWorktreeChanges(serial)
+  assert.equal(result.committed, false)
+  assert.equal(result.commit, null)
+  return 'skipped'
 })
 
 await check('主仓库脏：拒绝合并，状态保持 none', async () => {

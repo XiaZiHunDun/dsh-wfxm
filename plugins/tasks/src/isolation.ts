@@ -77,6 +77,83 @@ export function realRun(
   })
 }
 
+export interface CommitWorktreeOptions {
+  /** Defaults to a real child process; tests inject a deterministic runner. */
+  run?: CommandRunner
+  gitTimeoutMs?: number
+  logger?: { info?(message: string): void; warn?(message: string): void } | null
+}
+
+export interface CommitWorktreeResult {
+  committed: boolean
+  commit: string | null
+}
+
+const COMMIT_SUBJECT_CHARS = 120
+
+/** `task <ref>: <intent 首行>`，单行且限长，避免提交信息里塞进整段需求。 */
+function commitSubject(task: Task): string {
+  const firstLine = task.intent.replace(/\s+/g, ' ').trim()
+  const clipped = firstLine.length <= COMMIT_SUBJECT_CHARS
+    ? firstLine
+    : `${firstLine.slice(0, COMMIT_SUBJECT_CHARS)}…`
+  return clipped === '' ? `task ${task.taskRef ?? task.id}` : `task ${task.taskRef ?? task.id}: ${clipped}`
+}
+
+/**
+ * 任务收敛前的提交步骤（11 §14.5 / 17 §8.5）。
+ *
+ * 执行器只改工作区、不碰 git；而合并闸门要求任务分支干净（`merge.ts`），
+ * 所以 worker 在进入 `succeeded` 前把工作区改动提交到 `wfxm/<ref>`。
+ * 干净工作区不产生空提交；非 worktree 任务直接跳过。
+ */
+export async function commitWorktreeChanges(
+  task: Task,
+  options: CommitWorktreeOptions = {},
+): Promise<CommitWorktreeResult> {
+  if (task.isolation !== 'worktree' || task.worktreePath === null || task.branch === null) {
+    return { committed: false, commit: null }
+  }
+  const cwd = task.worktreePath
+  if (!existsSync(cwd)) {
+    throw new Error(`isolation: worktree ${cwd} is missing; cannot commit the task branch`)
+  }
+  const run = options.run ?? realRun
+  const gitTimeoutMs = options.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS
+  const git = (args: string[]): Promise<CommandResult> =>
+    run('git', ['-C', cwd, ...args], { cwd, timeoutMs: gitTimeoutMs })
+
+  const status = await git(['status', '--porcelain'])
+  if (status.code !== 0) {
+    throw new Error(`isolation: git status failed: ${status.stderr.trim() || `exit ${status.code}`}`)
+  }
+  if (status.stdout.trim() === '') return { committed: false, commit: null }
+
+  const added = await git(['add', '-A'])
+  if (added.code !== 0) {
+    throw new Error(`isolation: git add failed: ${added.stderr.trim() || `exit ${added.code}`}`)
+  }
+  const committed = await git([
+    '-c',
+    'user.name=dsh-wfxm',
+    '-c',
+    'user.email=dsh-wfxm@localhost',
+    'commit',
+    '-q',
+    '-m',
+    commitSubject(task),
+  ])
+  if (committed.code !== 0) {
+    throw new Error(`isolation: git commit failed: ${committed.stderr.trim() || `exit ${committed.code}`}`)
+  }
+  const head = await git(['rev-parse', 'HEAD'])
+  const commit = head.code === 0 ? head.stdout.trim() : null
+  options.logger?.info?.(
+    `[isolation] ${task.taskRef ?? task.id}: committed ${commit === null ? '?' : commit.slice(0, 12)}`,
+  )
+  return { committed: true, commit }
+}
+
 function isUnder(root: string, target: string): boolean {
   const path = resolve(target)
   return path === root || path.startsWith(root + sep)

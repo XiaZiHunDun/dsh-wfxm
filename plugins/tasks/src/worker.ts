@@ -8,6 +8,7 @@
  */
 
 import { runWithTaskContext } from './context.js'
+import { commitWorktreeChanges } from './isolation.js'
 import type { Task, ThreadResult } from './model.js'
 import { DEFAULT_RESOURCE_TTL_SEC, declaredResources } from './resource-locks.js'
 import type { AcquireResourceLocksResult, TaskStore } from './store.js'
@@ -336,6 +337,32 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         // re-read the row because isolation is written during execution (the
         // claimed task object predates the worktree).
         const latest = store.getTask(task.id) ?? task
+        // 11 §14.5 / 17 §8.5：执行器只改工作区、不碰 git；合并闸门要求任务
+        // 分支干净，所以进入 `succeeded` 前由 worker 提交一次（干净则不提交）。
+        if (latest.isolation === 'worktree') {
+          try {
+            await commitWorktreeChanges(latest)
+          } catch (error) {
+            try {
+              store.transition(task.id, {
+                to: 'failed',
+                summary: messageOf(error),
+                reason: 'commit-failed',
+              })
+            } catch (transitionError) {
+              options.onError?.(transitionError)
+            }
+            noteChange('markFailed', task, messageOf(error))
+            return {
+              taskId: task.id,
+              outcome: 'failed',
+              failure: 'unknown',
+              skipped: null,
+              attempt: task.attempt,
+              wakeAt: null,
+            }
+          }
+        }
         const verify = options.verify === undefined
           ? undefined
           : { ...options.verify, cwd: latest.worktreePath ?? options.verify.cwd }

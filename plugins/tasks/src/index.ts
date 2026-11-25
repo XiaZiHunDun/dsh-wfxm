@@ -95,12 +95,15 @@ export {
 export type {
   CommandResult,
   CommandRunner,
+  CommitWorktreeOptions,
+  CommitWorktreeResult,
   IsolationProject,
   IsolationResolverOptions,
 } from './isolation.js'
 export {
   DEFAULT_GIT_TIMEOUT_MS,
   DEFAULT_PREPARE_TIMEOUT_MS,
+  commitWorktreeChanges,
   createIsolationResolver,
   realRun,
 } from './isolation.js'
