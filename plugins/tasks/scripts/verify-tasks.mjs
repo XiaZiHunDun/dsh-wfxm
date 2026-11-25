@@ -1044,6 +1044,26 @@ await check('receipt ack rejects unknown ids and empty message ids', () => {
   return true
 })
 
+// L3: a receipt without an addressable thread (Web-only) must not occupy the
+// delivery window and starve receipts that do have a thread.
+await check('pendingReceipts keeps thread-less receipts out of the delivery window', () => {
+  const l3 = createTaskStore(join(dir, 'l3-receipts.sqlite'))
+  const parkedTask = l3.createTask({ intent: 'web-only task', riskLevel: 'R1' })
+  l3.writeReceipt({ taskId: parkedTask.id, round: 1, summary: '只在 Web 里完成' })
+  const threadedTask = l3.createTask({ intent: 'chat task', riskLevel: 'R1' })
+  l3.bindThread({ taskId: threadedTask.id, threadId: 'thread-l3', relation: 'default_owner' })
+  l3.writeReceipt({ taskId: threadedTask.id, round: 1, summary: '会话里完成' })
+
+  const first = l3.pendingReceipts(1)
+  const all = l3.pendingReceipts(10)
+  l3.close()
+  return first.length === 1
+    && first[0].taskId === threadedTask.id
+    && first[0].threadId === 'thread-l3'
+    && all.length === 2
+    && all.some((entry) => entry.taskId === parkedTask.id && entry.threadId === null)
+})
+
 await check('① receipt relay closes the loop back into ⑤', async () => {
   const gateway = createGatewayStore(dbPath)
   const owner = gateway.createActor({ kind: 'owner' })

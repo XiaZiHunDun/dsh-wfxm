@@ -7,10 +7,18 @@
  * and `settle` is called from the dispatcher's `onSent` hook once the channel
  * returns an `external_msg_id`.
  *
+ * L3 recovery: because the row is marked `sent` before `onSent` runs, a crash
+ * (or a throwing hook) leaves a delivered row with an unsettled receipt. The
+ * next pump sees that `sent` row and settles it with the row's own
+ * `external_msg_id` — never by sending again. A row that exhausted its retries
+ * (`failed`) is reported as `stuck` instead of being counted as enqueued, so a
+ * dead delivery is visible rather than silently retried forever.
+ *
  * A receipt without a live thread (e.g. a Web-only task) is skipped instead of
  * being sent nowhere; it stays pending in ⑤ for a later channel (docs/15 §9.6).
  */
 
+import type { OutboxItem } from './model.js'
 import type { GatewayStore } from './store.js'
 
 export interface TaskReceipt {
@@ -48,6 +56,12 @@ export interface ReceiptRelayOptions {
   spill?: SpillPort | null
   /** Receipt bodies longer than this spill to a file; `0` disables spilling. */
   spillThresholdChars?: number
+  /**
+   * L3: called when an outbox row already went out but the receipt was never
+   * settled (crash / throwing hook). Runs before `settle` so a failure here
+   * keeps the receipt pending for the next pump instead of losing the anchor.
+   */
+  onReplayed?: (input: { receipt: TaskReceipt; item: OutboxItem; externalMsgId: string }) => void
 }
 
 /** Chat-side excerpt when the body went to a file. */
@@ -55,7 +69,12 @@ export const SPILL_EXCERPT_CHARS = 300
 
 export interface ReceiptRelayReport {
   scanned: number
+  /** A deliverable row was ensured: newly inserted, or already `pending`. */
   enqueued: number
+  /** The row was already `sent`; the receipt was settled from that message. */
+  recovered: number
+  /** The row is `failed` (retries exhausted) and needs an operator requeue. */
+  stuck: number
   skippedNoThread: number
 }
 
@@ -94,13 +113,54 @@ export function createReceiptRelay(options: ReceiptRelayOptions): ReceiptRelay {
     }
   }
 
+  const settle = (receiptId: string, externalMsgId: string): void => {
+    receipts.markReceiptDelivered(receiptId, externalMsgId)
+  }
+
   return {
     pump(limit) {
-      const report: ReceiptRelayReport = { scanned: 0, enqueued: 0, skippedNoThread: 0 }
+      const report: ReceiptRelayReport = {
+        scanned: 0,
+        enqueued: 0,
+        recovered: 0,
+        stuck: 0,
+        skippedNoThread: 0,
+      }
       for (const receipt of receipts.pendingReceipts(limit ?? defaultLimit)) {
         report.scanned += 1
         if (receipt.threadId === null || store.getThread(receipt.threadId) === null) {
           report.skippedNoThread += 1
+          continue
+        }
+        const dedupeKey = `task-receipt:${receipt.id}`
+        const existing = store.findOutboxByDedupe(dedupeKey)
+        if (existing !== null && existing.status === 'sent' && existing.externalMsgId !== null) {
+          // C1: the message went out but the receipt was never settled. Rebuild
+          // the anchor first (host hook), then settle; a throw here keeps the
+          // receipt pending so the next pump retries instead of losing it.
+          try {
+            options.onReplayed?.({
+              receipt,
+              item: existing,
+              externalMsgId: existing.externalMsgId,
+            })
+          } catch {
+            report.stuck += 1
+            continue
+          }
+          settle(receipt.id, existing.externalMsgId)
+          report.recovered += 1
+          continue
+        }
+        if (existing !== null && existing.status === 'failed') {
+          // C2: retries are exhausted; only an operator requeue can revive it.
+          report.stuck += 1
+          continue
+        }
+        if (existing !== null) {
+          // Pending (possibly waiting for a retry): the unique dedupe key
+          // already guarantees exactly one row.
+          report.enqueued += 1
           continue
         }
         const spilled = spillOf(receipt)
@@ -126,16 +186,14 @@ export function createReceiptRelay(options: ReceiptRelayOptions): ReceiptRelay {
           },
           taskId: receipt.taskId,
           threadId: receipt.threadId,
-          dedupeKey: `task-receipt:${receipt.id}`,
+          dedupeKey,
         })
         report.enqueued += 1
       }
       return report
     },
 
-    settle(receiptId, externalMsgId) {
-      receipts.markReceiptDelivered(receiptId, externalMsgId)
-    },
+    settle,
 
     receiptIdOf(item) {
       return item.topic === topic ? receiptIdFromPayload(item.payload) : null

@@ -2624,6 +2624,140 @@ await check('receiptIdOf only claims its own topic', () => {
     && receiptRelay.receiptIdOf({ topic: 'task.receipt', payload: { text: 'no id' } }) === null
 })
 
+// ---- L3: receipt delivery recovery (crash replay / stuck / bad hook) -------
+
+const recoveryStore = createGatewayStore(join(dir, 'receipt-recovery.sqlite'))
+const recoveryThread = recoveryStore.resolveThread({
+  channelId: 'feishu',
+  chatId: 'chat_recovery',
+  rootMsgId: 'root_recovery',
+})
+const recoverySettled = []
+const recoveryReplays = []
+const recoveryReceipt = {
+  id: 'rc_recovery',
+  taskId: 'task_recovery',
+  round: 1,
+  summary: '恢复重放',
+  evidenceLocator: null,
+  threadId: recoveryThread.id,
+  createdAt: '2026-11-20T00:00:00.000Z',
+}
+const recoveryRelay = createReceiptRelay({
+  store: recoveryStore,
+  receipts: {
+    pendingReceipts: (limit) => [recoveryReceipt].slice(0, limit ?? 50),
+    markReceiptDelivered: (id, externalMsgId) => {
+      recoverySettled.push({ id, externalMsgId })
+      return {}
+    },
+  },
+  onReplayed: (input) => {
+    recoveryReplays.push(input)
+  },
+})
+
+await check('L3: a sent row with an unsettled receipt settles from its own message id', () => {
+  recoveryRelay.pump()
+  const row = recoveryStore.findOutboxByDedupe('task-receipt:rc_recovery')
+  recoveryStore.markOutboxSent(row.id, 'ext-replay')
+  const report = recoveryRelay.pump()
+  return row !== null
+    && report.recovered === 1
+    && report.enqueued === 0
+    && recoverySettled.length === 1
+    && recoverySettled[0].id === 'rc_recovery'
+    && recoverySettled[0].externalMsgId === 'ext-replay'
+    && recoveryReplays.length === 1
+    && recoveryReplays[0].externalMsgId === 'ext-replay'
+    && recoveryReplays[0].item.id === row.id
+    && recoveryStore.listOutbox().length === 1
+})
+
+await check('L3: an exhausted row is reported stuck instead of pretending to enqueue', () => {
+  const stuckStore = createGatewayStore(join(dir, 'receipt-stuck.sqlite'))
+  const stuckThread = stuckStore.resolveThread({
+    channelId: 'feishu',
+    chatId: 'c_stuck',
+    rootMsgId: 'r_stuck',
+  })
+  const relay = createReceiptRelay({
+    store: stuckStore,
+    receipts: {
+      pendingReceipts: (limit) => [{
+        id: 'rc_stuck',
+        taskId: 't_stuck',
+        round: 1,
+        summary: '投递失败',
+        evidenceLocator: null,
+        threadId: stuckThread.id,
+        createdAt: '2026-11-20T00:00:00.000Z',
+      }].slice(0, limit ?? 50),
+      markReceiptDelivered: () => ({}),
+    },
+  })
+  relay.pump()
+  const row = stuckStore.findOutboxByDedupe('task-receipt:rc_stuck')
+  stuckStore.markOutboxFailed(row.id, { error: 'boom', retryable: false })
+  const report = relay.pump()
+  const after = stuckStore.getOutbox(row.id)
+  return report.stuck === 1
+    && report.enqueued === 0
+    && report.recovered === 0
+    && after.status === 'failed'
+    && stuckStore.listOutbox().length === 1
+})
+
+await check('L3: a throwing replay hook keeps the receipt pending and does not block the rest', () => {
+  const hookStore = createGatewayStore(join(dir, 'receipt-hook.sqlite'))
+  const hookThread = hookStore.resolveThread({
+    channelId: 'feishu',
+    chatId: 'c_hook',
+    rootMsgId: 'r_hook',
+  })
+  const hookReceipts = [{
+    id: 'rc_hook_a',
+    taskId: 't_hook_a',
+    round: 1,
+    summary: 'A',
+    evidenceLocator: null,
+    threadId: hookThread.id,
+    createdAt: '2026-11-20T00:00:00.000Z',
+  }]
+  const hookSettled = []
+  const relay = createReceiptRelay({
+    store: hookStore,
+    receipts: {
+      pendingReceipts: (limit) => hookReceipts.slice(0, limit ?? 50),
+      markReceiptDelivered: (id, externalMsgId) => {
+        hookSettled.push({ id, externalMsgId })
+        return {}
+      },
+    },
+    onReplayed: () => {
+      throw new Error('anchor store down')
+    },
+  })
+  relay.pump()
+  const rowA = hookStore.findOutboxByDedupe('task-receipt:rc_hook_a')
+  hookStore.markOutboxSent(rowA.id, 'ext-a')
+  hookReceipts.push({
+    id: 'rc_hook_b',
+    taskId: 't_hook_b',
+    round: 1,
+    summary: 'B',
+    evidenceLocator: null,
+    threadId: hookThread.id,
+    createdAt: '2026-11-20T00:00:01.000Z',
+  })
+  const report = relay.pump()
+  return report.stuck === 1
+    && report.enqueued === 1
+    && hookSettled.length === 0
+    && hookStore.findOutboxByDedupe('task-receipt:rc_hook_b') !== null
+    && hookStore.listOutbox().filter((row) => row.payload.receiptId === 'rc_hook_a').length === 1
+})
+
 // ---- Slice AS: over-long receipts spill to a file attachment (A4) -----------
 
 const spillDir = mkdtempSync(join(tmpdir(), 'spill-'))

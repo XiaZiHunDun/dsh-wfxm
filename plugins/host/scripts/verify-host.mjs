@@ -357,6 +357,65 @@ await check('a delivered receipt becomes an anchor subscription on the task thre
     && anchors[0].anchorMsgId === receipt.externalMsgId
 })
 
+// L3: the row is marked `sent` before `onSent` runs, so a crash (or a throwing
+// hook) must be repaired from that row's message id on the next pump.
+await check('L3: a lost settle hook is repaired on the next pump (receipt + anchor)', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const { result } = await say(host, '崩溃恢复')
+  const taskId = result.foreground.taskId
+  await host.runWorkerOnce()
+  const receipt = host.stores.tasks.listReceipts(taskId)[0]
+  const threadId = host.stores.tasks.listTaskThreads({ taskId })[0].threadId
+  // Simulate: delivered, then the process died before `onSent` settled it.
+  const row = host.stores.gateway.enqueueOutbox({
+    topic: 'task.receipt',
+    payload: { receiptId: receipt.id, taskId, round: receipt.round, summary: receipt.summary },
+    taskId,
+    threadId,
+    dedupeKey: `task-receipt:${receipt.id}`,
+  })
+  host.stores.gateway.markOutboxSent(row.id, 'ext-crash')
+  const pumped = await host.pump()
+  const after = host.stores.tasks.listReceipts(taskId)[0]
+  const anchorsAfter = host.stores.tasks.listTaskThreads({ threadId })
+    .filter((binding) => binding.relation === 'anchor')
+  await host.pump()
+  const anchorsReplayed = host.stores.tasks.listTaskThreads({ threadId })
+    .filter((binding) => binding.relation === 'anchor')
+  host.close()
+  return pumped.receipts.recovered === 1
+    && after.deliveredAt !== null
+    && after.externalMsgId === 'ext-crash'
+    && anchorsAfter.length === 1
+    && anchorsAfter[0].anchorMsgId === 'ext-crash'
+    && anchorsReplayed.length === 1
+})
+
+await check('L3: an exhausted receipt row is reported as stuck by the host pump', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const { result } = await say(host, '卡住的回执')
+  const taskId = result.foreground.taskId
+  await host.runWorkerOnce()
+  const receipt = host.stores.tasks.listReceipts(taskId)[0]
+  const threadId = host.stores.tasks.listTaskThreads({ taskId })[0].threadId
+  const row = host.stores.gateway.enqueueOutbox({
+    topic: 'task.receipt',
+    payload: { receiptId: receipt.id, taskId, round: receipt.round, summary: receipt.summary },
+    taskId,
+    threadId,
+    dedupeKey: `task-receipt:${receipt.id}`,
+  })
+  host.stores.gateway.markOutboxFailed(row.id, { error: 'boom', retryable: false })
+  const pumped = await host.pump()
+  const after = host.stores.tasks.listReceipts(taskId)[0]
+  host.close()
+  return pumped.receipts.stuck === 1
+    && pumped.receipts.recovered === 0
+    && after.deliveredAt === null
+})
+
 await check('replying in place to the live task message resolves by anchor (#10 live path)', async () => {
   const { host } = makeHost()
   await pair(host)
@@ -1438,6 +1497,44 @@ await check('AS 3: produced files are queued to the task thread once, images as 
     && threadId !== null
     && second.find((item) => item.payload.fileName === 'shot.png')?.payload.kind === 'image'
     && second.find((item) => item.payload.fileName === 'run.log')?.payload.kind === 'file'
+})
+
+// L3: a later round that rewrites the same path must be delivered too; only a
+// replay of the same round is deduplicated away.
+await check('L3: the same artifact path is delivered again in a later round', async () => {
+  const grants = createGrantStore(join(dir, 'grants-artifacts.sqlite'), { now })
+  const artifacts = join(dir, 'artifacts-rounds')
+  mkdirSync(artifacts, { recursive: true })
+  const reportPath = join(artifacts, 'report.md')
+  writeFileSync(reportPath, 'v1')
+  const { host } = makeHost({
+    executor: () => ({
+      status: 'succeeded',
+      summary: '产物已更新',
+      attachments: [{ path: reportPath, name: 'report.md' }],
+    }),
+    options: { grants },
+  })
+  const { actor } = await pair(host)
+  const { result } = await say(host, '第一轮产物')
+  const taskId = result.foreground.taskId
+  await host.runWorkerOnce()
+  await host.pump()
+  const receiptMsgId = host.stores.tasks.listReceipts(taskId)[0].externalMsgId
+  grants.create({ actorId: actor.id, scope: { actions: ['task.wake'] }, kind: 'forever' })
+  const reply = await say(host, '第二轮', { replyToMsgId: receiptMsgId })
+  await host.runWorkerOnce()
+  await host.pump()
+  const rows = host.stores.gateway.listOutbox().filter((item) => item.topic === 'task.artifact')
+  const round1 = host.stores.gateway.findOutboxByDedupe(`task-artifact:${taskId}:1:${reportPath}`)
+  const round2 = host.stores.gateway.findOutboxByDedupe(`task-artifact:${taskId}:2:${reportPath}`)
+  host.close()
+  grants.close()
+  return reply.result.result.wake?.woken === true
+    && rows.length === 2
+    && round1 !== null
+    && round2 !== null
+    && round1.id !== round2.id
 })
 
 // ---- AR32 / AR33：组合根里不许出现表名、SQL 或渠道协议名 ------------------------------

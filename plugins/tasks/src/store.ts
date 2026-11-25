@@ -1379,7 +1379,8 @@ export function createTaskStore(dbPath: string): TaskStore {
     ) AS thread_id
       FROM receipts r
      WHERE r.delivered_at IS NULL
-     ORDER BY r.created_at ASC, r.rowid ASC
+     ORDER BY CASE WHEN thread_id IS NULL THEN 1 ELSE 0 END,
+              r.created_at ASC, r.rowid ASC
      LIMIT ?
   `)
   const selectReceipt = db.prepare('SELECT * FROM receipts WHERE id = ?')

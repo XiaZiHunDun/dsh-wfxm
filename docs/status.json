@@ -113,7 +113,7 @@
     },
     {
       "id": "TASK-KERNEL",
-      "name": "任务层打磨（第三阶段 L0–L2）",
+      "name": "任务层打磨（第三阶段 L0–L3）",
       "state": "partial",
       "phase": "v2",
       "evidence": [
@@ -121,9 +121,11 @@
         "plugins/tasks/src/worker.ts",
         "plugins/tasks/scripts/verify-tasks.mjs",
         "plugins/executor/src/executor.ts",
-        "plugins/host/src/ports.ts"
+        "plugins/host/src/ports.ts",
+        "plugins/host/src/host.ts",
+        "plugins/gateway/src/receipt-relay.ts"
       ],
-      "note": "2026-11-25：L0 完成——`running` 收敛为 `claimTask` 唯一入口（`transition` 拒绝、`task_control.start` 移除、`resume` 只入队）；`recoverExpiredLeases` 覆盖无租约遗留行；只读 `auditLifecycle` 五类结构异常并在宿主启动时告警。L1 完成——归因键隔离、UTF-8 跨块解码、非事件 JSON 容错、心跳/续租 fail-closed。L2 完成——v14 `approved_level` 显式授予；审批等级必须等于任务风险才授予；steer/wake/再次入闸立即撤销；执行器只在显式且匹配时导出 `DSH_WFXM_APPROVED_LEVEL`。L3–L4（对外契约/体验）待打磨"
+      "note": "2026-11-25：L0 完成——`running` 收敛为 `claimTask` 唯一入口（`transition` 拒绝、`task_control.start` 移除、`resume` 只入队）；`recoverExpiredLeases` 覆盖无租约遗留行；只读 `auditLifecycle` 五类结构异常并在宿主启动时告警。L1 完成——归因键隔离、UTF-8 跨块解码、非事件 JSON 容错、心跳/续租 fail-closed。L2 完成——v14 `approved_level` 显式授予；审批等级必须等于任务风险才授予；steer/wake/再次入闸立即撤销；执行器只在显式且匹配时导出 `DSH_WFXM_APPROVED_LEVEL`。L3 完成——回执按 outbox 行状态分流（`sent` 行补 settle + 重建锚点，`failed` 行报 `stuck`），无地址回执沉底不再饥饿，产物去重键含回合。L4（体验）待打磨"
     }
   ]
 }

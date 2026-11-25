@@ -436,21 +436,27 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     receipts: ports.receipts,
     spill: spillPort,
     spillThresholdChars: spillOptions?.thresholdChars ?? DEFAULT_SPILL_CHARS,
+    // L3: a row that went out before its receipt was settled rebuilds the
+    // anchor here first; the relay then settles with that message id.
+    onReplayed: ({ item, externalMsgId }) => bindReceiptAnchor(item, externalMsgId),
   })
 
   // #10: a delivered receipt becomes an anchor, so replying to the bot's
   // message resolves back to this task instead of starting a new one.
+  function bindReceiptAnchor(item: OutboxItem, externalMsgId: string): void {
+    if (item.taskId === null || item.threadId === null) return
+    tasks.bindThread({
+      taskId: item.taskId,
+      threadId: item.threadId,
+      relation: 'anchor',
+      anchorMsgId: externalMsgId,
+    })
+  }
+
   function onSent(item: OutboxItem, externalMsgId: string): void {
     const receiptId = receiptRelay.receiptIdOf(item)
     if (receiptId !== null) receiptRelay.settle(receiptId, externalMsgId)
-    if (item.topic === RECEIPT_TOPIC && item.taskId !== null && item.threadId !== null) {
-      tasks.bindThread({
-        taskId: item.taskId,
-        threadId: item.threadId,
-        relation: 'anchor',
-        anchorMsgId: externalMsgId,
-      })
-    }
+    if (item.topic === RECEIPT_TOPIC) bindReceiptAnchor(item, externalMsgId)
     // The card is a view (AR10): remember where it is so the decision can
     // patch it later instead of leaving a stale "please confirm" on screen.
     if (item.topic === APPROVAL_CARD_TOPIC && approvals !== null) {
@@ -566,25 +572,37 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     if (threadId === null) return
     const ref = task.taskRef ?? task.id.slice(0, 8)
     for (const file of input.attachments) {
-      const dedupeKey = `task-artifact:${task.id}:${file.path}`
+      // L3: the round is part of the key, so a later round rewriting the same
+      // path is delivered instead of being deduplicated away.
+      const dedupeKey = `task-artifact:${task.id}:${task.round}:${file.path}`
       if (gateway.findOutboxByDedupe(dedupeKey) !== null) continue
-      gateway.enqueueOutbox({
-        topic: TASK_ARTIFACT_TOPIC,
-        payload: {
-          kind: IMAGE_EXTENSIONS.has(extname(file.name).toLowerCase()) ? 'image' : 'file',
-          filePath: file.path,
-          fileName: file.name,
-          text: `任务 ${ref} 的附件：${file.name}`,
-        },
-        taskId: task.id,
-        threadId,
-        dedupeKey,
-      })
+      try {
+        gateway.enqueueOutbox({
+          topic: TASK_ARTIFACT_TOPIC,
+          payload: {
+            kind: IMAGE_EXTENSIONS.has(extname(file.name).toLowerCase()) ? 'image' : 'file',
+            filePath: file.path,
+            fileName: file.name,
+            text: `任务 ${ref} 的附件：${file.name}`,
+          },
+          taskId: task.id,
+          threadId,
+          dedupeKey,
+        })
+      } catch (error) {
+        // Delivery failure never changes the task outcome (worker contract);
+        // one bad attachment must not swallow the rest of the batch.
+        logger?.warn?.(
+          `artifact enqueue failed: task ${task.id.slice(0, 8)} ${file.name}: ${messageOf(error)}`,
+        )
+      }
     }
   }
 
   let pumpTimer: ReturnType<typeof setInterval> | null = null
   let pumping = false
+  /** L3: last reported stuck-receipt count, so a stuck row logs once. */
+  let lastStuckReceipts = 0
   /** H4: whether the worker timer was started, so resume can restart it. */
   let workerStarted = false
 
@@ -837,6 +855,14 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     // Slice BD: 每日摘要同样先入 outbox，再让 dispatcher 在同一轮送出。
     const digest = await fireDailyDigest()
     const receipts = receiptRelay.pump()
+    // L3: a receipt whose outbox row exhausted its retries can only be revived
+    // by an operator requeue. Log only changes so a stuck row cannot spam ticks.
+    if (receipts.stuck !== lastStuckReceipts) {
+      if (receipts.stuck > 0) {
+        logger?.warn?.(`receipt delivery stuck: ${receipts.stuck} row(s) need outbox requeue`)
+      }
+      lastStuckReceipts = receipts.stuck
+    }
     // Slice R: enqueue progress notices before the dispatcher claims, so a due
     // reminder goes out in this same tick instead of waiting for the next one.
     const progress = progressRelay === null ? null : progressRelay.pump()
