@@ -49,6 +49,8 @@ export interface L2RunnerOptions {
   root: string | null
   /** 默认 10 分钟（与方案一致）。 */
   timeoutMs?: number
+  /** P2-5：生产脱敏轨迹目录；存在时 gate 用它替换内置种子。 */
+  trajectoryDir?: string | null
 }
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -138,6 +140,9 @@ export function createL2Runner(options: L2RunnerOptions): EvalL2Runner {
       const env = { ...process.env }
       // Trae 的旧 libstdc++ 会让 better-sqlite3 报 GLIBCXX；评测子进程沿用干净环境。
       delete env.LD_LIBRARY_PATH
+      if (typeof options.trajectoryDir === 'string' && existsSync(options.trajectoryDir)) {
+        env.DSH_EVAL_TRAJECTORY_DIR = options.trajectoryDir
+      }
 
       await new Promise<void>((settle, reject) => {
         const child = spawn(process.execPath, [

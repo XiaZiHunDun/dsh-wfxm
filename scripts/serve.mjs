@@ -326,6 +326,8 @@ async function main() {
             runner: createL2Runner({
               root: process.env.AGENT_EVAL_ROOT ?? null,
               timeoutMs: 600_000,
+              // P2-5: 有生产脱敏轨迹时，L2 门禁跑真实轨迹而不是内置种子。
+              trajectoryDir: join(fileURLToPath(new URL('..', import.meta.url)), 'eval', 'trajectory'),
             }),
             // P2-3: 候选只落 eval/candidates/，校验用 agent-eval 的 contract.mjs。
             promoter: createCandidatePromoter({

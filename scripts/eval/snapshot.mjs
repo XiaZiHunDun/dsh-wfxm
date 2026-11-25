@@ -85,6 +85,9 @@ function runGate() {
   const env = { ...process.env }
   // Trae 自带的 libstdc++ 会让 better-sqlite3 报 GLIBCXX 错；评测子进程沿用干净环境。
   delete env.LD_LIBRARY_PATH
+  // P2-5：本机导出的生产脱敏轨迹优先于内置种子。
+  const privateTraces = join(repoRoot, 'eval/trajectory')
+  if (existsSync(privateTraces)) env.DSH_EVAL_TRAJECTORY_DIR = privateTraces
   try {
     execFileSync(process.execPath, [
       'src/cli.mjs',

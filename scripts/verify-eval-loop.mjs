@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { zstdCompressSync } from 'node:zlib'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -583,6 +584,73 @@ await check('weekly report summarizes runs and open findings', async () => {
   assert.doesNotMatch(text, /om_weekly/)
   assert.equal(formatEvalWeekly({ runs: [], findings: [], from, to }), null)
   store.close()
+  return true
+})
+
+await check('production trace export drops text, args and absolute paths', async () => {
+  const base = join(dir, 'export')
+  const sessionDir = join(base, 'sessions', '--proj--', 'session-prod')
+  mkdirSync(sessionDir, { recursive: true })
+  const events = [
+    { type: 'session', data: { id: 'session-prod' } },
+    { type: 'turn/start', data: { turn: 1 } },
+    {
+      type: 'user/message',
+      data: {
+        content: [{ type: 'text', text: '看下服务，password=supersecretvalue' }],
+        source: { kind: 'user' },
+      },
+    },
+    {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'reasoning', text: '内部推理' }, { type: 'tool-call', id: 'c1', name: 'svc_list', arguments: '{}' }] } },
+    },
+    { type: 'tool/call', data: { callId: 'c1', name: 'svc_list', arguments: '{}' } },
+    {
+      type: 'tool/result',
+      data: { message: { toolCallId: 'c1', isError: false, content: [{ type: 'text', text: 'secret /home/ailearn/x' }] } },
+    },
+    { type: 'step/end', data: { turn: 1, step: 1 } },
+    {
+      type: 'assistant/message',
+      data: {
+        message: {
+          content: [
+            { type: 'text', text: '服务正常，配置在 /home/ailearn/projects/dsh-wfxm/.env，token=ghp_abcdefghijklmnopqrstuvwxyz0123' },
+          ],
+        },
+      },
+    },
+    { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  writeFileSync(
+    join(sessionDir, 'session.v4.jsonl.zstd'),
+    zstdCompressSync(Buffer.from(`${events.map((event) => JSON.stringify(event)).join('\n')}\n`)),
+  )
+
+  const outDir = join(base, 'eval', 'trajectory')
+  execFileSync(process.execPath, [
+    join(root, 'scripts/eval/export-traces.mjs'),
+    '--source', join(base, 'sessions'),
+    '--out', outDir,
+    '--repo-root', base,
+    '--label', 'test',
+  ], { encoding: 'utf8' })
+
+  const files = readdirSync(outDir)
+  const traceName = files.find((name) => name.endsWith('.ndjson'))
+  const taskName = files.find((name) => name.endsWith('.json'))
+  assert.ok(traceName !== undefined && taskName !== undefined)
+  const trace = readFileSync(join(outDir, traceName), 'utf8')
+  const task = JSON.parse(readFileSync(join(outDir, taskName), 'utf8'))
+
+  assert.match(trace, /"type":"tool_call","name":"svc_list"/)
+  assert.match(trace, /<path>/)
+  assert.match(trace, /\[redacted:github-token:\d+\]/)
+  assert.doesNotMatch(trace, /supersecretvalue|ghp_abcdefghijklmnopqrstuvwxyz0123|ailearn|\/home\/|内部推理|session-prod/)
+  assert.deepEqual(task.expect.requiredTools, ['svc_list'])
+  assert.deepEqual(task.turns, ['（生产轨迹回放）'])
+  assert.match(task.runtimeHints.dsh.traceFile, /^eval\/trajectory\/dsh-test-[0-9a-f]{8}\.ndjson$/)
   return true
 })
 
