@@ -457,6 +457,9 @@ export interface TaskFilter {
 /** A receipt together with the live thread it should be announced in. */
 export interface PendingReceipt extends Receipt {
   threadId: string | null
+  /** L4: task metadata the chat copy needs (号 + 终态). */
+  taskRef: string | null
+  status: TaskStatus
 }
 
 /** `TaskSubscriptionApi.bind` (15 §9.6). */
@@ -898,6 +901,9 @@ interface ReceiptRow {
 
 interface PendingReceiptRow extends ReceiptRow {
   thread_id: string | null
+  /** L4: joined from `tasks`, so ① can say which task and in which terminal state. */
+  task_ref: string | null
+  status: TaskStatus
 }
 
 /** Slice AP: one finished task of the same thread, joined with its receipt. */
@@ -1370,7 +1376,7 @@ export function createTaskStore(dbPath: string): TaskStore {
     'SELECT * FROM receipts WHERE task_id = ? ORDER BY created_at ASC, rowid ASC',
   )
   const listPendingReceiptsStmt = db.prepare(`
-    SELECT r.*, (
+    SELECT r.*, t.task_ref AS task_ref, t.status AS status, (
       SELECT tt.thread_id FROM task_threads tt
        WHERE tt.task_id = r.task_id AND tt.released_at IS NULL
        ORDER BY CASE tt.relation WHEN 'default_owner' THEN 0 ELSE 1 END,
@@ -1378,6 +1384,7 @@ export function createTaskStore(dbPath: string): TaskStore {
        LIMIT 1
     ) AS thread_id
       FROM receipts r
+      LEFT JOIN tasks t ON t.id = r.task_id
      WHERE r.delivered_at IS NULL
      ORDER BY CASE WHEN thread_id IS NULL THEN 1 ELSE 0 END,
               r.created_at ASC, r.rowid ASC
@@ -2264,6 +2271,8 @@ export function createTaskStore(dbPath: string): TaskStore {
       return (listPendingReceiptsStmt.all(capped) as PendingReceiptRow[]).map((row) => ({
         ...toReceipt(row),
         threadId: row.thread_id,
+        taskRef: row.task_ref,
+        status: row.status,
       }))
     },
 

@@ -445,6 +445,9 @@ await check('without a grant store a finished task is never woken (fail-closed)'
   const receiptMsgId = host.stores.tasks.listReceipts(taskId)[0].externalMsgId
   const reply = await say(host, '再补一句', { replyToMsgId: receiptMsgId })
   const task = host.stores.tasks.getTask(taskId)
+  const denial = host.stores.gateway.listOutbox()
+    .map((item) => item.payload.text)
+    .find((text) => typeof text === 'string' && text.includes('无权重新唤醒')) ?? ''
   host.close()
   return receiptMsgId !== null
     && reply.result.result.wake !== null
@@ -452,6 +455,7 @@ await check('without a grant store a finished task is never woken (fail-closed)'
     && reply.result.result.wake.reason === 'no-grant-store'
     && reply.result.result.wake.woken === false
     && reply.result.result.target.kind === 'orchestrator'
+    && denial.includes('任务未重新执行')
     && task.status === 'succeeded'
 })
 
@@ -468,11 +472,15 @@ await check('a granted actor wakes the finished task into round 2 and queues the
   const reply = await say(host, '开始第二轮', { replyToMsgId: receiptMsgId })
   const task = host.stores.tasks.getTask(taskId)
   const inputs = host.stores.tasks.pendingInputs(taskId)
+  const wakeAck = host.stores.gateway.listOutbox()
+    .map((item) => item.payload.text)
+    .find((text) => typeof text === 'string' && text.includes('已重新开始')) ?? ''
   host.close()
   grants.close()
   return reply.result.result.wake?.granted === true
     && reply.result.result.wake.woken === true
     && reply.result.result.wake.round === 2
+    && wakeAck.includes('第 2 轮')
     && task.status === 'queued'
     && task.round === 2
     && reply.result.result.target.taskId === taskId
@@ -533,26 +541,45 @@ await check('an unversioned grant cannot wake under a versioned policy', async (
 
 // ---- 控制命令 ------------------------------------------------------------------------
 
-await check('stop cancels the live task and writes a receipt', async () => {
+await check('stop cancels the live task, writes a receipt and answers in chat', async () => {
   const { host } = makeHost()
   await pair(host)
   const { result } = await say(host, '会被停掉')
   const taskId = result.foreground.taskId
+  const ctlMsgId = uniqueMsg('ctl')
   const stop = await host.ingest({
     channelId: CHANNEL,
-    msgId: uniqueMsg('ctl'),
+    msgId: ctlMsgId,
     externalUserId: 'ou_owner',
     content: { control: 'stop' },
     chatId: CHAT,
   })
   const task = host.stores.tasks.getTask(taskId)
   const receipts = host.stores.tasks.listReceipts(taskId)
+  const acks = () => host.stores.gateway.listOutbox()
+    .filter((item) => item.topic === 'say' && typeof item.payload.text === 'string'
+      && item.payload.text.includes('已停止任务'))
+  const firstCount = acks().length
+  await host.ingest({
+    channelId: CHANNEL,
+    msgId: ctlMsgId,
+    externalUserId: 'ou_owner',
+    content: { control: 'stop' },
+    chatId: CHAT,
+  })
+  const secondCount = acks().length
+  const ack = acks()[0]?.payload.text ?? ''
+  const ref = task?.taskRef ?? taskId.slice(0, 8)
   host.close()
   return stop.result.target.kind === 'control'
     && stop.result.control?.executed === true
     && stop.result.control.action === 'cancel'
     && task.status === 'cancelled'
     && receipts.length === 1
+    && firstCount === 1
+    && secondCount === 1
+    && ack.includes(ref)
+    && ack.includes('已取消')
 })
 
 await check('control cancel aborts the running attempt before transitioning', () => {
@@ -604,7 +631,97 @@ await check('rollback without a checkpoint port fails loudly instead of pretendi
     && inbox.errorCode === 'control-unavailable'
 })
 
+await check('status answers with the live status and the next action', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const { result } = await say(host, '先暂停再问状态')
+  const taskId = result.foreground.taskId
+  const claimed = host.stores.tasks.claimTask({ owner: 'test-worker', leaseMs: 60_000, now: new Date() })
+  if (claimed === null || claimed.id !== taskId) throw new Error('could not claim the test task')
+  host.stores.tasks.transition(taskId, { to: 'paused', reason: 'test-pause' })
+  await host.ingest({
+    channelId: CHANNEL,
+    msgId: uniqueMsg('ctl'),
+    externalUserId: 'ou_owner',
+    content: { control: 'status' },
+    chatId: CHAT,
+  })
+  const task = host.stores.tasks.getTask(taskId)
+  const ack = host.stores.gateway.listOutbox()
+    .filter((item) => item.topic === 'say')
+    .map((item) => item.payload.text)
+    .find((text) => typeof text === 'string' && text.includes('当前状态')) ?? ''
+  const ref = task?.taskRef ?? taskId.slice(0, 8)
+  host.close()
+  return ack.includes(ref)
+    && ack.includes('当前状态：已暂停')
+    && ack.includes(`继续 ${ref}`)
+})
+
+await check('stopping a finished task says why it cannot, instead of silence', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const { result } = await say(host, '已经跑完的任务')
+  const taskId = result.foreground.taskId
+  await host.runWorkerOnce()
+  await host.ingest({
+    channelId: CHANNEL,
+    msgId: uniqueMsg('ctl'),
+    externalUserId: 'ou_owner',
+    content: { control: 'stop' },
+    chatId: CHAT,
+  })
+  const ack = host.stores.gateway.listOutbox()
+    .filter((item) => item.topic === 'say')
+    .map((item) => item.payload.text)
+    .find((text) => typeof text === 'string' && text.includes('不能停止')) ?? ''
+  host.close()
+  return ack.includes('已完成')
+})
+
+await check('a control command without a task asks for the task number', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const stop = await host.ingest({
+    channelId: CHANNEL,
+    msgId: uniqueMsg('ctl'),
+    externalUserId: 'ou_owner',
+    content: { control: 'stop' },
+    chatId: CHAT,
+  })
+  const ack = host.stores.gateway.listOutbox()
+    .filter((item) => item.topic === 'say')
+    .map((item) => item.payload.text)
+    .find((text) => typeof text === 'string' && text.includes('任务号')) ?? ''
+  host.close()
+  return stop.result.target.kind === 'control'
+    && ack.includes('停止 abc123')
+})
+
+await check('rollback without a checkpoint port still answers the owner', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const { result } = await say(host, '回滚但它没有端口')
+  const taskId = result.foreground.taskId
+  await host.runWorkerOnce()
+  await host.ingest({
+    channelId: CHANNEL,
+    msgId: uniqueMsg('ctl'),
+    externalUserId: 'ou_owner',
+    content: { control: 'rollback' },
+    chatId: CHAT,
+  })
+  const ack = host.stores.gateway.listOutbox()
+    .filter((item) => item.topic === 'say')
+    .map((item) => item.payload.text)
+    .find((text) => typeof text === 'string' && text.includes('控制通道不可用')) ?? ''
+  host.close()
+  return ack.includes('回滚命令未执行')
+})
+
+
 // ---- AR13：前台失败必须大声失败 ------------------------------------------------------
+
 await check('a throwing foreground marks the inbox failed with a route decision', async () => {
   const { host } = makeHost({
     options: { foreground: () => { throw new Error('foreground exploded') } },
@@ -1182,8 +1299,10 @@ await check('审批 12: a never-clicked approval expires, fails its task and pat
 
   const record = approvals.get(issued.approvalId)
   const task = host.stores.tasks.getTask(taskId)
+  const receipts = host.stores.tasks.listReceipts(taskId)
   const updates = host.stores.gateway.listOutbox()
     .filter((item) => item.topic === 'approval.update' && item.payload.approvalId === issued.approvalId)
+  const ref = task?.taskRef ?? taskId.slice(0, 8)
   host.close()
   return swept.expired === 1
     && record?.status === 'expired'
@@ -1192,6 +1311,9 @@ await check('审批 12: a never-clicked approval expires, fails its task and pat
     && updates.length === 1
     && updates[0].payload.decision === 'expired'
     && updates[0].payload.externalMsgId === cardId
+    && updates[0].payload.text.includes(ref)
+    && updates[0].payload.text.includes('未执行任何操作')
+    && receipts[0]?.summary === '审批在答复前过期，任务未执行'
 })
 
 // ---- 长任务可见（Slice R）：pump 按里程碑提醒，且只提醒一次 --------------------------

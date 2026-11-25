@@ -2604,6 +2604,60 @@ await check('the receipt relay enqueues one row per deliverable receipt', () => 
     && rows[0].payload.receiptId === 'rc1'
     && rows[0].payload.round === 2
     && rows[0].payload.summary === '部署完成，健康检查通过'
+    && rows[0].payload.text.includes('任务 task_rc 已结束')
+})
+
+// ---- L4: receipts carry task ref + terminal state + next step --------------
+
+const readableStore = createGatewayStore(join(dir, 'receipt-readable.sqlite'))
+const readableThread = readableStore.resolveThread({
+  channelId: 'feishu',
+  chatId: 'chat_readable',
+  rootMsgId: 'root_readable',
+})
+const readableRelay = createReceiptRelay({
+  store: readableStore,
+  receipts: {
+    pendingReceipts: (limit) => [
+      {
+        id: 'rc_ok',
+        taskId: 'task_ok',
+        round: 1,
+        summary: '部署完成',
+        evidenceLocator: 'run:7',
+        threadId: readableThread.id,
+        createdAt: '2026-11-21T00:00:00.000Z',
+        taskRef: 'T-OK',
+        status: 'succeeded',
+      },
+      {
+        id: 'rc_fail',
+        taskId: 'task_fail',
+        round: 1,
+        summary: 'boom: exit 1',
+        evidenceLocator: null,
+        threadId: readableThread.id,
+        createdAt: '2026-11-21T00:01:00.000Z',
+        taskRef: 'T-FAIL',
+        status: 'failed',
+      },
+    ].slice(0, limit ?? 50),
+    markReceiptDelivered: () => ({}),
+  },
+})
+readableRelay.pump()
+const okRow = readableStore.findOutboxByDedupe('task-receipt:rc_ok')
+const failRow = readableStore.findOutboxByDedupe('task-receipt:rc_fail')
+
+await check('receipt text names the task, its terminal state and the next step', () => {
+  return typeof okRow?.payload.text === 'string'
+    && okRow.payload.text.includes('任务 T-OK 已完成')
+    && okRow.payload.text.includes('证据：run:7')
+    && okRow.payload.summary === '部署完成'
+    && typeof failRow?.payload.text === 'string'
+    && failRow.payload.text.includes('任务 T-FAIL 失败')
+    && failRow.payload.text.includes('如需重试')
+    && failRow.payload.summary === 'boom: exit 1'
 })
 
 await check('a repeated pump is deduplicated by receipt id', () => {
@@ -2809,11 +2863,12 @@ await check('AS 1: a receipt over the threshold becomes a file payload; short on
     && long.payload.kind === 'file'
     && long.payload.filePath === join(spillDir, 'receipt-rc_long.md')
     && long.payload.summary === longSummary
+    && long.payload.text.includes('任务 t_long 已结束')
     && long.payload.text.includes('完整回执')
     && long.payload.text.includes('见附件 receipt-rc_long.md')
     && spillStore.findOutboxByDedupe('task-receipt:rc_long')?.id === long.id
     && short.payload.kind === undefined
-    && short.payload.text === undefined
+    && short.payload.text === '任务 t_short 已结束。\n一句话回执'
     && spillRelay.receiptIdOf({ topic: 'task.receipt', payload: long.payload }) === 'rc_long'
 })
 

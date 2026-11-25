@@ -107,7 +107,7 @@ export function createHostPorts(deps: HostPortDeps): HostPorts {
       if (cancelled) cancelRunning?.(input.taskId)
       const task = tasks.transition(input.taskId, {
         to,
-        ...cancelled ? { summary: 'stopped by owner' } : {},
+        ...cancelled ? { summary: '已按你的指令停止' } : {},
         reason: `control:${input.action}`,
       })
       return { status: task.status }

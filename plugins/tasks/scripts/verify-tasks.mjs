@@ -1012,14 +1012,17 @@ const receipt = store.writeReceipt({
   evidenceLocator: 'run:7',
 })
 
-await check('pendingReceipts exposes the announcement thread (default owner first)', () => {
+await check('pendingReceipts exposes the announcement thread and the task metadata', () => {
   const pending = store.pendingReceipts().find((entry) => entry.id === receipt.id)
+  const task = store.getTask(receiptTask.id)
   return pending !== undefined
     && pending.threadId === 'thread-receipt'
     && pending.round === 1
     && pending.summary === '部署完成'
     && pending.evidenceLocator === 'run:7'
     && pending.deliveredAt === null
+    && pending.taskRef === task?.taskRef
+    && pending.status === task?.status
 })
 
 await check('markReceiptDelivered stamps the ack once and is idempotent', () => {

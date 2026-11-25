@@ -29,6 +29,10 @@ export interface TaskReceipt {
   evidenceLocator: string | null
   threadId: string | null
   createdAt: string
+  /** L4: joined by ⑤ so the chat copy can name the task instead of a bare body. */
+  taskRef?: string | null
+  /** L4: terminal status (`succeeded` / `failed` / `cancelled`) for the header. */
+  status?: string | null
 }
 
 /** `TaskReceiptApi` as implemented by ⑤ (`@dsh-wfxm/tasks`). */
@@ -86,6 +90,34 @@ export interface ReceiptRelay {
 }
 
 export const RECEIPT_TOPIC = 'task.receipt'
+
+/** L4: chat-side terminal word; unknown/legacy rows degrade to "已结束". */
+function statusLabel(status: string | null | undefined): string {
+  switch (status) {
+    case 'succeeded': return '已完成'
+    case 'failed': return '失败'
+    case 'cancelled': return '已取消'
+    default: return '已结束'
+  }
+}
+
+/**
+ * L4: a receipt must say *which* task and *how it ended*, and a failure must
+ * offer a next step. The raw `summary` is kept untouched for other consumers.
+ */
+function receiptHead(receipt: TaskReceipt): string {
+  const ref = receipt.taskRef ?? receipt.taskId.slice(0, 8)
+  return `任务 ${ref} ${statusLabel(receipt.status)}。`
+}
+
+function receiptText(receipt: TaskReceipt): string {
+  const lines = [receiptHead(receipt), receipt.summary.trim()]
+  if (typeof receipt.evidenceLocator === 'string' && receipt.evidenceLocator !== '') {
+    lines.push(`证据：${receipt.evidenceLocator}`)
+  }
+  if (receipt.status === 'failed') lines.push('如需重试，请补充要求后重新发送。')
+  return lines.join('\n')
+}
 
 function receiptIdFromPayload(payload: unknown): string | null {
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null
@@ -175,13 +207,14 @@ export function createReceiptRelay(options: ReceiptRelayOptions): ReceiptRelay {
             round: receipt.round,
             summary: receipt.summary,
             evidenceLocator: receipt.evidenceLocator,
+            text: receiptText(receipt),
             ...spilled === null
               ? {}
               : {
                 kind: 'file',
                 filePath: spilled.path,
                 fileName: spilled.name,
-                text: `${excerpt}\n（完整回执 ${receipt.summary.length} 字，见附件 ${spilled.name}）`,
+                text: `${receiptHead(receipt)}\n${excerpt}\n（完整回执 ${receipt.summary.length} 字，见附件 ${spilled.name}）`,
               },
           },
           taskId: receipt.taskId,

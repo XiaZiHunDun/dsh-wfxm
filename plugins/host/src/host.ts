@@ -38,7 +38,9 @@ import {
   type RouteAction,
   type RunningTaskSnapshot,
   type SpillPort,
+  type TaskControlReport,
   type TaskProgressReport,
+  type WakeReport,
   type AdmissionPort,
 } from '@dsh-wfxm/gateway'
 import type { ApprovalLevel, ApprovalStore, GrantStore } from '@dsh-wfxm/governance'
@@ -110,6 +112,111 @@ const TURN_ROUTE_ACTION: Record<ForegroundOutcome['action'], RouteAction> = {
   'reminder-cancelled': 'accept',
   none: 'ignore',
 }
+
+/** L4: user-facing words for ⑤'s lifecycle statuses (never raw enums). */
+const STATUS_TEXT: Record<string, string> = {
+  queued: '排队中',
+  running: '执行中',
+  waiting_input: '等待补充输入',
+  waiting_approval: '等待审批',
+  paused: '已暂停',
+  succeeded: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+}
+
+/** L4: the chat word for a control action, so "不能cancel" never leaks. */
+const CONTROL_ACTION_TEXT: Record<string, string> = {
+  cancel: '停止',
+  pause: '暂停',
+  resume: '继续',
+  rollback: '回滚',
+}
+
+/** L4: the word the owner typed, reused in "请带上任务号" examples. */
+const CONTROL_COMMAND_TEXT: Record<string, string> = {
+  stop: '停止',
+  pause: '暂停',
+  resume: '继续',
+  rollback: '回滚',
+  status: '状态',
+}
+
+function statusLabel(status: string | null | undefined): string {
+  if (typeof status !== 'string' || status === '') return '未知状态'
+  return STATUS_TEXT[status] ?? status
+}
+
+/** One actionable line after a status report; empty when there is nothing to do. */
+function statusHint(status: string | null | undefined, ref: string): string {
+  switch (status) {
+    case 'paused': return `回复「继续 ${ref}」恢复。`
+    case 'running':
+    case 'queued': return `回复「停止 ${ref}」可取消。`
+    case 'failed': return '如需重试，请补充要求后重新发送。'
+    case 'succeeded': return '任务已完成；回复本条消息可继续追问。'
+    default: return ''
+  }
+}
+
+/**
+ * L4: compose the chat reply for an anchored control command. ① decides what
+ * happened (`executed` / `skipped`); this only says it in the owner's words,
+ * including failures, so a rejected command is never silent.
+ */
+function controlAck(input: {
+  command: string
+  report: TaskControlReport
+  taskRef: string | null
+  status: string | null
+}): string {
+  const commandWord = CONTROL_COMMAND_TEXT[input.command] ?? input.command
+  const actionLabel = input.report.action === null
+    ? commandWord
+    : CONTROL_ACTION_TEXT[input.report.action] ?? commandWord
+  if (input.report.skipped === 'no-task') {
+    return `没有找到要${actionLabel}的任务：请带上任务号，例如「${commandWord} abc123」。`
+  }
+  if (input.report.skipped === 'no-port') return `控制通道不可用，${commandWord}命令未执行。`
+  const ref = input.taskRef
+  if (ref === null) {
+    return `没有找到要${actionLabel}的任务：请带上任务号，例如「${commandWord} abc123」。`
+  }
+  const label = statusLabel(input.status)
+  if (input.command === 'status' || input.report.skipped === 'status-only') {
+    const hint = statusHint(input.status, ref)
+    return hint === ''
+      ? `任务 ${ref} 当前状态：${label}。`
+      : `任务 ${ref} 当前状态：${label}。\n${hint}`
+  }
+  if (input.report.skipped === 'not-live') return `任务 ${ref} 当前为${label}，不能${actionLabel}。`
+  if (!input.report.executed) return `任务 ${ref} 的${actionLabel}请求未被处理。`
+  switch (input.report.action) {
+    case 'cancel': return `已停止任务 ${ref}（${label}）。`
+    case 'pause': return `已暂停任务 ${ref}；回复「继续 ${ref}」恢复。`
+    case 'resume': return `已继续任务 ${ref}（${label}）。`
+    case 'rollback': return `已回滚任务 ${ref}（${label}）。`
+    default: return `已${actionLabel}任务 ${ref}（${label}）。`
+  }
+}
+
+/** L4: a wake attempt is a decision about a task; it always gets an answer. */
+function wakeAck(input: { wake: WakeReport; taskRef: string | null }): string {
+  const ref = input.taskRef
+  if (input.wake.woken) {
+    const round = input.wake.round === null ? '' : `（第 ${input.wake.round} 轮）`
+    return ref === null
+      ? `任务已重新开始${round}。`
+      : `任务 ${ref} 已重新开始${round}。`
+  }
+  if (input.wake.granted === false) {
+    return ref === null
+      ? '当前身份无权重新唤醒该任务；任务未重新执行。'
+      : `当前身份无权重新唤醒任务 ${ref}；任务未重新执行。`
+  }
+  return ref === null ? '任务未重新唤醒。' : `任务 ${ref} 未重新唤醒。`
+}
+
 
 export interface HostIngestResult {
   result: IngestResult
@@ -628,7 +735,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
           tasks.transition(item.taskId, {
             to: 'failed',
             reason: 'approval-expired',
-            summary: 'approval expired before the owner answered; nothing ran',
+            summary: '审批在答复前过期，任务未执行',
           })
         } catch {
           // The task already moved on (executed / cancelled); nothing to release.
@@ -638,6 +745,8 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       const threadId = item.taskId === null
         ? null
         : tasks.listTaskThreads({ taskId: item.taskId })[0]?.threadId ?? null
+      const expiredTask = item.taskId === null ? null : tasks.getTask(item.taskId)
+      const ref = expiredTask?.taskRef ?? (item.taskId === null ? null : item.taskId.slice(0, 8))
       gateway.enqueueOutbox({
         topic: APPROVAL_UPDATE_TOPIC,
         payload: {
@@ -645,7 +754,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
           approvalId: item.approvalId,
           decision: 'expired',
           ...cardId === null ? {} : { externalMsgId: cardId },
-          text: '审批已过期，任务已结束',
+          text: ref === null
+            ? '审批已过期，任务已结束（未执行任何操作）。'
+            : `任务 ${ref} 的审批已过期，任务已结束（未执行任何操作）。`,
         },
         threadId,
         dedupeKey: `approval-update:${item.approvalId}`,
@@ -1251,6 +1362,56 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       = typeof external?.externalMsgId === 'string' && external.externalMsgId !== ''
         ? external.externalMsgId
         : null
+
+    // L4: an anchored control command / wake always answers. ① already applied
+    // or refused it; silence here reads as "the message was lost".
+    const controlTarget = result.target.kind === 'control' ? result.target : null
+    const globalCommand = controlTarget !== null
+      && (controlTarget.command === 'halt'
+        || controlTarget.command === 'resume_all'
+        || controlTarget.command === 'status_all')
+    if (controlTarget !== null && !globalCommand && !result.duplicate) {
+      const taskId = result.followUp?.taskId ?? controlTarget.taskId ?? null
+      const task = taskId === null ? null : tasks.getTask(taskId)
+      const commandWord = CONTROL_COMMAND_TEXT[controlTarget.command] ?? controlTarget.command
+      const text = result.control !== null && result.control !== undefined
+        ? controlAck({
+          command: controlTarget.command,
+          report: result.control,
+          taskRef: task?.taskRef ?? (taskId === null ? null : taskId.slice(0, 8)),
+          status: result.control.status ?? task?.status ?? null,
+        })
+        : taskId === null
+          // ① never invents a target: an unanchored command must ask for the ref.
+          ? `没有找到要${commandWord}的任务：请带上任务号，例如「${commandWord} abc123」。`
+          : `控制通道不可用，${commandWord}命令未执行。`
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text },
+        ...taskId === null ? {} : { taskId },
+        threadId: result.thread?.id ?? null,
+        replyToMsgId,
+        dedupeKey: `control-ack:${result.inbox.id}`,
+      })
+    }
+
+    if ((result.wake !== null && result.wake !== undefined || result.error === 'wake-unavailable')
+      && !result.duplicate) {
+      const taskId = result.followUp?.taskId ?? null
+      const task = taskId === null ? null : tasks.getTask(taskId)
+      const taskRef = task?.taskRef ?? (taskId === null ? null : taskId.slice(0, 8))
+      const text = result.wake === null || result.wake === undefined
+        ? '任务未能重新唤醒，请重试或另发一条新任务。'
+        : wakeAck({ wake: result.wake, taskRef })
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text },
+        ...taskId === null ? {} : { taskId },
+        threadId: result.thread?.id ?? null,
+        replyToMsgId,
+        dedupeKey: `wake-ack:${result.inbox.id}`,
+      })
+    }
 
     if (result.target.kind !== 'orchestrator' || result.duplicate) {
       // An anchored message on a live task is routed by ① straight to ⑤; that
