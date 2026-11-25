@@ -52,6 +52,25 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  plugins/eval:
+    dependencies:
+      '@dsh-wfxm/redact':
+        specifier: workspace:*
+        version: link:../redact
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
+      '@types/node':
+        specifier: ^24.10.0
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   plugins/feishu:
     dependencies:
       '@larksuiteoapi/node-sdk':
@@ -135,6 +154,9 @@ importers:
       '@dsh-wfxm/changes':
         specifier: workspace:*
         version: link:../changes
+      '@dsh-wfxm/eval':
+        specifier: workspace:*
+        version: link:../eval
       '@dsh-wfxm/gateway':
         specifier: workspace:*
         version: link:../gateway

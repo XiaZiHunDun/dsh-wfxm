@@ -42,6 +42,18 @@ import {
   type AdmissionPort,
 } from '@dsh-wfxm/gateway'
 import type { ApprovalLevel, ApprovalStore, GrantStore } from '@dsh-wfxm/governance'
+import {
+  EvalTimeoutError,
+  formatEvalDbFindings,
+  formatEvalEngineMissing,
+  formatEvalRunFailed,
+  formatEvalRunFinished,
+  formatEvalRunRealHint,
+  formatEvalRunReused,
+  formatEvalRunStarted,
+  type EvalL2Runner,
+  type EvalStore,
+} from '@dsh-wfxm/eval'
 import { createTaskChangePort, type ChangeStore } from '@dsh-wfxm/changes'
 import {
   DEFAULT_DIGEST_TIME_ZONE,
@@ -264,10 +276,18 @@ export interface WfxmHostOptions {
   /** Slice AO.1: identical-message dedupe window; `0` disables, defaults to 60s. */
   duplicateWindowMs?: number
   /**
-   * P2-1: `/eval` 只读快照。`null` disables the command; absent uses
+   * P2-1/P2-2: `/eval`。`null` disables the command; absent uses
    * `eval/latest.json` (repo root) and a 5s per-chat read limit.
+   * `store` 落库 run/findings；`runner` 只在开发机（`AGENT_EVAL_ROOT`）可用。
    */
-  eval?: { snapshotPath?: string | null; rateLimitMs?: number } | null
+  eval?: {
+    snapshotPath?: string | null
+    rateLimitMs?: number
+    store?: EvalStore | null
+    runner?: EvalL2Runner | null
+    /** `/eval run` 的幂等桶，默认 5 分钟。 */
+    runRateLimitMs?: number
+  } | null
   now?: () => Date
   logger?: {
     info?: (message: string) => void
@@ -282,6 +302,8 @@ export interface WfxmHost {
   readonly dispatcher: OutboxDispatcher | null
   readonly worker: TaskWorker
   ingest(input: IngestInboundInput): Promise<HostIngestResult>
+  /** P2-2: 等待正在执行的 `/eval run l2` 落库（测试/停机用）。 */
+  drainEval(): Promise<void>
   /** Issue an approval and post its card into `threadId` (docs/14 §六). */
   requestApproval(input: RequestApprovalInput): RequestApprovalResult
   /**
@@ -347,6 +369,10 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     : evalConfig.snapshotPath
   const evalRateLimitMs = evalConfig?.rateLimitMs ?? 5000
   const evalLastReadAt = new Map<string, number>()
+  const evalStore = evalConfig?.store ?? null
+  const evalRunner = evalConfig?.runner ?? null
+  const evalRunRateLimitMs = evalConfig?.runRateLimitMs ?? 300_000
+  let evalRunPending: Promise<void> | null = null
 
   const gateway = createGatewayStore(options.dbPath)
   const tasks = createTaskStore(options.dbPath)
@@ -877,6 +903,93 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       return
     }
 
+    // P2-2: `/eval run l2` 只在开发机（AGENT_EVAL_ROOT）执行；先回执再异步跑。
+    if (target.command.kind === 'run') {
+      if (target.command.mode === 'real') {
+        reply(formatEvalRunRealHint(), 'run-real')
+        return
+      }
+      if (evalStore === null || evalRunner === null || !evalRunner.available) {
+        reply(formatEvalEngineMissing(), 'run-missing')
+        return
+      }
+      const actorId = result.actor.id
+      // 已有 run 未结束就不再启动第二个（超时窗口 10 分钟 > 限流窗口 5 分钟）。
+      const active = evalStore.findRunningRun()
+      if (active !== null) {
+        reply(formatEvalRunReused(active), `run-${active.id}`)
+        return
+      }
+      // 5 分钟桶幂等：同一窗口内重复请求返回同一个 run，绝不重跑。
+      const key = `l2:${Math.floor(now().getTime() / evalRunRateLimitMs)}`
+      const existing = evalStore.findRunByIdempotencyKey(key)
+      if (existing !== null) {
+        reply(formatEvalRunReused(existing), `run-${existing.id}`)
+        return
+      }
+      const { run } = evalStore.recordRun({
+        suite: 'l2',
+        runtime: 'dsh-wfxm',
+        mode: 'l2',
+        status: 'running',
+        advisory: true,
+        triggeredBy: actorId,
+        idempotencyKey: key,
+        startedAt: now().toISOString(),
+      })
+      reply(formatEvalRunStarted(run), 'run-started')
+      const runThreadId = result.thread?.id ?? null
+      const runReplyToMsgId = result.inbox.replyToMsgId ?? null
+      const pending = evalRunner.run()
+        .then((outcome) => {
+          const finished = evalStore.finishRun(run.id, {
+            status: outcome.ok ? 'ok' : 'failed',
+            passed: outcome.passed,
+            total: outcome.total,
+            advisory: outcome.advisory,
+            reportRef: outcome.reportRef,
+            finishedAt: now().toISOString(),
+          })
+          if (finished === null) return
+          evalStore.upsertFindings(run.id, outcome.failures.map((item) => ({
+            suite: item.suite,
+            taskId: item.taskId,
+            severity: 'fail' as const,
+            title: item.taskId ?? `${item.suite}（套件未全过）`,
+            detail: item.detail ?? (typeof item.rate === 'number' ? `通过率 ${Math.round(item.rate * 100)}%` : null),
+            source: 'ci' as const,
+          })))
+          gateway.enqueueOutbox({
+            topic: 'say',
+            payload: { text: formatEvalRunFinished(finished, evalStore.listFindings({ runId: run.id })) },
+            threadId: runThreadId,
+            replyToMsgId: runReplyToMsgId,
+            dedupeKey: `eval-run:${run.id}:done`,
+          })
+        })
+        .catch((error: unknown) => {
+          const timeout = error instanceof EvalTimeoutError
+          evalStore.finishRun(run.id, {
+            status: timeout ? 'timeout' : 'failed',
+            finishedAt: now().toISOString(),
+          })
+          const detail = messageOf(error)
+          logger?.warn?.(`eval run ${run.id} ${timeout ? 'timeout' : 'failed'}: ${detail}`)
+          gateway.enqueueOutbox({
+            topic: 'say',
+            payload: { text: formatEvalRunFailed(detail) },
+            threadId: runThreadId,
+            replyToMsgId: runReplyToMsgId,
+            dedupeKey: `eval-run:${run.id}:done`,
+          })
+        })
+        .finally(() => {
+          if (evalRunPending === pending) evalRunPending = null
+        })
+      evalRunPending = pending
+      return
+    }
+
     const key = result.thread?.chatId ?? result.actor.id
     const at = now().getTime()
     const last = evalLastReadAt.get(key) ?? 0
@@ -889,6 +1002,18 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     const load: EvalSnapshotLoad = evalSnapshotPath === null
       ? { ok: false, reason: 'missing' }
       : loadEvalSnapshot(evalSnapshotPath)
+    // P2-2: 快照是 nightly/release 结果的只读载体；按 recordedAt 幂等落库。
+    if (evalStore !== null && load.ok) {
+      try {
+        evalStore.syncSnapshot(load.snapshot)
+      } catch (error) {
+        logger?.warn?.(`eval snapshot sync failed: ${messageOf(error)}`)
+      }
+    }
+    if (target.command.kind === 'findings' && evalStore !== null) {
+      reply(formatEvalDbFindings(evalStore.listOpenFindings(20)), 'findings')
+      return
+    }
     reply(
       target.command.kind === 'findings' ? formatEvalFindings(load) : formatEvalStatus(load),
       target.command.kind,
@@ -1312,6 +1437,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     recoverChanges,
     isHalted,
     pump,
+    drainEval: async () => {
+      await evalRunPending
+    },
 
     runWorkerOnce: () => isHalted()
       ? Promise.resolve({

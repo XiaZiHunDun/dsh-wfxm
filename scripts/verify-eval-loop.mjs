@@ -31,10 +31,12 @@ function ensureBuilt(pkg) {
   }
 }
 
+ensureBuilt('eval')
 ensureBuilt('gateway')
 ensureBuilt('host')
 
 const { parseEvalCommand } = await import('../plugins/gateway/lib/index.js')
+const { createEvalStore, digestText } = await import('../plugins/eval/lib/index.js')
 const {
   createWfxmHost,
   formatEvalFindings,
@@ -101,6 +103,32 @@ const uniqueMsg = (prefix = 'm') => {
   return `${prefix}_${msgSeq}`
 }
 
+const L2_OUTCOME = {
+  ok: false,
+  advisory: true,
+  passed: 13,
+  total: 14,
+  suites: [
+    { name: 'smoke', passed: 6, total: 6, rate: 1 },
+    { name: 'tools', passed: 7, total: 8, rate: 0.875 },
+  ],
+  failures: [{ suite: 'tools', taskId: 'svc-inspect-ports', rate: 0, detail: '未使用受管工具' }],
+  reportRef: '.eval-runs/test-l2',
+  durationMs: 12,
+}
+
+function makeRunner(outcome = L2_OUTCOME) {
+  const state = { calls: 0 }
+  return {
+    available: true,
+    state,
+    async run() {
+      state.calls += 1
+      return outcome
+    },
+  }
+}
+
 function makeTransport() {
   const sent = []
   return {
@@ -114,15 +142,17 @@ function makeTransport() {
 
 function makeHost(evalOptions) {
   hostSeq += 1
+  const dbPath = join(dir, `host-${hostSeq}.sqlite`)
+  const evalStore = createEvalStore(dbPath)
   const transport = makeTransport()
   const host = createWfxmHost({
-    dbPath: join(dir, `host-${hostSeq}.sqlite`),
+    dbPath,
     executor: () => ({ status: 'succeeded', summary: 'executor ok' }),
     transport,
     now,
-    eval: evalOptions,
+    eval: evalOptions === null ? null : { store: evalStore, ...(evalOptions ?? {}) },
   })
-  return { host, transport }
+  return { host, transport, evalStore }
 }
 
 async function pair(host, { externalUserId = 'ou_owner', kind = 'owner' } = {}) {
@@ -164,7 +194,9 @@ await check('/eval parses status, findings, help and rejects other subcommands',
   assert.deepEqual(parseEvalCommand('/eval help'), { kind: 'help' })
   assert.equal(parseEvalCommand('/evaluate'), null)
   assert.equal(parseEvalCommand('请看 /eval'), null)
-  assert.equal(parseEvalCommand('/eval run l2')?.kind, 'unsupported')
+  assert.deepEqual(parseEvalCommand('/eval run l2'), { kind: 'run', mode: 'l2' })
+  assert.deepEqual(parseEvalCommand('/eval RUN real'), { kind: 'run', mode: 'real' })
+  assert.equal(parseEvalCommand('/eval run nightly')?.kind, 'unsupported')
   return true
 })
 
@@ -244,6 +276,114 @@ await check('repeated reads inside the window are rate-limited', async () => {
   const replied = texts(transport).at(-1) ?? ''
   host.close()
   return replied.includes('请求过于频繁')
+})
+
+// ---- P2-2 落库与执行 -------------------------------------------------------------
+
+await check('run idempotency key and terminal state are enforced', async () => {
+  const store = createEvalStore(join(dir, 'store.sqlite'))
+  const first = store.recordRun({
+    suite: 'l2',
+    mode: 'l2',
+    idempotencyKey: 'k1',
+    startedAt: CLOCK.toISOString(),
+  })
+  const second = store.recordRun({
+    suite: 'l2',
+    mode: 'l2',
+    idempotencyKey: 'k1',
+    startedAt: CLOCK.toISOString(),
+  })
+  assert.equal(first.created, true)
+  assert.equal(second.created, false)
+  assert.equal(second.run.id, first.run.id)
+  const ok = store.finishRun(first.run.id, { status: 'ok', passed: 5, total: 5 })
+  const again = store.finishRun(first.run.id, { status: 'failed', passed: 0, total: 5 })
+  assert.equal(ok.status, 'ok')
+  assert.equal(again.status, 'ok')
+  assert.equal(again.passed, 5)
+  store.close()
+  return true
+})
+
+await check('digest stores hash plus redacted summary', async () => {
+  const digest = digestText('token=sk-abcdefghijklmnopqrstuvwxyz0123456789')
+  assert.match(digest, /^sha256:[0-9a-f]{64} /)
+  assert.doesNotMatch(digest, /sk-abcdefghijklmnopqrstuvwxyz0123456789/)
+  return true
+})
+
+await check('snapshot sync is idempotent and traces failures', async () => {
+  const store = createEvalStore(join(dir, 'snap.sqlite'))
+  const first = store.syncSnapshot(SNAPSHOT)
+  const second = store.syncSnapshot(SNAPSHOT)
+  assert.equal(first.created, true)
+  assert.equal(second.created, false)
+  assert.equal(second.run.id, first.run.id)
+  const findings = store.listOpenFindings()
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].taskId, 'svc-inspect-ports')
+  assert.equal(findings[0].runId, first.run.id)
+  assert.match(findings[0].detailDigest, /^sha256:/)
+  store.close()
+  return true
+})
+
+await check('/eval run l2 executes once per bucket and records findings', async () => {
+  const runner = makeRunner()
+  const { host, transport, evalStore } = makeHost({ snapshotPath, rateLimitMs: 0, runner })
+  const actor = await pair(host)
+  await say(host, '/eval run l2')
+  // 第二方法用不同大小写，避免 identical-message 去重，同时命中同一 5 分钟桶。
+  await say(host, '/eval run L2')
+  assert.equal(runner.state.calls, 1)
+  await host.drainEval()
+  await host.pump()
+
+  const runs = evalStore.listRuns()
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].status, 'failed')
+  assert.equal(runs[0].passed, 13)
+  assert.equal(runs[0].total, 14)
+  assert.equal(runs[0].triggeredBy, actor.id)
+  assert.equal(runs[0].reportRef, '.eval-runs/test-l2')
+  const findings = evalStore.listFindings({ runId: runs[0].id })
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].taskId, 'svc-inspect-ports')
+  assert.equal(host.stores.tasks.listTasks().length, 0)
+
+  const replied = texts(transport).join('\n')
+  assert.match(replied, /已开始 L2 离线测评/)
+  assert.match(replied, /不重复执行/)
+  assert.match(replied, /测评完成/)
+  assert.match(replied, /svc-inspect-ports/)
+  host.close()
+  evalStore.close()
+  return true
+})
+
+await check('/eval run l2 without an engine is explicit', async () => {
+  const runner = { available: false, async run() { throw new Error('no engine') } }
+  const { host, transport, evalStore } = makeHost({ snapshotPath, rateLimitMs: 0, runner })
+  await pair(host)
+  await say(host, '/eval run l2')
+  const replied = texts(transport).at(-1) ?? ''
+  const runs = evalStore.listRuns()
+  host.close()
+  evalStore.close()
+  return replied.includes('测评引擎未部署') && runs.length === 0
+})
+
+await check('/eval run real never executes', async () => {
+  const runner = makeRunner()
+  const { host, transport, evalStore } = makeHost({ snapshotPath, rateLimitMs: 0, runner })
+  await pair(host)
+  await say(host, '/eval run real')
+  const replied = texts(transport).at(-1) ?? ''
+  const runs = evalStore.listRuns()
+  host.close()
+  evalStore.close()
+  return runner.state.calls === 0 && runs.length === 0 && replied.includes('CI/nightly')
 })
 
 rmSync(dir, { recursive: true, force: true })

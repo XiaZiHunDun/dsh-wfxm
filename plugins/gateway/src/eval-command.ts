@@ -8,6 +8,7 @@
 export type EvalCommand =
   | { kind: 'status' }
   | { kind: 'findings' }
+  | { kind: 'run'; mode: 'l2' | 'real' }
   | { kind: 'help' }
   | { kind: 'unsupported'; detail: string }
 
@@ -27,10 +28,16 @@ export function parseEvalCommand(text: string): EvalCommand | null {
       return { kind: 'help' }
     case 'findings':
       return { kind: 'findings' }
+    case 'run': {
+      const mode = (rest[0] ?? '').toLowerCase()
+      if (mode === 'l2') return { kind: 'run', mode: 'l2' }
+      if (mode === 'real') return { kind: 'run', mode: 'real' }
+      return { kind: 'unsupported', detail: '/eval run 仅支持 l2 或 real' }
+    }
     default:
       return {
         kind: 'unsupported',
-        detail: `P2-1 仅支持 /eval、/eval findings、/eval help；收到 ${rest.length === 0 ? sub : args}`,
+        detail: `P2-2 支持 /eval、/eval findings、/eval run l2|real、/eval help；收到 ${rest.length === 0 ? sub : args}`,
       }
   }
 }

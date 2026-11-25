@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@dsh-wfxm/changes": "workspace:*",
+    "@dsh-wfxm/eval": "workspace:*",
     "@dsh-wfxm/gateway": "workspace:*",
     "@dsh-wfxm/governance": "workspace:*",
     "@dsh-wfxm/knowledge": "workspace:*",

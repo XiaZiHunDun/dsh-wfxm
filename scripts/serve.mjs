@@ -26,6 +26,7 @@ import { dirname, join } from 'node:path'
 
 import { createDshExecutor } from '@dsh-wfxm/executor'
 import { createChangeStore } from '@dsh-wfxm/changes'
+import { createEvalStore, createL2Runner } from '@dsh-wfxm/eval'
 import {
   countCalendarEvents,
   createCalendarReminderPatrol,
@@ -210,6 +211,8 @@ async function main() {
             reminders: createReminderStore(config.dbPath),
             // Slice AV: 变更台账；⑦ 是 changes 的唯一写者。
             changes: createChangeStore(config.dbPath),
+            // P2-2: 测评台账；eval 模块是 eval_* 三表的唯一写者。
+            eval: createEvalStore(config.dbPath),
           }
         } catch (error) {
           approvals.close()
@@ -224,6 +227,7 @@ async function main() {
       run() {
         assertModules({
           createMemoryStore,
+          createEvalStore,
           createReminderStore,
           createChangeStore,
           createSnapshotStore,
@@ -316,6 +320,14 @@ async function main() {
           mailDigest,
           reminders: stores.reminders,
           changes: stores.changes,
+          // P2-2: `/eval` 落库；`/eval run l2` 只有开发机设置了 AGENT_EVAL_ROOT 才可用。
+          eval: {
+            store: stores.eval,
+            runner: createL2Runner({
+              root: process.env.AGENT_EVAL_ROOT ?? null,
+              timeoutMs: 600_000,
+            }),
+          },
           // Startup recovery restores a `dir:` workspace snapshot before the
           // worker may re-queue anything (Slice AV).
           restoreWorkspace: (snapshotId) => {
@@ -502,6 +514,7 @@ async function main() {
           runner: config.foreground === 'rule' ? null : config.decideRunner,
           reminders: 'on',
           changes: 'on',
+          eval: process.env.AGENT_EVAL_ROOT === undefined ? 'read-only' : 'l2-enabled',
           spill: config.spillChars === 0 ? 'off' : config.spillChars,
           progress: config.taskProgress
             ? {
@@ -1109,6 +1122,7 @@ async function main() {
       stores?.snapshot.close()
       stores?.reminders.close()
       stores?.changes.close()
+      stores?.eval.close()
       calendarStore?.close()
     } catch (error) {
       log('shutdown:warn', `close failed: ${error instanceof Error ? error.message : String(error)}`)

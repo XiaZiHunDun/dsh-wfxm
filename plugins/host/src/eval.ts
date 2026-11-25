@@ -146,9 +146,11 @@ export function formatEvalFindings(load: EvalSnapshotLoad): string {
 export function formatEvalHelp(): string {
   return [
     '/eval — 最近一次测评摘要',
-    '/eval findings — 列出未通过项',
+    '/eval findings — 列出未处理失败项',
+    '/eval run l2 — 开发机跑离线五套件（需 AGENT_EVAL_ROOT）',
+    '/eval run real — 真实套件只在 CI/nightly 执行',
     '/eval help — 本说明',
-    '运行测评仅限开发机（P2-1 未启用）。',
+    '仅 owner 可用；/eval run 每 5 分钟最多一次。',
   ].join('\n')
 }
 
