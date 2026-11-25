@@ -18,6 +18,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { evalHardGate } from '../lib/eval-gate.mjs'
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const args = process.argv.slice(2)
 const option = (name, fallback) => {
@@ -30,19 +32,11 @@ const engineRoot = resolve(option('engine', process.env.AGENT_EVAL_ROOT ?? join(
 const noGate = args.includes('--no-gate')
 const force = args.includes('--force')
 const REAL_BASELINES = ['capability', 'repo', 'conversation']
-/** 观察期截止：默认此前 advisory，此后硬门禁；`EVAL_HARD_GATE=0/1` 可覆盖。 */
-const HARD_GATE_AFTER = Date.parse('2026-12-08T00:00:00+08:00')
 
-function hardGateEnabled() {
-  const override = process.env.EVAL_HARD_GATE
-  if (override === '1') return true
-  if (override === '0') return false
-  if (args.includes('--hard')) return true
-  if (args.includes('--advisory')) return false
-  return Date.now() >= HARD_GATE_AFTER
-}
-
-const hard = hardGateEnabled()
+const hard = evalHardGate({
+  hard: args.includes('--hard'),
+  advisory: args.includes('--advisory'),
+})
 // 显式 --no-gate 是人工兜底（只摘基线），不参与硬门禁阻断。
 const enforce = hard && !noGate
 

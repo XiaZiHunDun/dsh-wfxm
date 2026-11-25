@@ -30,7 +30,7 @@ export interface CandidatePromoterOptions {
 }
 
 /** 去掉 `sha256:<hex>` 前缀，只留截断摘要。 */
-export function summaryOfDigest(digest: string): string {
+function summaryOfDigest(digest: string): string {
   return digest.replace(/^sha256:[0-9a-f]+\s*/, '').trim()
 }
 

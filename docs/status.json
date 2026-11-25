@@ -92,7 +92,7 @@
     {
       "id": "EVAL-DSH",
       "name": "dsh 测评体系",
-      "state": "partial",
+      "state": "done",
       "phase": "done",
       "evidence": [
         "scripts/eval/run-task.mjs",
@@ -109,7 +109,7 @@
         "plugins/eval/src/promote.ts",
         "docs/16-部署与运行.md"
       ],
-      "note": "第二阶段 P0+P1+P2-1..P2-5 已实现：薄驱动（多轮续接）+ agent-eval 的 L1–L3；飞书 `/eval` 摘要与 `/eval run l2`；`plugins/eval` 落库 run/findings（幂等键、状态机、快照同步、脱敏摘要）；`/eval flag`/`promote`/`ignore` 回流；发布/nightly 硬门禁按 2026-12-08 观察期自动切换（capability ≥0.8），周报追加 open findings；P2-5 从生产 dsh 会话导出脱敏轨迹到本机 `eval/trajectory/`，有任务时整体替换 `dsh-trajectory` 种子。基线 capability 16/20、repo 5/5、conversation 6/6、trajectory 3/3"
+      "note": "第二阶段于 2026-11-25 收口：P0+P1+P2-1..P2-5 完成——薄驱动（多轮续接）+ agent-eval 的 L1–L3；飞书 `/eval` 摘要与 `/eval run l2`；`plugins/eval` 落库 run/findings（幂等键、状态机、快照同步、脱敏摘要）；`/eval flag`/`promote`/`ignore` 回流；发布/nightly 硬门禁按 2026-12-08 观察期自动切换（capability ≥0.8），周报追加 open findings；P2-5 从生产 dsh 会话导出脱敏轨迹到本机 `eval/trajectory/`，有任务时整体替换 `dsh-trajectory` 种子。基线与缺口：capability 16/20、repo 5/5、conversation 6/6、trajectory 3/3；观察期满与草稿判据属运营跟进"
     }
   ]
 }

@@ -5,7 +5,7 @@
 import type { PromoteResult } from './promote.js'
 import type { EvalFinding, EvalRun } from './store.js'
 
-export function evalRunRef(id: string): string {
+function evalRunRef(id: string): string {
   return id.slice(0, 8)
 }
 

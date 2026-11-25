@@ -34,6 +34,8 @@ import {
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { evalHardGate } from './lib/eval-gate.mjs'
+
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const args = process.argv.slice(2)
 const command = args[0]
@@ -123,17 +125,8 @@ function linkDependencies(sourceRoot, destRoot) {
  * 没有则保留已有快照。
  *
  * P2-4：观察期（至 2026-12-08）内失败只告警；之后默认硬门禁，门禁失败即阻断发布。
- * `EVAL_HARD_GATE=0/1` 可显式覆盖。
+ * 判定与 `scripts/eval/snapshot.mjs` 共用 `scripts/lib/eval-gate.mjs`。
  */
-const EVAL_HARD_GATE_AFTER = Date.parse('2026-12-08T00:00:00+08:00')
-
-function evalHardGate() {
-  const override = process.env.EVAL_HARD_GATE
-  if (override === '1') return true
-  if (override === '0') return false
-  return Date.now() >= EVAL_HARD_GATE_AFTER
-}
-
 function snapshotEval() {
   const script = join(repoRoot, 'scripts/eval/snapshot.mjs')
   if (!existsSync(script)) return

@@ -1,7 +1,7 @@
 # AGENTS.md — dsh-wfxm 工作区
 
 > **本文件是本工作区的 AI 编码工具入口。** 新会话开篇先读本文件 + `README.md`。
-> **状态**：第一阶段已收口（2026-11-24），生产 `2026.11.24-3`；一期 MVP 37/37、上线门槛 7/7，二期 v1/v2 完成。见 `README.md`、`docs/09` §九与 `docs/20` §七。
+> **状态**：第一阶段已收口（2026-11-24），生产 `2026.11.24-3`；一期 MVP 37/37、上线门槛 7/7，二期 v1/v2 完成；第二阶段（测评体系）已收口（2026-11-25）。见 `README.md`、`docs/09` §九、`docs/20` §七与 `docs/16` §12.65–12.67。
 > **接续**：没有聊天记录的新会话，先读 [`docs/00-接续指南.md`](docs/00-接续指南.md)（现状、命令、已定决策、未尽事项）。
 
 ## 1. 必读表
@@ -53,6 +53,9 @@
   且锚点只在回复任务消息时继承（Slice BS）；真机 worktree 灰度通过。一期结项口径见 [09 §九](docs/09-能力对照与实现路径.md)。
 - **能力状态真源为 `docs/status.json`** —— 由 `scripts/verify-docs.mjs`（verify-all 第 1 套件）校验；
   当前 `verify-all` 52 套件（P2-1 新增 `eval-loop`）。
+- **第二阶段（测评体系）已收口（2026-11-25）** —— P0/P1/P2-1..P2-5 完成：引擎在公共仓 `agent-eval`，
+  本仓只加薄驱动与 `/eval` 闭环；发布/nightly 硬门禁按 2026-12-08 观察期自动切换。
+  运行口径见 [16 §12.65–12.67](docs/16-部署与运行.md)，状态见 `docs/status.json` 的 `EVAL-DSH`。
 - **产品能力构想（08，122 项）与能力对照（09）均已完成** —— 09 含逐条判定、工程量分级，以及对 01-08 的复核修正。
 - **核心机制方案（13）已写** —— 两个决定性痛点是「对话与记忆不乱」和「任务成功率」；
   主解不在更花哨的检索，而在**装配预算 + 作用域隔离 + 事实版本化**、**Verifier + 前置快照 + 重试分级 + Outbox**；
@@ -414,8 +417,8 @@
     `scripts/verify-all.mjs`（显式 `SUITES` + `discover()` 漂移检测，`--ci` 跳过真机套件）。`live` 套件通过 `DSH_WFXM_FEISHU_CONFIG`/`DSH_WFXM_CREDENTIALS`
     读 `/etc/dsh-wfxm/credentials/*`，root 也能跑全量。CI 见 `.github/workflows/ci.yml`（Node 24 + pnpm 11.28.5）。
   - **跨仓测评（第二阶段）**：本仓只提供薄驱动 `scripts/eval/run-task.mjs`（stdin payload → spawn `dsh --profile headless --json -` → `__EVAL_RESULT__`），
-    不解析判据；引擎、任务与基线在公共仓 `agent-eval`（`tasks/dsh/*`、`adapters/dsh-wfxm.mjs`）。PR 跑 L2 离线四套件，真实模型 `dsh-capability` 每晚 advisory，
-    不改运行时。
+    不解析判据；引擎、任务与基线在公共仓 `agent-eval`（`tasks/dsh/*`、`adapters/dsh-wfxm.mjs`）。PR 跑 L2 离线五套件（含 `dsh-trajectory`），
+    真实模型 `dsh-capability`/`dsh-repo`/`dsh-conversation` 每晚跑；飞书 `/eval` 读快照并落库 findings，发布/nightly 硬门禁按 2026-12-08 观察期自动切换，不改运行时。
   - **对话连续性（Slice AO）**：`gateway.threadHistory` 只取本线程的 `message` + 已发送 `say`（脱敏、旧→新）；
     决策 prompt 带最近 8 轮，SDK 按 `threadId` 开独立 session；补充指令走 `tasks.steerTask`——
     running/paused 打断重跑（intent 追加、attempt 归零、清租约，host 调 `worker.cancel()`），queued 合并，

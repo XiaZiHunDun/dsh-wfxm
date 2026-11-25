@@ -31,9 +31,8 @@ export type {
   PromoteCandidate,
   PromoteResult,
 } from './promote.js'
-export { createCandidatePromoter, summaryOfDigest } from './promote.js'
+export { createCandidatePromoter } from './promote.js'
 export {
-  evalRunRef,
   formatEvalCandidateUnavailable,
   formatEvalDbFindings,
   formatEvalEngineMissing,
