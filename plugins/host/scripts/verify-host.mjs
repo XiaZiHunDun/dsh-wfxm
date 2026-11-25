@@ -435,7 +435,7 @@ await check('replying in place to the live task message resolves by anchor (#10 
 
 // ---- AR37：已结束任务的锚点回复必须先过复验 ------------------------------------------
 
-await check('without a grant store a finished task is never woken (fail-closed)', async () => {
+await check('wake 拒绝时由前台接住：不单独发「无权唤醒」提示，直接建新任务', async () => {
   const { host } = makeHost()
   await pair(host)
   const { result } = await say(host, '跑完就结束')
@@ -445,9 +445,9 @@ await check('without a grant store a finished task is never woken (fail-closed)'
   const receiptMsgId = host.stores.tasks.listReceipts(taskId)[0].externalMsgId
   const reply = await say(host, '再补一句', { replyToMsgId: receiptMsgId })
   const task = host.stores.tasks.getTask(taskId)
-  const denial = host.stores.gateway.listOutbox()
+  const texts = host.stores.gateway.listOutbox()
     .map((item) => item.payload.text)
-    .find((text) => typeof text === 'string' && text.includes('无权重新唤醒')) ?? ''
+    .filter((text) => typeof text === 'string')
   host.close()
   return receiptMsgId !== null
     && reply.result.result.wake !== null
@@ -455,7 +455,10 @@ await check('without a grant store a finished task is never woken (fail-closed)'
     && reply.result.result.wake.reason === 'no-grant-store'
     && reply.result.result.wake.woken === false
     && reply.result.result.target.kind === 'orchestrator'
-    && denial.includes('任务未重新执行')
+    && reply.result.foreground.action === 'task-created'
+    && reply.result.foreground.taskId !== taskId
+    && !texts.some((text) => text.includes('无权继续'))
+    && texts.some((text) => text.includes('已开始处理'))
     && task.status === 'succeeded'
 })
 

@@ -211,10 +211,10 @@ function wakeAck(input: { wake: WakeReport; taskRef: string | null }): string {
   }
   if (input.wake.granted === false) {
     return ref === null
-      ? '当前身份无权重新唤醒该任务；任务未重新执行。'
-      : `当前身份无权重新唤醒任务 ${ref}；任务未重新执行。`
+      ? '当前身份无权继续该任务；这条按新消息处理。'
+      : `当前身份无权继续任务 ${ref}；这条按新消息处理。`
   }
-  return ref === null ? '任务未重新唤醒。' : `任务 ${ref} 未重新唤醒。`
+  return ref === null ? '任务未继续执行。' : `任务 ${ref} 未继续执行。`
 }
 
 
@@ -1395,18 +1395,27 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       })
     }
 
-    if ((result.wake !== null && result.wake !== undefined || result.error === 'wake-unavailable')
-      && !result.duplicate) {
-      const taskId = result.followUp?.taskId ?? null
-      const task = taskId === null ? null : tasks.getTask(taskId)
-      const taskRef = task?.taskRef ?? (taskId === null ? null : taskId.slice(0, 8))
-      const text = result.wake === null || result.wake === undefined
+    // L4: a wake attempt is a decision about a task and always gets an answer —
+    // except when the same turn starts a new task (see below): two bubbles for
+    // one instruction read as a malfunction.
+    const wakeTaskId = result.followUp?.taskId ?? null
+    const wakeTask = wakeTaskId === null ? null : tasks.getTask(wakeTaskId)
+    const wakeRef = wakeTask?.taskRef ?? (wakeTaskId === null ? null : wakeTaskId.slice(0, 8))
+    const wakeReported = (result.wake !== null && result.wake !== undefined)
+      || result.error === 'wake-unavailable'
+    const wakeNotice = !wakeReported || result.duplicate
+      ? null
+      : result.wake === null || result.wake === undefined
         ? '任务未能重新唤醒，请重试或另发一条新任务。'
-        : wakeAck({ wake: result.wake, taskRef })
+        : wakeAck({ wake: result.wake, taskRef: wakeRef })
+    const wakeNoticeDeferred = wakeNotice !== null
+      && result.target.kind === 'orchestrator'
+      && (result.wake === null || result.wake === undefined || !result.wake.woken)
+    if (wakeNotice !== null && !wakeNoticeDeferred) {
       gateway.enqueueOutbox({
         topic: 'say',
-        payload: { text },
-        ...taskId === null ? {} : { taskId },
+        payload: { text: wakeNotice },
+        ...wakeTaskId === null ? {} : { taskId: wakeTaskId },
         threadId: result.thread?.id ?? null,
         replyToMsgId,
         dedupeKey: `wake-ack:${result.inbox.id}`,
@@ -1479,6 +1488,19 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         action: TURN_ROUTE_ACTION[turn.action],
         reason: turn.note,
         threadId: result.thread?.id ?? null,
+      })
+    }
+
+    // Deferred wake notice: the foreground answered without starting a task
+    // (reply / reminder / none), so the refusal still needs its own line.
+    if (wakeNotice !== null && wakeNoticeDeferred && turn.action !== 'task-created') {
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text: wakeNotice },
+        ...wakeTaskId === null ? {} : { taskId: wakeTaskId },
+        threadId: result.thread?.id ?? null,
+        replyToMsgId,
+        dedupeKey: `wake-ack:${result.inbox.id}`,
       })
     }
 
