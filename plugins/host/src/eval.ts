@@ -146,7 +146,10 @@ export function formatEvalFindings(load: EvalSnapshotLoad): string {
 export function formatEvalHelp(): string {
   return [
     '/eval — 最近一次测评摘要',
-    '/eval findings — 列出未处理失败项',
+    '/eval findings — 列出未处理失败项（带 finding 短 id）',
+    '/eval flag <原因> — 引用一条消息，人工标记为 finding',
+    '/eval promote <id> — 生成候选任务到 eval/candidates/（需 AGENT_EVAL_ROOT）',
+    '/eval ignore <id> — 关闭 finding',
     '/eval run l2 — 开发机跑离线五套件（需 AGENT_EVAL_ROOT）',
     '/eval run real — 真实套件只在 CI/nightly 执行',
     '/eval help — 本说明',

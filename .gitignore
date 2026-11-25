@@ -35,6 +35,8 @@ bench/results/
 .wfxm/
 .trae/
 .trae-html-share-packages/
+# /eval promote 的候选草稿；人工确认后移到 agent-eval/tasks 并提 PR
+eval/candidates/
 
 # 编辑器与系统
 .DS_Store

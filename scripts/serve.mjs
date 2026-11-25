@@ -26,7 +26,7 @@ import { dirname, join } from 'node:path'
 
 import { createDshExecutor } from '@dsh-wfxm/executor'
 import { createChangeStore } from '@dsh-wfxm/changes'
-import { createEvalStore, createL2Runner } from '@dsh-wfxm/eval'
+import { createEvalStore, createL2Runner, createCandidatePromoter } from '@dsh-wfxm/eval'
 import {
   countCalendarEvents,
   createCalendarReminderPatrol,
@@ -326,6 +326,11 @@ async function main() {
             runner: createL2Runner({
               root: process.env.AGENT_EVAL_ROOT ?? null,
               timeoutMs: 600_000,
+            }),
+            // P2-3: 候选只落 eval/candidates/，校验用 agent-eval 的 contract.mjs。
+            promoter: createCandidatePromoter({
+              root: process.env.AGENT_EVAL_ROOT ?? null,
+              candidatesDir: join(fileURLToPath(new URL('..', import.meta.url)), 'eval', 'candidates'),
             }),
           },
           // Startup recovery restores a `dir:` workspace snapshot before the
@@ -1135,6 +1140,8 @@ async function main() {
   for (const signal of ['SIGTERM', 'SIGINT']) {
     process.on(signal, () => void shutdown(0, signal))
   }
+  // readiness 在步 8 已写出；这条日志表示信号处理已装好，停机不会落到默认 SIGTERM。
+  log('serve', 'signals ready')
 
   // Keep the process alive even in loopback mode (no channel timers).
   setInterval(() => {}, 60_000)

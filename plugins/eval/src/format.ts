@@ -2,6 +2,7 @@
  * `/eval` 的落库版文案（P2-2）。所有输出都不含原文/绝对轨迹，只给 run 短 id 与摘要。
  */
 
+import type { PromoteResult } from './promote.js'
 import type { EvalFinding, EvalRun } from './store.js'
 
 export function evalRunRef(id: string): string {
@@ -43,10 +44,45 @@ export function formatEvalDbFindings(findings: readonly EvalFinding[]): string {
     ...findings.slice(0, 20).map((item) => {
       const label = item.taskId === '' ? `${item.suite}（套件未全过）` : item.taskId
       const detail = item.detailDigest.replace(/^sha256:[0-9a-f]+ ?/, '').trim()
-      return `- ${label} · ${item.suite}${detail === '' ? '' : `（${detail}）`}`
+      return `- [${item.id.slice(0, 8)}] ${label} · ${item.suite}${detail === '' ? '' : `（${detail}）`}`
     }),
     ...(findings.length > 20 ? ['（仅显示前 20 项）'] : []),
+    '处理：/eval promote <id> · /eval ignore <id>',
   ].join('\n')
+}
+
+export function formatEvalFlagRecorded(finding: EvalFinding): string {
+  return `已记录 finding [${finding.id.slice(0, 8)}]（source=flag）；处理：/eval promote ${finding.id.slice(0, 8)} 或 /eval ignore ${finding.id.slice(0, 8)}。`
+}
+
+export function formatEvalFlagNeedsQuote(): string {
+  return '请引用一条消息后再发送 /eval flag <原因>（需要被标记的 message_id）。'
+}
+
+export function formatEvalPromoted(result: PromoteResult): string {
+  if (!result.ok) return `未生成候选：${result.reason}`
+  return [
+    `已生成候选 ${result.display}（${result.taskId}）· 契约校验通过。`,
+    '入任务仍需人工：补全 turns/expect，移到 agent-eval/tasks/dsh/ 并提 PR。',
+  ].join('\n')
+}
+
+export function formatEvalCandidateUnavailable(): string {
+  return '候选生成需要 AGENT_EVAL_ROOT（agent-eval/src/contract.mjs）；当前未部署。'
+}
+
+export function formatEvalFindingMissing(ref: string, reason: 'not-found' | 'ambiguous'): string {
+  return reason === 'ambiguous'
+    ? `finding 前缀 ${ref} 命中多条，请给更长的 id。`
+    : `找不到 finding ${ref}；用 /eval findings 查看。`
+}
+
+export function formatEvalFindingIgnored(finding: EvalFinding): string {
+  return `已忽略 finding [${finding.id.slice(0, 8)}]。`
+}
+
+export function formatEvalFindingAlready(finding: EvalFinding): string {
+  return `finding [${finding.id.slice(0, 8)}] 已是 ${finding.status}，无需重复处理。`
 }
 
 export function formatEvalRunRealHint(): string {

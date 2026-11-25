@@ -99,6 +99,9 @@ async function startServe(env, label) {
       15_000,
       `${label} readiness`,
     )
+    // readiness 先于信号处理落盘；等 serve 明确表示 handler 已安装再返回，
+    // 否则 SIGTERM 可能落在默认处理上，退出码为 null。
+    await waitFor(() => run.output().includes('signals ready'), 5_000, `${label} signals`)
   } catch (error) {
     run.child.kill('SIGKILL')
     throw new Error(`${error.message}\n${run.output()}`)

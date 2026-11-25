@@ -10,6 +10,9 @@ export type {
   FinishRunInput,
   ListFindingsOptions,
   RecordRunInput,
+  FlagInput,
+  EvalFlag,
+  FindingResolution,
   SnapshotLike,
 } from './store.js'
 export { createEvalStore } from './store.js'
@@ -22,10 +25,24 @@ export type {
   L2RunnerOptions,
 } from './runner.js'
 export { EvalEngineMissingError, EvalTimeoutError, createL2Runner } from './runner.js'
+export type {
+  CandidatePromoter,
+  CandidatePromoterOptions,
+  PromoteCandidate,
+  PromoteResult,
+} from './promote.js'
+export { createCandidatePromoter, summaryOfDigest } from './promote.js'
 export {
   evalRunRef,
+  formatEvalCandidateUnavailable,
   formatEvalDbFindings,
   formatEvalEngineMissing,
+  formatEvalFindingAlready,
+  formatEvalFindingIgnored,
+  formatEvalFindingMissing,
+  formatEvalFlagNeedsQuote,
+  formatEvalFlagRecorded,
+  formatEvalPromoted,
   formatEvalRunFailed,
   formatEvalRunFinished,
   formatEvalRunRealHint,

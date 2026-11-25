@@ -165,6 +165,29 @@ export interface ListFindingsOptions {
   limit?: number
 }
 
+export interface FlagInput {
+  /** 被引用的消息 id；找不到引用时由宿主拒绝。 */
+  messageId: string
+  threadId?: string | null
+  reason: string
+  verdict?: string
+  traceRef?: string | null
+}
+
+export interface EvalFlag {
+  id: string
+  messageId: string
+  threadId: string | null
+  verdict: string
+  reasonDigest: string
+  traceRef: string | null
+  createdAt: string
+}
+
+export type FindingResolution =
+  | { finding: EvalFinding }
+  | { error: 'not-found' | 'ambiguous' }
+
 export interface EvalStore {
   recordRun(input: RecordRunInput): { run: EvalRun; created: boolean }
   finishRun(id: string, input: FinishRunInput): EvalRun | null
@@ -176,6 +199,11 @@ export interface EvalStore {
   upsertFindings(runId: string, items: readonly FindingInput[]): number
   listFindings(options?: ListFindingsOptions): EvalFinding[]
   listOpenFindings(limit?: number): EvalFinding[]
+  /** P2-3: 人工标记 → eval_flags + 一条 source=flag 的 finding。 */
+  recordFlag(input: FlagInput): { finding: EvalFinding; flag: EvalFlag }
+  /** 按完整 id 或唯一前缀找 finding。 */
+  resolveFinding(ref: string): FindingResolution
+  setFindingStatus(id: string, status: EvalFindingStatus, promotedTaskId?: string | null): EvalFinding | null
   syncSnapshot(snapshot: SnapshotLike): { run: EvalRun; created: boolean; findings: number }
   close(): void
 }
@@ -334,6 +362,13 @@ export function createEvalStore(dbPath: string): EvalStore {
      ORDER BY created_at DESC, rowid DESC
      LIMIT ?
   `)
+  const selectFindingById = db.prepare('SELECT * FROM eval_findings WHERE id = ?')
+  const selectFindingByPrefix = db.prepare('SELECT * FROM eval_findings WHERE id LIKE ? ORDER BY created_at DESC LIMIT 2')
+  const updateFindingStatus = db.prepare('UPDATE eval_findings SET status = ?, promoted_task_id = ? WHERE id = ?')
+  const insertFlag = db.prepare(`
+    INSERT INTO eval_flags(id, message_id, thread_id, verdict, reason_digest, trace_ref, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
 
   function getRun(id: string): EvalRun | null {
     const row = selectRunById.get(id) as RunRow | undefined
@@ -445,6 +480,73 @@ export function createEvalStore(dbPath: string): EvalStore {
     return listFindings({ status: 'open', limit })
   }
 
+  function resolveFinding(ref: string): FindingResolution {
+    const needle = ref.trim().replace(/^#/, '')
+    if (needle === '') return { error: 'not-found' }
+    const exact = selectFindingById.get(needle) as FindingRow | undefined
+    if (exact !== undefined) return { finding: toFinding(exact) }
+    const rows = selectFindingByPrefix.all(`${needle}%`) as FindingRow[]
+    if (rows.length === 0) return { error: 'not-found' }
+    if (rows.length > 1) return { error: 'ambiguous' }
+    return { finding: toFinding(rows[0]) }
+  }
+
+  function setFindingStatus(
+    id: string,
+    status: EvalFindingStatus,
+    promotedTaskId?: string | null,
+  ): EvalFinding | null {
+    updateFindingStatus.run(status, promotedTaskId ?? null, id)
+    const row = selectFindingById.get(id) as FindingRow | undefined
+    return row === undefined ? null : toFinding(row)
+  }
+
+  function recordFlag(input: FlagInput): { finding: EvalFinding; flag: EvalFlag } {
+    const createdAt = new Date().toISOString()
+    const verdict = input.verdict ?? 'negative'
+    const reasonDigest = digestText(input.reason)
+    // 标题也只取脱敏摘要，避免把原话/密钥写进库。
+    const summary = reasonDigest.replace(/^sha256:[0-9a-f]+\s*/, '').trim()
+    const flagId = randomUUID()
+    db.transaction(() => {
+      insertFlag.run(
+        flagId,
+        input.messageId,
+        input.threadId ?? null,
+        verdict,
+        reasonDigest,
+        input.traceRef ?? null,
+        createdAt,
+      )
+      insertFinding.run(
+        randomUUID(),
+        null,
+        'flag',
+        '',
+        'warn',
+        summary === '' ? '人工标记' : `人工标记：${summary}`,
+        reasonDigest,
+        'flag',
+        createdAt,
+      )
+    }).immediate()
+
+    // 刚插入的那条想到即可：按创建时间取最新 flag finding。
+    const row = db.prepare("SELECT * FROM eval_findings WHERE source = 'flag' ORDER BY rowid DESC LIMIT 1").get() as FindingRow
+    return {
+      finding: toFinding(row),
+      flag: {
+        id: flagId,
+        messageId: input.messageId,
+        threadId: input.threadId ?? null,
+        verdict,
+        reasonDigest,
+        traceRef: input.traceRef ?? null,
+        createdAt,
+      },
+    }
+  }
+
   function syncSnapshot(snapshot: SnapshotLike): { run: EvalRun; created: boolean; findings: number } {
     const failures = snapshot.failures ?? []
     let passed = 0
@@ -495,6 +597,9 @@ export function createEvalStore(dbPath: string): EvalStore {
     upsertFindings,
     listFindings,
     listOpenFindings,
+    recordFlag,
+    resolveFinding,
+    setFindingStatus,
     syncSnapshot,
     close: () => db.close(),
   }

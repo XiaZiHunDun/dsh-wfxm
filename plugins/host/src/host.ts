@@ -44,13 +44,21 @@ import {
 import type { ApprovalLevel, ApprovalStore, GrantStore } from '@dsh-wfxm/governance'
 import {
   EvalTimeoutError,
+  formatEvalCandidateUnavailable,
   formatEvalDbFindings,
   formatEvalEngineMissing,
+  formatEvalFindingAlready,
+  formatEvalFindingIgnored,
+  formatEvalFindingMissing,
+  formatEvalFlagNeedsQuote,
+  formatEvalFlagRecorded,
+  formatEvalPromoted,
   formatEvalRunFailed,
   formatEvalRunFinished,
   formatEvalRunRealHint,
   formatEvalRunReused,
   formatEvalRunStarted,
+  type CandidatePromoter,
   type EvalL2Runner,
   type EvalStore,
 } from '@dsh-wfxm/eval'
@@ -285,6 +293,8 @@ export interface WfxmHostOptions {
     rateLimitMs?: number
     store?: EvalStore | null
     runner?: EvalL2Runner | null
+    /** P2-3: `/eval promote` 的候选生成器；缺省表示不可用。 */
+    promoter?: CandidatePromoter | null
     /** `/eval run` 的幂等桶，默认 5 分钟。 */
     runRateLimitMs?: number
   } | null
@@ -371,6 +381,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   const evalLastReadAt = new Map<string, number>()
   const evalStore = evalConfig?.store ?? null
   const evalRunner = evalConfig?.runner ?? null
+  const evalPromoter = evalConfig?.promoter ?? null
   const evalRunRateLimitMs = evalConfig?.runRateLimitMs ?? 300_000
   let evalRunPending: Promise<void> | null = null
 
@@ -876,7 +887,10 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
    * P2-1: `/eval` 是只读命令——不建任务、不进模型、不执行测评。
    * 生产读随发布生成的 `eval/latest.json`；缺快照就明说，绝不推断通过。
    */
-  function handleEvalCommand(result: IngestResult, target: { kind: 'eval'; command: EvalCommand }): void {
+  async function handleEvalCommand(
+    result: IngestResult,
+    target: { kind: 'eval'; command: EvalCommand },
+  ): Promise<void> {
     const threadId = result.thread?.id ?? null
     const replyToMsgId = result.inbox.replyToMsgId ?? null
     const reply = (text: string, suffix: string): void => {
@@ -900,6 +914,59 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     }
     if (target.command.kind === 'unsupported') {
       reply(formatEvalUnsupported(target.command.detail), 'unsupported')
+      return
+    }
+
+    // P2-3: 人工反馈 → 写库；不跑模型、不改任务集。
+    if (target.command.kind === 'flag') {
+      if (evalStore === null) {
+        reply('测评库未启用，无法记录 finding。', 'flag-disabled')
+        return
+      }
+      const messageId = result.inbox.replyToMsgId
+      if (messageId === null) {
+        reply(formatEvalFlagNeedsQuote(), 'flag-no-quote')
+        return
+      }
+      const { finding } = evalStore.recordFlag({
+        messageId,
+        threadId: result.thread?.id ?? null,
+        reason: target.command.reason,
+      })
+      reply(formatEvalFlagRecorded(finding), 'flag-recorded')
+      return
+    }
+
+    if (target.command.kind === 'promote' || target.command.kind === 'ignore') {
+      if (evalStore === null) {
+        reply('测评库未启用，无法处理 finding。', 'finding-disabled')
+        return
+      }
+      const resolution = evalStore.resolveFinding(target.command.ref)
+      if ('error' in resolution) {
+        reply(formatEvalFindingMissing(target.command.ref, resolution.error), 'finding-missing')
+        return
+      }
+      const finding = resolution.finding
+      if (finding.status !== 'open') {
+        reply(formatEvalFindingAlready(finding), 'finding-done')
+        return
+      }
+      if (target.command.kind === 'ignore') {
+        const updated = evalStore.setFindingStatus(finding.id, 'ignored')
+        reply(
+          updated === null ? formatEvalFindingMissing(target.command.ref, 'not-found') : formatEvalFindingIgnored(updated),
+          'finding-ignored',
+        )
+        return
+      }
+      if (evalPromoter === null || !evalPromoter.available) {
+        reply(formatEvalCandidateUnavailable(), 'promote-unavailable')
+        return
+      }
+      const promoted = await evalPromoter.promote(finding)
+      if (promoted.ok) evalStore.setFindingStatus(finding.id, 'promoted', promoted.taskId)
+      reply(formatEvalPromoted(promoted), promoted.ok ? 'promoted' : 'promote-failed')
       return
     }
 
@@ -1046,9 +1113,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       input,
     )
 
-    // P2-1: `/eval` 是只读命令，直接回执，不进前台、不建任务。
+    // P2-1/P2-3: `/eval` 直接回执，不进前台、不建任务；flag/promote/ignore 只写测评库。
     if (result.target.kind === 'eval') {
-      handleEvalCommand(result, result.target)
+      await handleEvalCommand(result, result.target)
       return { result, foreground: null, error: null }
     }
 

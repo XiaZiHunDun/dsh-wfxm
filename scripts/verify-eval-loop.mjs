@@ -1,12 +1,13 @@
 /**
- * P2-1 `/eval` 只读闭环验收：命令解析、快照读取、owner 限流、host 回执。
+ * P2-1..P2-3 `/eval` 闭环验收：命令解析、快照、owner 限流、run 落库、flag/promote/ignore。
  *
  * 无网络、无模型、无 dsh；用真实 SQLite + 假 transport，验证的是接线本身。
+ * promote 用临时 stub 的 `contract.mjs`，不依赖 agent-eval 是否在本机。
  */
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,7 +37,7 @@ ensureBuilt('gateway')
 ensureBuilt('host')
 
 const { parseEvalCommand } = await import('../plugins/gateway/lib/index.js')
-const { createEvalStore, digestText } = await import('../plugins/eval/lib/index.js')
+const { createEvalStore, digestText, createCandidatePromoter } = await import('../plugins/eval/lib/index.js')
 const {
   createWfxmHost,
   formatEvalFindings,
@@ -168,7 +169,7 @@ async function pair(host, { externalUserId = 'ou_owner', kind = 'owner' } = {}) 
   return actor
 }
 
-async function say(host, text) {
+async function say(host, text, extra = {}) {
   const msgId = uniqueMsg()
   const result = await host.ingest({
     channelId: CHANNEL,
@@ -176,9 +177,20 @@ async function say(host, text) {
     externalUserId: 'ou_owner',
     content: { text },
     chatId: CHAT,
+    ...extra,
   })
   await host.pump()
   return { result, msgId }
+}
+
+let stubSeq = 0
+/** 临时 agent-eval 根：只需要 `src/contract.mjs`，避免依赖真实工作区。 */
+function makeStubEvalRoot(validateSource) {
+  stubSeq += 1
+  const stubRoot = join(dir, `agent-eval-${stubSeq}`)
+  mkdirSync(join(stubRoot, 'src'), { recursive: true })
+  writeFileSync(join(stubRoot, 'src', 'contract.mjs'), validateSource, 'utf8')
+  return stubRoot
 }
 
 const texts = (transport) => transport.sent
@@ -197,6 +209,11 @@ await check('/eval parses status, findings, help and rejects other subcommands',
   assert.deepEqual(parseEvalCommand('/eval run l2'), { kind: 'run', mode: 'l2' })
   assert.deepEqual(parseEvalCommand('/eval RUN real'), { kind: 'run', mode: 'real' })
   assert.equal(parseEvalCommand('/eval run nightly')?.kind, 'unsupported')
+  assert.deepEqual(parseEvalCommand('/eval flag 回答不对'), { kind: 'flag', reason: '回答不对' })
+  assert.equal(parseEvalCommand('/eval flag')?.kind, 'unsupported')
+  assert.deepEqual(parseEvalCommand('/eval promote abc123'), { kind: 'promote', ref: 'abc123' })
+  assert.deepEqual(parseEvalCommand('/eval ignore #abc123'), { kind: 'ignore', ref: '#abc123' })
+  assert.equal(parseEvalCommand('/eval promote')?.kind, 'unsupported')
   return true
 })
 
@@ -384,6 +401,116 @@ await check('/eval run real never executes', async () => {
   host.close()
   evalStore.close()
   return runner.state.calls === 0 && runs.length === 0 && replied.includes('CI/nightly')
+})
+
+// ---- P2-3 人工反馈与候选回流 -------------------------------------------------------
+
+await check('flag writes a redacted finding and resolves by prefix', async () => {
+  const store = createEvalStore(join(dir, 'flag.sqlite'))
+  const { finding, flag } = store.recordFlag({
+    messageId: 'om_ref',
+    threadId: 'th1',
+    reason: '回答泄漏 token sk-abcdefghijklmnopqrstuvwxyz0123456789',
+  })
+  assert.equal(finding.source, 'flag')
+  assert.equal(finding.status, 'open')
+  assert.equal(flag.messageId, 'om_ref')
+  assert.match(finding.detailDigest, /^sha256:/)
+  assert.match(finding.title, /^人工标记：/)
+  assert.doesNotMatch(finding.title, /sk-abcdefghijklmnopqrstuvwxyz0123456789/)
+  const resolved = store.resolveFinding(finding.id.slice(0, 8))
+  assert.equal(resolved.finding?.id, finding.id)
+  assert.equal(store.resolveFinding('nope-nope').error, 'not-found')
+  const updated = store.setFindingStatus(finding.id, 'ignored')
+  assert.equal(updated.status, 'ignored')
+  store.close()
+  return true
+})
+
+await check('/eval flag needs a quoted message and records a finding', async () => {
+  const { host, transport, evalStore } = makeHost({ snapshotPath, rateLimitMs: 0 })
+  await pair(host)
+  await say(host, '/eval flag 回答不对')
+  assert.match(texts(transport).at(-1) ?? '', /请引用一条消息/)
+  assert.equal(evalStore.listOpenFindings().length, 0)
+
+  await say(host, '/eval flag 引用后回答不对', { replyToMsgId: 'om_target' })
+  const open = evalStore.listOpenFindings()
+  assert.equal(open.length, 1)
+  assert.equal(open[0].source, 'flag')
+  assert.match(texts(transport).at(-1) ?? '', /已记录 finding/)
+  host.close()
+  evalStore.close()
+  return true
+})
+
+await check('/eval promote writes a contract-valid candidate and closes the finding', async () => {
+  const stubRoot = makeStubEvalRoot('export function validateTask() { return [] }\n')
+  const candidatesDir = join(dir, 'candidates')
+  const promoter = createCandidatePromoter({ root: stubRoot, candidatesDir })
+  assert.equal(promoter.available, true)
+  const { host, transport, evalStore } = makeHost({ snapshotPath, rateLimitMs: 0, promoter })
+  await pair(host)
+  await say(host, '/eval flag 监管口径答错', { replyToMsgId: 'om_ref' })
+  const finding = evalStore.listOpenFindings()[0]
+  const short = finding.id.slice(0, 8)
+
+  await say(host, `/eval promote ${short}`)
+  const file = join(candidatesDir, `${finding.id}.json`)
+  assert.equal(existsSync(file), true)
+  const task = JSON.parse(readFileSync(file, 'utf8'))
+  assert.equal(task.id, `dsh-reg-${short}`)
+  assert.equal(task.source, 'regression')
+  assert.equal(task.split, 'dev')
+  assert.ok(task.turns.length === 1)
+  assert.equal(typeof task.expect, 'object')
+  // 只落 candidates，不自动改任务集。
+  assert.equal(existsSync(join(stubRoot, 'tasks')), false)
+
+  const promoted = evalStore.resolveFinding(finding.id).finding
+  assert.equal(promoted.status, 'promoted')
+  assert.equal(promoted.promotedTaskId, task.id)
+  assert.match(texts(transport).at(-1) ?? '', /契约校验通过/)
+  assert.doesNotMatch(texts(transport).at(-1) ?? '', /\/home\//)
+  host.close()
+  evalStore.close()
+  return true
+})
+
+await check('/eval promote refuses an invalid candidate', async () => {
+  const stubRoot = makeStubEvalRoot("export function validateTask() { return ['id 不合规'] }\n")
+  const promoter = createCandidatePromoter({ root: stubRoot, candidatesDir: join(dir, 'bad-candidates') })
+  const { host, transport, evalStore } = makeHost({ snapshotPath, rateLimitMs: 0, promoter })
+  await pair(host)
+  await say(host, '/eval flag 回答不对', { replyToMsgId: 'om_ref' })
+  const finding = evalStore.listOpenFindings()[0]
+  await say(host, `/eval promote ${finding.id.slice(0, 8)}`)
+  assert.equal(existsSync(join(dir, 'bad-candidates', `${finding.id}.json`)), false)
+  assert.equal(evalStore.resolveFinding(finding.id).finding.status, 'open')
+  assert.match(texts(transport).at(-1) ?? '', /未生成候选/)
+  host.close()
+  evalStore.close()
+  return true
+})
+
+await check('/eval ignore closes the finding and promote needs an engine', async () => {
+  const { host, transport, evalStore } = makeHost({ snapshotPath, rateLimitMs: 0 })
+  await pair(host)
+  await say(host, '/eval flag 回答不对', { replyToMsgId: 'om_ref' })
+  const finding = evalStore.listOpenFindings()[0]
+  const short = finding.id.slice(0, 8)
+
+  await say(host, `/eval promote ${short}`)
+  assert.match(texts(transport).at(-1) ?? '', /候选生成需要 AGENT_EVAL_ROOT/)
+  assert.equal(evalStore.resolveFinding(finding.id).finding.status, 'open')
+
+  await say(host, `/eval ignore #${short}`)
+  assert.equal(evalStore.resolveFinding(finding.id).finding.status, 'ignored')
+  assert.match(texts(transport).at(-1) ?? '', /已忽略 finding/)
+  assert.equal(evalStore.listOpenFindings().length, 0)
+  host.close()
+  evalStore.close()
+  return true
 })
 
 rmSync(dir, { recursive: true, force: true })

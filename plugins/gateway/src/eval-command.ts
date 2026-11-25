@@ -9,6 +9,9 @@ export type EvalCommand =
   | { kind: 'status' }
   | { kind: 'findings' }
   | { kind: 'run'; mode: 'l2' | 'real' }
+  | { kind: 'flag'; reason: string }
+  | { kind: 'promote'; ref: string }
+  | { kind: 'ignore'; ref: string }
   | { kind: 'help' }
   | { kind: 'unsupported'; detail: string }
 
@@ -34,10 +37,23 @@ export function parseEvalCommand(text: string): EvalCommand | null {
       if (mode === 'real') return { kind: 'run', mode: 'real' }
       return { kind: 'unsupported', detail: '/eval run 仅支持 l2 或 real' }
     }
+    case 'flag': {
+      const reason = rest.join(' ').trim()
+      return reason === ''
+        ? { kind: 'unsupported', detail: '用法：引用一条消息后发送 /eval flag <原因>' }
+        : { kind: 'flag', reason }
+    }
+    case 'promote':
+    case 'ignore': {
+      const ref = (rest[0] ?? '').trim()
+      return ref === ''
+        ? { kind: 'unsupported', detail: `用法：/eval ${sub.toLowerCase()} <finding-id>` }
+        : { kind: sub.toLowerCase() as 'promote' | 'ignore', ref }
+    }
     default:
       return {
         kind: 'unsupported',
-        detail: `P2-2 支持 /eval、/eval findings、/eval run l2|real、/eval help；收到 ${rest.length === 0 ? sub : args}`,
+        detail: `P2-3 支持 /eval、/eval findings、/eval run l2|real、/eval flag、/eval promote、/eval ignore、/eval help；收到 ${rest.length === 0 ? sub : args}`,
       }
   }
 }
