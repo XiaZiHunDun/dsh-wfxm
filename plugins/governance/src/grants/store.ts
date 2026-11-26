@@ -1,45 +1,13 @@
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 import { uuidv7 } from '../audit/store.js'
 
 const MIGRATION_MODULE = 'grant'
-const MIGRATION_VERSION = 1
-
-/**
- * docs/15 §三·模块 ③ 的 `grants` 正本（AR20：可枚举、可撤销、带来源与过期）。
- * 在契约基础上补三列，均为 AR37 复验或"本次"授权所必需：
- * - `kind`           本次 / 本会话 / 永久（11 §九·补 A 第 2 条）
- * - `consumed_at`    "本次"授权被兑付的时间（一次性）
- * - `policy_version` 发放时的策略版本，AR37 复验项
- * `source_approval_id` 唯一：一次确认只产生一张授���，重复发放即拒绝。
- */
-const GRANTS_DDL = `
-CREATE TABLE IF NOT EXISTS grants (
-  id                 TEXT PRIMARY KEY,
-  actor_id           TEXT NOT NULL,
-  kind               TEXT NOT NULL CHECK (kind IN ('once','session','forever')),
-  scope_json         TEXT NOT NULL,
-  source_approval_id TEXT,
-  granted_at         TEXT NOT NULL,
-  expires_at         TEXT,
-  revoked_at         TEXT,
-  consumed_at        TEXT,
-  policy_version     TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_grants_actor ON grants(actor_id, revoked_at);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_grants_source
-  ON grants(source_approval_id) WHERE source_approval_id IS NOT NULL;
-`
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module, version)
-);
-`
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations', 'grant')
 
 export type GrantKind = 'once' | 'session' | 'forever'
 
@@ -164,21 +132,7 @@ interface GrantRow {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  if ((row?.version ?? 0) >= MIGRATION_VERSION) return
-
-  const apply = db.transaction(() => {
-    db.exec(GRANTS_DDL)
-    db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-      MIGRATION_MODULE,
-      MIGRATION_VERSION,
-      new Date().toISOString(),
-    )
-  })
-  apply.immediate()
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 function parseScope(raw: string): GrantScope {

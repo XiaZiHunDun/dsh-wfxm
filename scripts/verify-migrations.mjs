@@ -8,7 +8,7 @@
  *   - a removed file for an applied version refuses to start;
  *   - legacy shapes (PRIMARY KEY(module), collapsing rows, no checksum column)
  *     are normalised and backfilled instead of re-executed;
- *   - tasks/gateway stores no longer carry inline migration arrays.
+ *   - every store reads its DDL from files instead of an inline array.
  */
 
 import assert from 'node:assert/strict'
@@ -28,11 +28,103 @@ const { MigrationError, loadMigrationFiles, runMigrations } = await import(
 )
 const { createTaskStore } = await import('../plugins/tasks/lib/index.js')
 const { createGatewayStore } = await import('../plugins/gateway/lib/index.js')
+const { createMemoryStore } = await import('../plugins/knowledge/lib/index.js')
+const { createCalendarStore } = await import('../plugins/calendar/lib/index.js')
+const { createChangeStore } = await import('../plugins/changes/lib/index.js')
+const { createReminderStore } = await import('../plugins/reminder/lib/index.js')
+const { createTelemetryStore } = await import('../plugins/telemetry/lib/index.js')
+const { createInspectionStore } = await import('../plugins/svcops/lib/index.js')
+const { createEvalStore } = await import('../plugins/eval/lib/index.js')
+const { createSnapshotStore } = await import('../plugins/snapshot/lib/index.js')
+const { createApprovalStore, createGrantStore } = await import('../plugins/governance/lib/index.js')
+const { createDecisionStore } = await import('../plugins/governance/lib/policy/store.js')
+const { createAuditStore } = await import('../plugins/governance/lib/audit/store.js')
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const TASKS_DIR = join(root, 'plugins/tasks/migrations')
 const GATEWAY_DIR = join(root, 'plugins/gateway/migrations')
 const work = mkdtempSync(join(tmpdir(), 'dsh-migrations-'))
+
+/**
+ * Every store that owns a `schema_migrations` module. One row per SQL file, in
+ * order, with the file's sha256 — that is the whole N8 contract.
+ */
+const MODULES = [
+  { module: 'tasks', dir: TASKS_DIR, source: 'plugins/tasks/src/store.ts', open: createTaskStore },
+  { module: 'gateway', dir: GATEWAY_DIR, source: 'plugins/gateway/src/store.ts', open: createGatewayStore },
+  {
+    module: 'memory',
+    dir: join(root, 'plugins/knowledge/migrations'),
+    source: 'plugins/knowledge/src/store.ts',
+    open: createMemoryStore,
+  },
+  {
+    module: 'calendar',
+    dir: join(root, 'plugins/calendar/migrations'),
+    source: 'plugins/calendar/src/store.ts',
+    open: createCalendarStore,
+  },
+  {
+    module: 'changes',
+    dir: join(root, 'plugins/changes/migrations'),
+    source: 'plugins/changes/src/store.ts',
+    open: createChangeStore,
+  },
+  {
+    module: 'reminder',
+    dir: join(root, 'plugins/reminder/migrations'),
+    source: 'plugins/reminder/src/store.ts',
+    open: createReminderStore,
+  },
+  {
+    module: 'telemetry',
+    dir: join(root, 'plugins/telemetry/migrations'),
+    source: 'plugins/telemetry/src/store.ts',
+    open: (path) => createTelemetryStore({ dbPath: path, mode: 'meta', flushIntervalMs: 60_000 }),
+  },
+  {
+    module: 'inspection',
+    dir: join(root, 'plugins/svcops/migrations'),
+    source: 'plugins/svcops/src/inspection/store.ts',
+    open: createInspectionStore,
+  },
+  {
+    module: 'eval',
+    dir: join(root, 'plugins/eval/migrations'),
+    source: 'plugins/eval/src/store.ts',
+    open: createEvalStore,
+  },
+  {
+    module: 'snapshot',
+    dir: join(root, 'plugins/snapshot/migrations'),
+    source: 'plugins/snapshot/src/store.ts',
+    open: createSnapshotStore,
+  },
+  {
+    module: 'approval',
+    dir: join(root, 'plugins/governance/migrations/approval'),
+    source: 'plugins/governance/src/approval/store.ts',
+    open: createApprovalStore,
+  },
+  {
+    module: 'grant',
+    dir: join(root, 'plugins/governance/migrations/grant'),
+    source: 'plugins/governance/src/grants/store.ts',
+    open: createGrantStore,
+  },
+  {
+    module: 'policy',
+    dir: join(root, 'plugins/governance/migrations/policy'),
+    source: 'plugins/governance/src/policy/store.ts',
+    open: createDecisionStore,
+  },
+  {
+    module: 'audit',
+    dir: join(root, 'plugins/governance/migrations/audit'),
+    source: 'plugins/governance/src/audit/store.ts',
+    open: createAuditStore,
+  },
+]
 
 let passed = 0
 let failed = 0
@@ -72,24 +164,25 @@ function versions(count) {
   return Array.from({ length: count }, (_, index) => index + 1)
 }
 
-check('tasks ships 15 SQL migrations, one checksummed row per version', () => {
-  const path = join(work, 'tasks.sqlite')
-  createTaskStore(path).close()
-  const rows = rowsOf(path, 'tasks')
-  const files = loadMigrationFiles(TASKS_DIR)
-  assert.deepEqual(rows.map((row) => row.version), versions(15))
-  assert.deepEqual(rows.map((row) => row.name), files.map((file) => file.name))
-  assert.deepEqual(rows.map((row) => row.checksum), files.map((file) => file.checksum))
-  return rows.at(-1).name === '015_expert.sql'
-})
-
-check('gateway ships 9 SQL migrations, one checksummed row per version', () => {
-  const path = join(work, 'gateway.sqlite')
-  createGatewayStore(path).close()
-  const rows = rowsOf(path, 'gateway')
-  assert.deepEqual(rows.map((row) => row.version), versions(9))
-  assert.equal(rows.at(-1).name, '009_pairing_codes.sql')
-  return rows.every((row) => /^[0-9a-f]{64}$/.test(row.checksum))
+check('every module ships one checksummed row per SQL migration file', () => {
+  for (const entry of MODULES) {
+    const path = join(work, `${entry.module}.sqlite`)
+    entry.open(path).close()
+    const rows = rowsOf(path, entry.module)
+    const files = loadMigrationFiles(entry.dir)
+    assert.deepEqual(
+      rows.map((row) => row.version),
+      versions(files.length),
+      `${entry.module}: versions`,
+    )
+    assert.deepEqual(rows.map((row) => row.name), files.map((file) => file.name), `${entry.module}: names`)
+    assert.deepEqual(
+      rows.map((row) => row.checksum),
+      files.map((file) => file.checksum),
+      `${entry.module}: checksums`,
+    )
+  }
+  return true
 })
 
 check('reopening verifies all applied files and writes nothing new', () => {
@@ -281,11 +374,11 @@ check('gateway keeps its expand → migrate → contract trio as files', () => {
     && files[start + 2] === '006_session_routes_contract.sql'
 })
 
-check('tasks and gateway stores no longer carry inline migration arrays', () => {
-  for (const module of ['tasks', 'gateway']) {
-    const source = readFileSync(join(root, `plugins/${module}/src/store.ts`), 'utf8')
-    assert.equal(/const MIGRATIONS\b/.test(source), false, `${module} still has const MIGRATIONS`)
-    assert.match(source, /runMigrations\(db/, `${module} does not call runMigrations`)
+check('every store calls runMigrations and carries no inline migration arrays', () => {
+  for (const entry of MODULES) {
+    const source = readFileSync(join(root, entry.source), 'utf8')
+    assert.equal(/const MIGRATIONS\b/.test(source), false, `${entry.module} still has const MIGRATIONS`)
+    assert.match(source, /runMigrations\(db/, `${entry.module} does not call runMigrations`)
   }
   return true
 })

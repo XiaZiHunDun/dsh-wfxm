@@ -10,6 +10,9 @@ importers:
 
   plugins/calendar:
     dependencies:
+      '@dsh-wfxm/sql-migrate':
+        specifier: workspace:*
+        version: link:../sql-migrate
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -29,6 +32,9 @@ importers:
 
   plugins/changes:
     dependencies:
+      '@dsh-wfxm/sql-migrate':
+        specifier: workspace:*
+        version: link:../sql-migrate
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -57,6 +63,9 @@ importers:
       '@dsh-wfxm/redact':
         specifier: workspace:*
         version: link:../redact
+      '@dsh-wfxm/sql-migrate':
+        specifier: workspace:*
+        version: link:../sql-migrate
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -126,6 +135,9 @@ importers:
       '@dsh-wfxm/snapshot':
         specifier: workspace:*
         version: link:../snapshot
+      '@dsh-wfxm/sql-migrate':
+        specifier: workspace:*
+        version: link:../sql-migrate
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -191,6 +203,9 @@ importers:
       '@dsh-wfxm/redact':
         specifier: workspace:*
         version: link:../redact
+      '@dsh-wfxm/sql-migrate':
+        specifier: workspace:*
+        version: link:../sql-migrate
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -262,6 +277,9 @@ importers:
 
   plugins/reminder:
     dependencies:
+      '@dsh-wfxm/sql-migrate':
+        specifier: workspace:*
+        version: link:../sql-migrate
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -278,6 +296,9 @@ importers:
 
   plugins/snapshot:
     dependencies:
+      '@dsh-wfxm/sql-migrate':
+        specifier: workspace:*
+        version: link:../sql-migrate
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -309,6 +330,9 @@ importers:
       '@dsh-wfxm/notify':
         specifier: workspace:*
         version: link:../notify
+      '@dsh-wfxm/sql-migrate':
+        specifier: workspace:*
+        version: link:../sql-migrate
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -359,6 +383,9 @@ importers:
       '@dsh-wfxm/redact':
         specifier: workspace:*
         version: link:../redact
+      '@dsh-wfxm/sql-migrate':
+        specifier: workspace:*
+        version: link:../sql-migrate
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3

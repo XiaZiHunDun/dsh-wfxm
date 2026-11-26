@@ -1,65 +1,15 @@
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 import { uuidv7 } from '../audit/store.js'
 
 const MIGRATION_MODULE = 'approval'
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations', 'approval')
 const DEFAULT_TTL_MS = 10 * 60 * 1000
-
-/**
- * DDL from docs/15 §三·模块 ③. The card is only a view: this table is the
- * approval of record (AR10). `nonce` is single-use; `external_msg_id` lets the
- * transport patch the card it rendered without being the source of truth.
- */
-const APPROVALS_DDL = `
-CREATE TABLE IF NOT EXISTS approvals (
-  id                TEXT PRIMARY KEY,
-  task_id           TEXT,
-  correlation_id    TEXT NOT NULL,
-  level             TEXT NOT NULL CHECK (level IN ('R2','R3')),
-  summary           TEXT NOT NULL,
-  impact_json       TEXT NOT NULL,
-  status            TEXT NOT NULL CHECK (status IN
-                      ('pending','approved','rejected','expired','withdrawn')),
-  requested_at      TEXT NOT NULL,
-  expires_at        TEXT NOT NULL,
-  decided_at        TEXT,
-  decided_by        TEXT,
-  channel_id        TEXT,
-  external_msg_id   TEXT,
-  nonce             TEXT NOT NULL,
-  nonce_consumed_at TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_approvals_nonce ON approvals(nonce);
-CREATE INDEX IF NOT EXISTS ix_approvals_pending ON approvals(status, requested_at);
-`
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module, version)
-);
-`
-
-/**
- * v2 (Slice L): R3 needs a second, explicit confirmation before it is approved.
- * The first "approve" click only moves `confirm_stage` to 1; the final click must
- * carry the dedicated `confirmed` decision, so a double-click on "approve" can
- * never settle a high-risk approval.
- */
-const APPROVALS_V2_DDL = [
-  'ALTER TABLE approvals ADD COLUMN confirm_stage INTEGER NOT NULL DEFAULT 0',
-  'ALTER TABLE approvals ADD COLUMN confirm_actor TEXT',
-  'ALTER TABLE approvals ADD COLUMN confirm_at TEXT',
-]
-
-const MIGRATIONS: readonly { version: number; statements: readonly string[] }[] = [
-  { version: 1, statements: [APPROVALS_DDL] },
-  { version: 2, statements: APPROVALS_V2_DDL },
-]
 
 export type ApprovalLevel = 'R2' | 'R3'
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'withdrawn'
@@ -199,25 +149,7 @@ interface ApprovalRow {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  let current = row?.version ?? 0
-
-  for (const step of MIGRATIONS) {
-    if (step.version <= current) continue
-    const apply = db.transaction(() => {
-      for (const statement of step.statements) db.exec(statement)
-      db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-        MIGRATION_MODULE,
-        step.version,
-        new Date().toISOString(),
-      )
-    })
-    apply.immediate()
-    current = step.version
-  }
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 function nonceMatches(expected: string, actual: string): boolean {

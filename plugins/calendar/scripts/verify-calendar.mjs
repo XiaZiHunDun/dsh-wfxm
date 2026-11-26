@@ -409,7 +409,7 @@ await check('reminder: v1 database is upgraded in place with reminded_at', async
   upgraded.close()
 
   const check = new DatabaseConstructor(legacyPath, { readonly: true })
-  const version = check.prepare('SELECT version FROM schema_migrations WHERE module = ?').get('calendar').version
+  const version = check.prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?').get('calendar').version
   const columns = check.prepare('PRAGMA table_info(calendar_events)').all().map((column) => column.name)
   check.close()
   return version === 2 && columns.includes('reminded_at')

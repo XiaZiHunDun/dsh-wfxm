@@ -5,53 +5,16 @@
 
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 import { CANDIDATE_RULES, type CandidateInput } from './candidates.js'
 import type { InspectionItem, InspectionItemStatus } from './checklist.js'
 
 const MIGRATION_MODULE = 'inspection'
-const MIGRATION_VERSION = 2
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module)
-);
-`
-
-const INSPECTION_DDL = `
-CREATE TABLE IF NOT EXISTS inspections (
-  id             TEXT PRIMARY KEY,
-  checklist_id   TEXT NOT NULL,
-  target         TEXT NOT NULL,
-  status         TEXT NOT NULL,
-  findings_json  TEXT NOT NULL,
-  ran_at         TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_inspections_target_time ON inspections(target, ran_at DESC);
-`
-
-const CANDIDATE_DDL = `
-CREATE TABLE IF NOT EXISTS inspection_candidates (
-  id             TEXT PRIMARY KEY,
-  rule_id        TEXT NOT NULL,
-  item_id        TEXT NOT NULL,
-  title          TEXT NOT NULL,
-  target         TEXT NOT NULL,
-  status         TEXT NOT NULL DEFAULT 'open',
-  last_observed  TEXT NOT NULL,
-  first_seen_at  TEXT NOT NULL,
-  last_seen_at   TEXT NOT NULL,
-  resolved_at    TEXT,
-  seen_count     INTEGER NOT NULL DEFAULT 1,
-  UNIQUE(rule_id, item_id, target)
-);
-CREATE INDEX IF NOT EXISTS ix_inspection_candidates_target_status
-  ON inspection_candidates(target, status);
-`
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations')
 
 export type CandidateStatus = 'open' | 'resolved'
 
@@ -140,30 +103,7 @@ function toRecord(row: Row): InspectionRecord {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  const current = row?.version ?? 0
-  if (current >= MIGRATION_VERSION) return
-
-  db.transaction(() => {
-    // Both DDL blocks are `IF NOT EXISTS`, so a v1 database only gains the
-    // candidate table while a fresh one creates both.
-    db.exec(INSPECTION_DDL)
-    db.exec(CANDIDATE_DDL)
-    if (current === 0) {
-      db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-        MIGRATION_MODULE,
-        MIGRATION_VERSION,
-        new Date().toISOString(),
-      )
-    } else {
-      db.prepare(
-        'UPDATE schema_migrations SET version = ?, applied_at = ? WHERE module = ?',
-      ).run(MIGRATION_VERSION, new Date().toISOString(), MIGRATION_MODULE)
-    }
-  }).immediate()
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 function candidateTitle(input: CandidateInput): string {

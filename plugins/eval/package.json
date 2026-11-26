@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@dsh-wfxm/redact": "workspace:*",
+    "@dsh-wfxm/sql-migrate": "workspace:*",
     "better-sqlite3": "^13.0.3"
   },
   "devDependencies": {

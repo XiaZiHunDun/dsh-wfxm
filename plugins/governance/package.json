@@ -25,6 +25,7 @@
   "dependencies": {
     "@dsh-wfxm/redact": "workspace:*",
     "@dsh-wfxm/snapshot": "workspace:*",
+    "@dsh-wfxm/sql-migrate": "workspace:*",
     "better-sqlite3": "^13.0.3",
     "yaml": "^2.8.1",
     "zod": "^4.6.7"

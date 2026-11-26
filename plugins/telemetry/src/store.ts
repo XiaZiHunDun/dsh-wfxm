@@ -14,7 +14,9 @@
 
 import { mkdirSync, readdirSync, rmSync, statfsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 import { redactText } from '@dsh-wfxm/redact'
 import { dayKey, uuidv7 } from './ids.js'
 import {
@@ -32,7 +34,8 @@ import {
 } from './event.js'
 
 const MIGRATION_MODULE = 'telemetry'
-const MIGRATION_VERSION = 1
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 
 export const DEFAULT_QUEUE_LIMIT = 1_000
 export const DEFAULT_BATCH_SIZE = 200
@@ -42,107 +45,6 @@ export const DEFAULT_DAILY_LIMIT_BYTES = 200 * 1024 * 1024
 export const DEFAULT_DISK_WARN_RATIO = 0.85
 export const DEFAULT_RETENTION_DAYS = 14
 export const DEFAULT_FILE_RETENTION_DAYS = 7
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module, version)
-);
-`
-
-const TRACE_EVENTS_DDL = `
-CREATE TABLE IF NOT EXISTS trace_events (
-  id                   TEXT PRIMARY KEY,
-  ts                   TEXT NOT NULL,
-  level                TEXT NOT NULL CHECK (level IN ('debug','info','warn','error')),
-  event                TEXT NOT NULL,
-  trace_id             TEXT NOT NULL,
-  span_id              TEXT NOT NULL,
-  parent_span_id       TEXT,
-  thread_id            TEXT,
-  message_id           TEXT,
-  project_id           TEXT,
-  task_id              TEXT,
-  task_ref             TEXT,
-  round                INTEGER,
-  attempt              INTEGER,
-  phase                TEXT NOT NULL,
-  status               TEXT,
-  duration_ms          INTEGER,
-  error_code           TEXT,
-  error_kind           TEXT,
-  error_message_digest TEXT,
-  error_stack_digest   TEXT,
-  error_retryable      INTEGER,
-  error_message        TEXT,
-  error_stack          TEXT,
-  model_name           TEXT,
-  input_tokens         INTEGER,
-  output_tokens        INTEGER,
-  cost_usd             REAL,
-  tool_name            TEXT,
-  tool_args_digest     TEXT,
-  tool_exit_code       INTEGER,
-  tool_duration_ms     INTEGER,
-  attrs_json           TEXT,
-  bytes                INTEGER NOT NULL,
-  created_at           TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_trace_events_task ON trace_events(task_id, ts);
-CREATE INDEX IF NOT EXISTS ix_trace_events_trace ON trace_events(trace_id, ts);
-CREATE INDEX IF NOT EXISTS ix_trace_events_created ON trace_events(created_at);
-CREATE INDEX IF NOT EXISTS ix_trace_events_error
-  ON trace_events(error_code, ts) WHERE error_code IS NOT NULL;
-`
-
-const TASK_ATTEMPTS_DDL = `
-CREATE TABLE IF NOT EXISTS task_attempts (
-  id            TEXT PRIMARY KEY,
-  task_id       TEXT NOT NULL,
-  attempt       INTEGER NOT NULL,
-  trace_id      TEXT NOT NULL,
-  executor      TEXT,
-  model         TEXT,
-  started_at    TEXT NOT NULL,
-  finished_at   TEXT,
-  outcome       TEXT NOT NULL CHECK (outcome IN ('running','succeeded','failed','cancelled')),
-  failure_kind  TEXT,
-  error_code    TEXT,
-  summary       TEXT,
-  session_ref   TEXT,
-  trace_ref     TEXT,
-  input_tokens  INTEGER,
-  output_tokens INTEGER,
-  cost_usd      REAL,
-  created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_task_attempts_key ON task_attempts(task_id, attempt);
-CREATE INDEX IF NOT EXISTS ix_task_attempts_started ON task_attempts(started_at DESC);
-CREATE INDEX IF NOT EXISTS ix_task_attempts_outcome ON task_attempts(outcome, finished_at);
-`
-
-const TELEMETRY_USAGE_DDL = `
-CREATE TABLE IF NOT EXISTS telemetry_usage (
-  key        TEXT PRIMARY KEY,
-  bytes      INTEGER NOT NULL,
-  events     INTEGER NOT NULL,
-  updated_at TEXT NOT NULL
-);
-`
-
-const TELEMETRY_DROPS_DDL = `
-CREATE TABLE IF NOT EXISTS telemetry_drops (
-  day        TEXT NOT NULL,
-  reason     TEXT NOT NULL,
-  count      INTEGER NOT NULL,
-  bytes      INTEGER NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (day, reason)
-);
-`
 
 export type DropReason =
   | 'disabled'
@@ -415,31 +317,8 @@ interface DropAggregate {
   bytes: number
 }
 
-const MIGRATION_DDL: readonly string[] = [
-  TRACE_EVENTS_DDL,
-  TASK_ATTEMPTS_DDL,
-  TELEMETRY_USAGE_DDL,
-  TELEMETRY_DROPS_DDL,
-]
-
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  if ((row?.version ?? 0) >= MIGRATION_VERSION) return
-
-  db.transaction(() => {
-    for (const ddl of MIGRATION_DDL) db.exec(ddl)
-    // `schema_migrations` is shared by every module and its primary key shape
-    // differs between plugins; DELETE + INSERT does not depend on a conflict target.
-    db.prepare('DELETE FROM schema_migrations WHERE module = ?').run(MIGRATION_MODULE)
-    db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-      MIGRATION_MODULE,
-      MIGRATION_VERSION,
-      new Date().toISOString(),
-    )
-  }).immediate()
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 function defaultDiskUsage(path: string): DiskUsage | null {

@@ -11,8 +11,14 @@
 
 import { randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
+
+const MIGRATION_MODULE = 'snapshot'
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 
 export type SnapshotErrorCode =
   | 'invalid-input'
@@ -117,43 +123,6 @@ export interface SnapshotStore {
 
 export const DEFAULT_SNAPSHOT_KEEP = 100
 export const PREIMAGE_INLINE_LIMIT = 1024 * 1024
-
-const SNAPSHOTS_DDL = `
-CREATE TABLE IF NOT EXISTS snapshots (
-  id           TEXT PRIMARY KEY,
-  kind         TEXT NOT NULL CHECK (kind IN ('workspace','task')),
-  locator      TEXT NOT NULL,
-  baseline_ref TEXT,
-  excludes_json TEXT NOT NULL DEFAULT '[]',
-  content_key  TEXT,
-  ref_count    INTEGER NOT NULL DEFAULT 0,
-  size_bytes   INTEGER,
-  created_at   TEXT NOT NULL,
-  expires_at   TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_snapshots_content ON snapshots(content_key) WHERE content_key IS NOT NULL;
-CREATE INDEX IF NOT EXISTS ix_snapshots_kind ON snapshots(kind, created_at);
-
-CREATE TABLE IF NOT EXISTS file_preimages (
-  id            TEXT PRIMARY KEY,
-  task_id       TEXT,
-  tool_call_id  TEXT NOT NULL,
-  path          TEXT NOT NULL,
-  state         TEXT NOT NULL CHECK (state IN ('present','absent')),
-  content_ref   TEXT,
-  sha256        TEXT,
-  size_bytes    INTEGER,
-  checkpoint_id TEXT,
-  created_at    TEXT NOT NULL,
-  expires_at    TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_file_preimages_call ON file_preimages(tool_call_id, path);
-CREATE INDEX IF NOT EXISTS ix_file_preimages_task ON file_preimages(task_id, created_at);
-`
-
-const MIGRATIONS: readonly { version: number; ddl: string }[] = [
-  { version: 1, ddl: SNAPSHOTS_DDL },
-]
 
 interface SnapshotRow {
   id: string
@@ -337,28 +306,7 @@ export function createSnapshotStore(dbPath: string): SnapshotStore {
 }
 
 function migrate(db: Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      module     TEXT NOT NULL,
-      version    INTEGER NOT NULL,
-      applied_at TEXT NOT NULL,
-      PRIMARY KEY (module, version)
-    );
-  `)
-  const applied = new Set(
-    (db.prepare("SELECT version FROM schema_migrations WHERE module = 'snapshot'").all() as {
-      version: number
-    }[]).map((row) => row.version),
-  )
-  for (const migration of MIGRATIONS) {
-    if (applied.has(migration.version)) continue
-    db.transaction(() => {
-      db.exec(migration.ddl)
-      db.prepare(
-        "INSERT INTO schema_migrations(module, version, applied_at) VALUES ('snapshot', ?, ?)",
-      ).run(migration.version, new Date().toISOString())
-    })()
-  }
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 /** 13 §3.4: a snapshot without a self-contained locator cannot restore anything. */

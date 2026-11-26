@@ -1,35 +1,13 @@
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 import { uuidv7 } from '../audit/store.js'
 
 const MIGRATION_MODULE = 'policy'
-const MIGRATION_VERSION = 1
-
-const DECISIONS_DDL = `
-CREATE TABLE IF NOT EXISTS decisions (
-  id              TEXT PRIMARY KEY,
-  correlation_id  TEXT NOT NULL,
-  stage           TEXT NOT NULL CHECK (stage IN ('S1','S2','jev','fallback')),
-  rule_id         TEXT,
-  ruleset_version TEXT,
-  input_digest    TEXT NOT NULL,
-  verdict         TEXT NOT NULL,
-  confidence      REAL,
-  reason          TEXT,
-  created_at      TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_decisions_corr ON decisions(correlation_id);
-`
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module, version)
-);
-`
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations', 'policy')
 
 export interface DecisionRecord {
   correlationId: string
@@ -46,21 +24,7 @@ export interface DecisionStore {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  if ((row?.version ?? 0) >= MIGRATION_VERSION) return
-
-  const apply = db.transaction(() => {
-    db.exec(DECISIONS_DDL)
-    db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-      MIGRATION_MODULE,
-      MIGRATION_VERSION,
-      new Date().toISOString(),
-    )
-  })
-  apply.immediate()
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 export function createDecisionStore(dbPath: string): DecisionStore {

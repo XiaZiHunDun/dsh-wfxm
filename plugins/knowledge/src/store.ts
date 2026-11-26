@@ -8,7 +8,9 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 import {
   MemoryError,
   type FactEvidence,
@@ -26,126 +28,8 @@ import type {
 } from './proposals.js'
 
 const MIGRATION_MODULE = 'memory'
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module)
-);
-`
-
-const PROJECTS_DDL = `
-CREATE TABLE IF NOT EXISTS projects (
-  id             TEXT PRIMARY KEY,
-  name           TEXT NOT NULL UNIQUE,
-  root_path      TEXT NOT NULL,
-  rules_doc      TEXT,
-  default_expert TEXT,
-  created_at     TEXT NOT NULL,
-  archived_at    TEXT
-);
-`
-
-const FACTS_DDL = `
-CREATE TABLE IF NOT EXISTS memory_facts (
-  id               TEXT PRIMARY KEY,
-  scope            TEXT NOT NULL CHECK (scope IN ('project','global')),
-  project_id       TEXT,
-  subject          TEXT NOT NULL,
-  predicate        TEXT NOT NULL,
-  value_json       TEXT NOT NULL,
-  source           TEXT NOT NULL CHECK (source IN
-                     ('user-confirmed','observed','inferred','summary')),
-  kind             TEXT NOT NULL CHECK (kind IN ('environment','preference')),
-  evidence_json    TEXT,
-  last_injected_at TEXT,
-  confidence       REAL,
-  valid_from       TEXT NOT NULL,
-  superseded_by    TEXT,
-  created_at       TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_facts_live
-  ON memory_facts(scope, project_id, subject, predicate) WHERE superseded_by IS NULL;
-`
-
-const EDGES_DDL = `
-CREATE TABLE IF NOT EXISTS memory_edges (
-  id           TEXT PRIMARY KEY,
-  from_fact_id TEXT NOT NULL,
-  relation     TEXT NOT NULL,
-  to_fact_id   TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_edges_from ON memory_edges(from_fact_id, relation);
-`
-
-/**
- * v2：项目别名（11 §5.3.1）。`alias` 存小写归一值，主键即保证大小写不敏感的唯一性；
- * 归档不删别名，解析时 join `projects.archived_at IS NULL` 一并失效。
- */
-const PROJECT_ALIASES_DDL = `
-CREATE TABLE IF NOT EXISTS project_aliases (
-  alias       TEXT PRIMARY KEY,
-  project_id  TEXT NOT NULL,
-  created_at  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_aliases_project ON project_aliases(project_id);
-`
-
-/**
- * v4：记忆提案（G5）。提案不写事实；owner 确认后才走 `gateFact` + `insertFact`。
- * 过期只是状态迁移，不删除行。
- */
-const PROPOSALS_DDL = `
-CREATE TABLE IF NOT EXISTS memory_proposals (
-  id             TEXT PRIMARY KEY,
-  scope          TEXT NOT NULL CHECK (scope IN ('project','global')),
-  project_id     TEXT,
-  subject        TEXT NOT NULL,
-  predicate      TEXT NOT NULL,
-  value_json     TEXT NOT NULL,
-  source         TEXT NOT NULL CHECK (source IN
-                   ('user-confirmed','observed','inferred','summary')),
-  kind           TEXT NOT NULL CHECK (kind IN ('environment','preference')),
-  evidence_json  TEXT,
-  confidence     REAL,
-  valid_from     TEXT NOT NULL,
-  reason         TEXT NOT NULL,
-  status         TEXT NOT NULL CHECK (status IN ('pending','confirmed','rejected','expired')),
-  fact_id        TEXT,
-  supersedes     TEXT,
-  created_at     TEXT NOT NULL,
-  expires_at     TEXT NOT NULL,
-  resolved_at    TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_proposals_status
-  ON memory_proposals(status, created_at);
-`
-
-interface Migration {
-  version: number
-  ddl: string[]
-}
-
-const MIGRATIONS: readonly Migration[] = [
-  { version: 1, ddl: [PROJECTS_DDL, FACTS_DDL, EDGES_DDL] },
-  { version: 2, ddl: [PROJECT_ALIASES_DDL] },
-  {
-    version: 3,
-    // 15 §10.3 (B4-b): project-level isolation defaults. Existing rows keep
-    // `none` / `manual`; the worktree planner still verifies the repo at run time.
-    ddl: [
-      `ALTER TABLE projects ADD COLUMN vcs TEXT NOT NULL DEFAULT 'none'
-         CHECK (vcs IN ('git','none'));`,
-      'ALTER TABLE projects ADD COLUMN prepare_cmd TEXT;',
-      'ALTER TABLE projects ADD COLUMN worktree_root TEXT;',
-      `ALTER TABLE projects ADD COLUMN merge_mode TEXT NOT NULL DEFAULT 'manual'
-         CHECK (merge_mode IN ('manual','pr'));`,
-    ],
-  },
-  { version: 4, ddl: [PROPOSALS_DDL] },
-]
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 
 export interface Project {
   id: string
@@ -375,39 +259,16 @@ function toProposal(row: ProposalRow): MemoryProposal {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  const current = row?.version ?? 0
-
-  const pending = MIGRATIONS.filter((migration) => migration.version > current)
-  if (pending.length === 0) return
-
-  db.transaction(() => {
-    for (const migration of pending) for (const ddl of migration.ddl) db.exec(ddl)
-    if (current < 3) {
-      // v3 defaults `vcs` to `none`; existing git projects should not need a
-      // manual re-upsert just to become worktree candidates.
-      const update = db.prepare('UPDATE projects SET vcs = ? WHERE id = ?')
-      const rows = db.prepare('SELECT id, root_path FROM projects').all() as Array<{ id: string; root_path: string }>
-      for (const project of rows) {
-        if (existsSync(join(project.root_path, '.git'))) update.run('git', project.id)
-      }
-    }
-    const latest = pending[pending.length - 1].version
-    if (current === 0) {
-      db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-        MIGRATION_MODULE,
-        latest,
-        new Date().toISOString(),
-      )
-    } else {
-      db.prepare(
-        'UPDATE schema_migrations SET version = ?, applied_at = ? WHERE module = ?',
-      ).run(latest, new Date().toISOString(), MIGRATION_MODULE)
-    }
-  }).immediate()
+  const { applied } = runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
+  if (!applied.includes(3)) return
+  // v3 defaults `vcs` to `none`; existing git projects should not need a manual
+  // re-upsert just to become worktree candidates. The check needs the
+  // filesystem, so it cannot live in the SQL file.
+  const update = db.prepare('UPDATE projects SET vcs = ? WHERE id = ?')
+  const rows = db.prepare('SELECT id, root_path FROM projects').all() as Array<{ id: string; root_path: string }>
+  for (const project of rows) {
+    if (existsSync(join(project.root_path, '.git'))) update.run('git', project.id)
+  }
 }
 
 export function createMemoryStore(dbPath: string): MemoryStore {

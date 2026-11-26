@@ -7,37 +7,15 @@
 
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 import { nextDueAt, type ReminderRepeat } from './time.js'
 
 const MIGRATION_MODULE = 'reminder'
-const MIGRATION_VERSION = 1
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module)
-);
-`
-
-const REMINDERS_DDL = `
-CREATE TABLE IF NOT EXISTS reminders (
-  id            TEXT PRIMARY KEY,
-  thread_id     TEXT NOT NULL,
-  text          TEXT NOT NULL,
-  due_at        TEXT NOT NULL,
-  repeat        TEXT NOT NULL CHECK (repeat IN ('none','daily','weekly')),
-  status        TEXT NOT NULL CHECK (status IN ('pending','done','cancelled')),
-  source_msg_id TEXT,
-  created_at    TEXT NOT NULL,
-  fired_at      TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_reminders_due ON reminders(status, due_at);
-CREATE INDEX IF NOT EXISTS ix_reminders_thread ON reminders(thread_id, status, due_at);
-`
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 
 export type ReminderStatus = 'pending' | 'done' | 'cancelled'
 
@@ -119,23 +97,7 @@ function toReminder(row: ReminderRow): Reminder {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  if ((row?.version ?? 0) >= MIGRATION_VERSION) return
-
-  db.transaction(() => {
-    db.exec(REMINDERS_DDL)
-    // `schema_migrations` 被同一 `ops.sqlite` 的多个模块共用，主键形状可能是
-    // `(module)` 或 `(module, version)`；DELETE + INSERT 不依赖 ON CONFLICT 目标。
-    db.prepare('DELETE FROM schema_migrations WHERE module = ?').run(MIGRATION_MODULE)
-    db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-      MIGRATION_MODULE,
-      MIGRATION_VERSION,
-      new Date().toISOString(),
-    )
-  }).immediate()
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 function requiredText(value: unknown, field: string, max: number): string {

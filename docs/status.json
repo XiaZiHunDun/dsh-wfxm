@@ -35,16 +35,18 @@
     {
       "id": "N8",
       "name": "契约版本化与迁移",
-      "state": "partial",
+      "state": "done",
       "phase": "v2",
       "evidence": [
         "plugins/sql-migrate/src/index.ts",
         "plugins/tasks/migrations",
         "plugins/gateway/migrations",
+        "plugins/knowledge/migrations",
+        "plugins/governance/migrations",
         "scripts/verify-migrations.mjs",
         "docs/15-数据与契约.md"
       ],
-      "note": "试点：tasks/gateway 用 migrations/NNN_*.sql + checksum + 篡改拒绝启动；其余 12 个 store 仍为代码内数组"
+      "note": "14 个模块全部用 migrations/NNN_*.sql + checksum；篡改/缺文件/不连续拒绝启动；verify-migrations 逐模块核对"
     },
     {
       "id": "N2",

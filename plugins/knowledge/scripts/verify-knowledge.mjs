@@ -63,7 +63,7 @@ await check('migration creates projects, memory_facts, memory_edges', () => {
     .all()
     .map((row) => row.name)
   const version = db
-    .prepare('SELECT version FROM schema_migrations WHERE module = ?')
+    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
     .get('memory')
   db.close()
   return names.includes('projects')
@@ -874,13 +874,13 @@ await check('a v1 memory database upgrades to the latest schema', () => {
     );
     INSERT INTO projects(id, name, root_path, rules_doc, default_expert, created_at, archived_at)
       VALUES ('p-zeta', 'zeta', '/srv/zeta', NULL, NULL, datetime('now'), NULL);
-    UPDATE schema_migrations SET version = 1 WHERE module = 'memory';
+    DELETE FROM schema_migrations WHERE module = 'memory' AND version > 1;
   `)
   raw.close()
 
   const reopened = createMemoryStore(upgradePath)
   const version = new DatabaseConstructor(upgradePath, { readonly: true })
-    .prepare("SELECT version FROM schema_migrations WHERE module = 'memory'")
+    .prepare("SELECT MAX(version) AS version FROM schema_migrations WHERE module = 'memory'")
     .get()
   const upgraded = reopened.getProject('p-zeta')
   reopened.addProjectAlias({ projectId: 'p-zeta', alias: 'z' })

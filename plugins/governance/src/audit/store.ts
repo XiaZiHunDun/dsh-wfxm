@@ -1,50 +1,16 @@
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 import { canonicalRecord, chainHash, GENESIS_HASH } from './canonical.js'
 import type { AuditFields } from './events.js'
 import { verifyAuditRows, type VerifyResult } from './verify.js'
 
 const MIGRATION_MODULE = 'audit'
-const MIGRATION_VERSION = 1
-
-/**
- * Audit DDL from docs/15 §三·模块 ④ plus two metadata columns:
- * `session_id` / `session_seq` are query-only metadata and deliberately stay
- * outside the frozen canonical form (`seq|ts|actor_id|action|target|correlation_id|payload_digest`).
- */
-const AUDIT_DDL = `
-CREATE TABLE IF NOT EXISTS audit_log (
-  seq             INTEGER PRIMARY KEY AUTOINCREMENT,
-  id              TEXT NOT NULL,
-  session_id      TEXT,
-  session_seq     INTEGER,
-  ts              TEXT NOT NULL,
-  actor_id        TEXT,
-  action          TEXT NOT NULL,
-  target          TEXT,
-  correlation_id  TEXT,
-  payload_digest  TEXT NOT NULL,
-  prev_hash       TEXT,
-  hash            TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_audit_session_event
-  ON audit_log(session_id, session_seq);
-CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_log
-  BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_log
-  BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
-`
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module, version)
-);
-`
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations', 'audit')
 
 export interface AppendResult {
   seq: number
@@ -149,21 +115,7 @@ export function uuidv7(now: number = Date.now()): string {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  if ((row?.version ?? 0) >= MIGRATION_VERSION) return
-
-  const apply = db.transaction(() => {
-    db.exec(AUDIT_DDL)
-    db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-      MIGRATION_MODULE,
-      MIGRATION_VERSION,
-      new Date().toISOString(),
-    )
-  })
-  apply.immediate()
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 export function createAuditStore(dbPath: string): AuditStore {

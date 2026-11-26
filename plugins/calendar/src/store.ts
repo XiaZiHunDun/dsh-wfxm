@@ -11,38 +11,13 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 
 const MIGRATION_MODULE = 'calendar'
-const MIGRATION_VERSION = 2
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module     TEXT NOT NULL,
-  version    INTEGER NOT NULL,
-  applied_at TEXT NOT NULL,
-  PRIMARY KEY (module)
-);
-`
-
-/** v2：会前提醒只发一次，用 `reminded_at` 做库级去重。 */
-const CALENDAR_V2_DDL = 'ALTER TABLE calendar_events ADD COLUMN reminded_at TEXT'
-
-const CALENDAR_DDL = `
-CREATE TABLE IF NOT EXISTS calendar_events (
-  id          TEXT PRIMARY KEY,
-  summary     TEXT NOT NULL,
-  description TEXT,
-  start_at    TEXT NOT NULL,
-  end_at      TEXT NOT NULL,
-  start_ms    INTEGER NOT NULL,
-  end_ms      INTEGER NOT NULL,
-  location    TEXT,
-  created_at  TEXT NOT NULL,
-  updated_at  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_calendar_events_start ON calendar_events(start_ms);
-`
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 
 export interface StoredCalendarEvent {
   eventId: string
@@ -125,20 +100,7 @@ export function defaultCalendarDbPath(env: NodeJS.ProcessEnv = process.env): str
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  const version = row?.version ?? 0
-  if (version >= MIGRATION_VERSION) return
-
-  db.transaction(() => {
-    if (version < 1) db.exec(CALENDAR_DDL)
-    if (version < 2) db.exec(CALENDAR_V2_DDL)
-    db.prepare('DELETE FROM schema_migrations WHERE module = ?').run(MIGRATION_MODULE)
-    db.prepare('INSERT INTO schema_migrations (module, version, applied_at) VALUES (?, ?, ?)')
-      .run(MIGRATION_MODULE, MIGRATION_VERSION, new Date().toISOString())
-  })()
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 function newEventId(): string {

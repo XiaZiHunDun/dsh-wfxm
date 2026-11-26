@@ -276,7 +276,7 @@ await check('B2: an explicit rulesDoc must be an existing file inside the root',
 
 await check('projects table stays at migration v4 after CLI writes', () => {
   const db = new DatabaseConstructor(dbPath, { readonly: true })
-  const version = db.prepare('SELECT version FROM schema_migrations WHERE module = ?').get('memory')
+  const version = db.prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?').get('memory')
   const rows = db.prepare('SELECT COUNT(*) AS total FROM projects').get()
   db.close()
   assert.equal(version.version, 4)

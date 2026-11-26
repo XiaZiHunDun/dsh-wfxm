@@ -23,6 +23,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@dsh-wfxm/sql-migrate": "workspace:*",
     "better-sqlite3": "^13.0.3"
   },
   "peerDependencies": {

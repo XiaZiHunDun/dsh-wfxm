@@ -12,82 +12,16 @@
 
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 
 import { digestText } from './digest.js'
 
 const MIGRATION_MODULE = 'eval'
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module)
-);
-`
-
-const RUNS_DDL = `
-CREATE TABLE IF NOT EXISTS eval_runs (
-  id              TEXT PRIMARY KEY,
-  suite           TEXT NOT NULL,
-  runtime         TEXT NOT NULL,
-  mode            TEXT NOT NULL CHECK (mode IN ('l2','snapshot')),
-  status          TEXT NOT NULL CHECK (status IN ('running','ok','failed','timeout')),
-  passed          INTEGER,
-  total           INTEGER,
-  advisory        INTEGER NOT NULL DEFAULT 1,
-  report_ref      TEXT,
-  triggered_by    TEXT,
-  idempotency_key TEXT NOT NULL UNIQUE,
-  started_at      TEXT NOT NULL,
-  finished_at     TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_eval_runs_started ON eval_runs(started_at DESC);
-`
-
-const FINDINGS_DDL = `
-CREATE TABLE IF NOT EXISTS eval_findings (
-  id               TEXT PRIMARY KEY,
-  run_id           TEXT,
-  suite            TEXT NOT NULL DEFAULT '',
-  task_id          TEXT NOT NULL DEFAULT '',
-  severity         TEXT NOT NULL CHECK (severity IN ('fail','warn')),
-  title            TEXT NOT NULL,
-  detail_digest    TEXT NOT NULL,
-  source           TEXT NOT NULL CHECK (source IN ('ci','flag')),
-  status           TEXT NOT NULL CHECK (status IN ('open','promoted','ignored')),
-  promoted_task_id TEXT,
-  created_at       TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_eval_findings_key
-  ON eval_findings(run_id, suite, task_id);
-CREATE INDEX IF NOT EXISTS ix_eval_findings_status
-  ON eval_findings(status, created_at);
-`
-
-/** P2-3 才会写入；先建表保证 module 版本一次到位。 */
-const FLAGS_DDL = `
-CREATE TABLE IF NOT EXISTS eval_flags (
-  id            TEXT PRIMARY KEY,
-  message_id    TEXT NOT NULL,
-  thread_id     TEXT,
-  verdict       TEXT NOT NULL,
-  reason_digest TEXT NOT NULL,
-  trace_ref     TEXT,
-  created_at    TEXT NOT NULL
-);
-`
-
-interface Migration {
-  version: number
-  ddl: string[]
-}
-
-const MIGRATIONS: readonly Migration[] = [
-  { version: 1, ddl: [RUNS_DDL, FINDINGS_DDL, FLAGS_DDL] },
-]
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 
 export type EvalRunStatus = 'running' | 'ok' | 'failed' | 'timeout'
 export type EvalRunMode = 'l2' | 'snapshot'
@@ -292,31 +226,7 @@ function toFinding(row: FindingRow): EvalFinding {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  const current = row?.version ?? 0
-  const pending = MIGRATIONS.filter((migration) => migration.version > current)
-  if (pending.length === 0) return
-
-  db.transaction(() => {
-    for (const migration of pending) for (const ddl of migration.ddl) db.exec(ddl)
-    const latest = pending[pending.length - 1].version
-    if (current === 0) {
-      db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-        MIGRATION_MODULE,
-        latest,
-        new Date().toISOString(),
-      )
-    } else {
-      db.prepare('UPDATE schema_migrations SET version = ?, applied_at = ? WHERE module = ?').run(
-        latest,
-        new Date().toISOString(),
-        MIGRATION_MODULE,
-      )
-    }
-  }).immediate()
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 export function createEvalStore(dbPath: string): EvalStore {

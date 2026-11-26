@@ -11,40 +11,14 @@
 
 import { randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
+import { runMigrations } from '@dsh-wfxm/sql-migrate'
 
 const MIGRATION_MODULE = 'changes'
-const MIGRATION_VERSION = 1
-
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module     TEXT NOT NULL,
-  version    INTEGER NOT NULL,
-  applied_at TEXT NOT NULL,
-  PRIMARY KEY (module)
-);
-`
-
-const CHANGES_DDL = `
-CREATE TABLE IF NOT EXISTS changes (
-  id              TEXT PRIMARY KEY,
-  task_id         TEXT,
-  kind            TEXT NOT NULL CHECK (kind IN ('task','service','workspace')),
-  target          TEXT NOT NULL,
-  snapshot_id     TEXT,
-  status          TEXT NOT NULL CHECK (status IN
-                    ('applying','applied','verified','kept','failed','rolled_back')),
-  rollback_status TEXT NOT NULL DEFAULT 'none'
-                    CHECK (rollback_status IN ('none','ready','done','failed')),
-  detail          TEXT,
-  created_at      TEXT NOT NULL,
-  updated_at      TEXT NOT NULL,
-  closed_at       TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_changes_task ON changes(task_id) WHERE task_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS ix_changes_status ON changes(status, created_at);
-`
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 
 export type ChangeKind = 'task' | 'service' | 'workspace'
 export type ChangeStatus = 'applying' | 'applied' | 'verified' | 'kept' | 'failed' | 'rolled_back'
@@ -128,22 +102,7 @@ function toChange(row: ChangeRow): Change {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  if ((row?.version ?? 0) >= MIGRATION_VERSION) return
-
-  db.transaction(() => {
-    db.exec(CHANGES_DDL)
-    // 与 reminder 相同：`schema_migrations` 被多模块共用，不依赖主键形状。
-    db.prepare('DELETE FROM schema_migrations WHERE module = ?').run(MIGRATION_MODULE)
-    db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-      MIGRATION_MODULE,
-      MIGRATION_VERSION,
-      new Date().toISOString(),
-    )
-  }).immediate()
+  runMigrations(db, { module: MIGRATION_MODULE, dir: MIGRATIONS_DIR })
 }
 
 const KINDS: readonly ChangeKind[] = ['task', 'service', 'workspace']
