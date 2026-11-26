@@ -5,11 +5,7 @@ import {
 import type {
   CommandResult,
   CommandRunner,
-  ServiceActionResult,
   ServiceInfo,
-  ServiceLogs,
-  ServiceStatus,
-  SvcAction,
   SvcOpsPort,
 } from './systemd.js'
 

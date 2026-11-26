@@ -17,7 +17,6 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
 import { runMigrations } from '@dsh-wfxm/sql-migrate'
-import { redactText } from '@dsh-wfxm/redact'
 import { dayKey, uuidv7 } from './ids.js'
 import {
   TELEMETRY_MESSAGE_LIMIT,

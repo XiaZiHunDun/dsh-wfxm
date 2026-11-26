@@ -16,8 +16,9 @@
  *     checksum of the file that produced them instead of being re-executed.
  *   - a file that is missing for an applied version also refuses to start.
  *
- * `name` / `checksum` are nullable on purpose: modules that have not migrated
- * to SQL files yet still write `(module, version, applied_at)` only.
+ * `name` / `checksum` are nullable on purpose: rows written by releases older
+ * than the SQL-file migration only carry `(module, version, applied_at)`. They
+ * are backfilled on the next open; every new row is written with both.
  */
 
 import { createHash } from 'node:crypto'
@@ -49,7 +50,6 @@ export interface MigrationFile {
   version: number
   /** File name including the `.sql` suffix, recorded for traceability. */
   name: string
-  path: string
   sql: string
   checksum: string
 }
@@ -116,9 +116,8 @@ export function loadMigrationFiles(dir: string): MigrationFile[] {
   }
   const files = names.map((name) => {
     const version = Number(FILE_NAME.exec(name)?.[1])
-    const path = join(dir, name)
-    const sql = readFileSync(path, 'utf8')
-    return { version, name, path, sql, checksum: sha256(sql) }
+    const sql = readFileSync(join(dir, name), 'utf8')
+    return { version, name, sql, checksum: sha256(sql) }
   })
   files.sort((left, right) => left.version - right.version)
   files.forEach((file, index) => {

@@ -279,7 +279,7 @@ export function createInspectionPatrol(options: InspectionPatrolOptions): Inspec
   const target = options.config.target
   const now = options.now ?? (() => new Date())
   const quietMs = options.alertQuietMs ?? DEFAULT_ALERT_QUIET_MS
-  const collect = options.collect ?? (async (at: Date) => evaluate(
+  const collect = options.collect ?? (async () => evaluate(
     await collectHostMetrics({
       runner: spawnRunner,
       expectedPorts,
