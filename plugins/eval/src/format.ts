@@ -3,7 +3,7 @@
  */
 
 import type { PromoteResult } from './promote.js'
-import type { EvalFinding, EvalRun } from './store.js'
+import type { EvalFinding, EvalFindingStatus, EvalRun } from './store.js'
 
 function evalRunRef(id: string): string {
   return id.slice(0, 8)
@@ -127,6 +127,8 @@ export interface EvalWeeklyInput {
   to: Date
   /** P7-1: 窗口内失败且尚未回流的任务数。 */
   productionBacklog?: number
+  /** P7-4: finding 状态分布（promoted / verified / regressed）。 */
+  statusCounts?: Partial<Record<EvalFindingStatus, number>>
 }
 
 /** P2-4: 周报里的测评段；没有运行时返回 null，避免空段占版面。 */
@@ -138,7 +140,9 @@ export function formatEvalWeekly(input: EvalWeeklyInput): string | null {
     return Number.isFinite(at) && at >= from && at < to
   })
   const backlog = input.productionBacklog ?? 0
-  if (runs.length === 0 && input.findings.length === 0 && backlog === 0) return null
+  const counts = input.statusCounts ?? {}
+  const closed = (counts.promoted ?? 0) + (counts.verified ?? 0) + (counts.regressed ?? 0)
+  if (runs.length === 0 && input.findings.length === 0 && backlog === 0 && closed === 0) return null
 
   const failed = runs.filter((run) => run.status !== 'ok').length
   const lines = [
@@ -147,6 +151,9 @@ export function formatEvalWeekly(input: EvalWeeklyInput): string | null {
   if (backlog > 0) {
     lines.push(`可回流失败 ${backlog} 条：/eval from-task <任务号> 生成测评候选。`)
   }
+  lines.push(
+    `闭环：promoted ${counts.promoted ?? 0} · verified ${counts.verified ?? 0} · regressed ${counts.regressed ?? 0}`,
+  )
   for (const finding of input.findings.slice(0, 5)) {
     const label = finding.taskId === '' ? finding.suite : finding.taskId
     lines.push(`- [${finding.id.slice(0, 8)}] ${label} · ${finding.suite}`)

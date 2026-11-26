@@ -15,6 +15,8 @@ export type {
   FindingResolution,
   SnapshotLike,
   ProductionFindingInput,
+  ReplayOutcome,
+  ReplayTally,
 } from './store.js'
 export { createEvalStore } from './store.js'
 export { digestText } from './digest.js'

@@ -196,11 +196,12 @@
         "plugins/svcops/src/suggestions.ts",
         "plugins/eval/src/promote.ts",
         "plugins/eval/src/trajectory.ts",
+        "plugins/eval/migrations/002_replay_status.sql",
         "scripts/eval/nightly.mjs",
         "deploy/systemd/dsh-wfxm-eval.timer",
         "scripts/serve.mjs"
       ],
-      "note": "2026-11-26 核查：使用→收集→分析已自动；P7-1 生产失败回流（/eval from-task + 周报可回流计数）与 P7-2 日常测评（nightly timer 写 eval_runs/eval_findings）已落地。建议采纳（P7-3）、修复回测（P7-4）、门禁通知（P7-5）、指标进规则（P7-6）仍未做，故仍为 partial"
+      "note": "2026-11-26 核查：使用→收集→分析已自动；P7-1 生产失败回流、P7-2 日常测评、P7-4 回放回测（promoted/verified/regressed）已落地。建议采纳（P7-3）、门禁通知（P7-5）、指标进规则（P7-6）仍未做，故仍为 partial"
     }
   ]
 }

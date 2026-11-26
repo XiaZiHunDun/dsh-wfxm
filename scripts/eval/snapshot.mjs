@@ -29,6 +29,8 @@ const option = (name, fallback) => {
 
 const out = resolve(option('out', join(repoRoot, 'eval/latest.json')))
 const engineRoot = resolve(option('engine', process.env.AGENT_EVAL_ROOT ?? join(repoRoot, '..', 'agent-eval')))
+const trajectoryOpt = option('trajectory', null)
+const trajectoryRoot = trajectoryOpt === null ? null : resolve(trajectoryOpt)
 const noGate = args.includes('--no-gate')
 const force = args.includes('--force')
 const REAL_BASELINES = ['capability', 'repo', 'conversation']
@@ -80,7 +82,8 @@ function runGate() {
   // Trae 自带的 libstdc++ 会让 better-sqlite3 报 GLIBCXX 错；评测子进程沿用干净环境。
   delete env.LD_LIBRARY_PATH
   // P2-5：本机导出的生产脱敏轨迹优先于内置种子。
-  const privateTraces = join(repoRoot, 'eval/trajectory')
+  // P7-4：显式 --trajectory（nightly 的候选暂存目录）优先，用于回放 promoted 候选。
+  const privateTraces = trajectoryRoot ?? join(repoRoot, 'eval/trajectory')
   if (existsSync(privateTraces)) env.DSH_EVAL_TRAJECTORY_DIR = privateTraces
   try {
     execFileSync(process.execPath, [
@@ -102,12 +105,30 @@ function runGate() {
     // gate 非 0 退出是正常的"未通过"，只有拿不到 gate.json 才算失败。
     if (!existsSync(join(runDir, 'gate.json'))) {
       rmSync(runDir, { recursive: true, force: true })
-      return { gate: null, error: error instanceof Error ? error.message : String(error) }
+      return { gate: null, trajectory: [], error: error instanceof Error ? error.message : String(error) }
     }
   }
   const gate = readJson(join(runDir, 'gate.json'))
+  // P7-4：回放套件的逐任务结果要在删目录前摘出来，nightly 用它更新 finding。
+  const trajectory = []
+  if (gate !== null && Array.isArray(gate.suites)) {
+    for (const suite of gate.suites) {
+      if (suite?.name !== 'trajectory' && suite?.name !== 'dsh-trajectory') continue
+      const summary = readJson(join(runDir, suite.name, 'summary.json'))
+      const results = Array.isArray(summary?.results) ? summary.results : []
+      for (const item of results) {
+        if (typeof item?.taskId !== 'string') continue
+        trajectory.push({
+          taskId: item.taskId,
+          suite: suite.name,
+          passed: item.passed === true,
+          ...(typeof item.passRate === 'number' ? { rate: item.passRate } : {}),
+        })
+      }
+    }
+  }
   rmSync(runDir, { recursive: true, force: true })
-  if (gate === null) return { gate: null, error: 'gate.json 无法解析' }
+  if (gate === null) return { gate: null, trajectory: [], error: 'gate.json 无法解析' }
   return {
     gate: {
       ok: gate.ok === true,
@@ -121,6 +142,7 @@ function runGate() {
         }))
         : [],
     },
+    trajectory,
     error: null,
   }
 }
@@ -136,6 +158,7 @@ function build() {
   const failures = []
   let gate = null
   let gateError = null
+  let trajectory = []
   let source = 'unavailable'
 
   if (engineAvailable) {
@@ -143,6 +166,7 @@ function build() {
     if (!noGate) {
       const result = runGate()
       gate = result.gate
+      trajectory = result.trajectory
       gateError = result.error
     }
     for (const name of REAL_BASELINES) {
@@ -153,8 +177,11 @@ function build() {
     }
   }
 
+  // P7-4：回放失败直接回写原 finding（regressed），不再为同一候选新建 open finding。
+  const replayedSuites = new Set(trajectory.map((item) => item.suite))
   const suiteFailures = (gate?.suites ?? [])
     .filter((suite) => suite.total > 0 && suite.passed !== suite.total)
+    .filter((suite) => !(trajectory.length > 0 && replayedSuites.has(suite.name)))
     .map((suite) => ({ suite: suite.name, rate: suite.rate }))
 
   return {
@@ -164,6 +191,7 @@ function build() {
     advisory: !enforce,
     gate,
     ...(gateError === null ? {} : { gateError }),
+    ...(trajectory.length === 0 ? {} : { trajectory }),
     real,
     failures: [...suiteFailures, ...failures],
   }

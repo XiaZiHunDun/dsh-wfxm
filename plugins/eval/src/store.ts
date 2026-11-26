@@ -25,7 +25,7 @@ const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migr
 
 export type EvalRunStatus = 'running' | 'ok' | 'failed' | 'timeout'
 export type EvalRunMode = 'l2' | 'snapshot'
-export type EvalFindingStatus = 'open' | 'promoted' | 'ignored'
+export type EvalFindingStatus = 'open' | 'promoted' | 'ignored' | 'verified' | 'regressed'
 export type EvalFindingSource = 'ci' | 'flag'
 
 export interface EvalRun {
@@ -55,7 +55,24 @@ export interface EvalFinding {
   source: EvalFindingSource
   status: EvalFindingStatus
   promotedTaskId: string | null
+  /** P7-4: 最近一次回放通过 / 失败的时间；未回放过为 null。 */
+  verifiedAt: string | null
+  regressedAt: string | null
   createdAt: string
+}
+
+/** P7-4: 一条候选回放结果（taskId 即候选 id）。 */
+export interface ReplayOutcome {
+  taskId: string
+  passed: boolean
+}
+
+export interface ReplayTally {
+  verified: number
+  regressed: number
+  /** 回放失败但此前从未通过：保持 promoted（原失败仍复现，不算回归）。 */
+  failed: number
+  skipped: number
 }
 
 export interface RecordRunInput {
@@ -149,6 +166,10 @@ export interface EvalStore {
   /** 按完整 id 或唯一前缀找 finding。 */
   resolveFinding(ref: string): FindingResolution
   setFindingStatus(id: string, status: EvalFindingStatus, promotedTaskId?: string | null): EvalFinding | null
+  /** P7-4: 候选回放结果落到 finding：PASS → verified，FAIL → regressed。 */
+  recordReplays(outcomes: readonly ReplayOutcome[]): ReplayTally
+  /** 周报里的闭环计数。 */
+  countFindingsByStatus(): Record<EvalFindingStatus, number>
   syncSnapshot(snapshot: SnapshotLike): { run: EvalRun; created: boolean; findings: number }
   close(): void
 }
@@ -170,6 +191,8 @@ export interface SnapshotLike {
     failures?: Array<{ taskId: string; rate?: number }>
   }> | null
   failures?: Array<{ suite: string; taskId?: string; rate?: number }>
+  /** P7-4: 本次 gate 回放的逐任务结果（只有 trajectory 套件）。 */
+  trajectory?: Array<{ taskId: string; suite: string; passed: boolean; rate?: number }>
 }
 
 interface RunRow {
@@ -199,6 +222,8 @@ interface FindingRow {
   source: EvalFindingSource
   status: EvalFindingStatus
   promoted_task_id: string | null
+  verified_at: string | null
+  regressed_at: string | null
   created_at: string
 }
 
@@ -232,6 +257,8 @@ function toFinding(row: FindingRow): EvalFinding {
     source: row.source,
     status: row.status,
     promotedTaskId: row.promoted_task_id,
+    verifiedAt: row.verified_at ?? null,
+    regressedAt: row.regressed_at ?? null,
     createdAt: row.created_at,
   }
 }
@@ -302,6 +329,24 @@ export function createEvalStore(dbPath: string): EvalStore {
       source, status, promoted_task_id, created_at
     ) VALUES (?, NULL, ?, ?, 'fail', ?, ?, 'ci', 'open', NULL, ?)
   `)
+  const selectFindingByPromoted = db.prepare(`
+    SELECT * FROM eval_findings
+     WHERE promoted_task_id = ?
+       AND status IN ('promoted','verified','regressed')
+     ORDER BY created_at DESC, rowid DESC
+     LIMIT 1
+  `)
+  const markVerified = db.prepare(`
+    UPDATE eval_findings
+       SET status = 'verified', verified_at = ?, regressed_at = NULL
+     WHERE id = ?
+  `)
+  const markRegressed = db.prepare(`
+    UPDATE eval_findings
+       SET status = 'regressed', regressed_at = ?, verified_at = NULL
+     WHERE id = ?
+  `)
+  const countFindings = db.prepare('SELECT status, COUNT(*) AS c FROM eval_findings GROUP BY status')
 
   function getRun(id: string): EvalRun | null {
     const row = selectRunById.get(id) as RunRow | undefined
@@ -434,6 +479,50 @@ export function createEvalStore(dbPath: string): EvalStore {
     return row === undefined ? null : toFinding(row)
   }
 
+  function recordReplays(outcomes: readonly ReplayOutcome[]): ReplayTally {
+    let verified = 0
+    let regressed = 0
+    let failed = 0
+    let skipped = 0
+    const now = new Date().toISOString()
+    db.transaction(() => {
+      for (const outcome of outcomes) {
+        const row = selectFindingByPromoted.get(outcome.taskId) as FindingRow | undefined
+        if (row === undefined) {
+          skipped += 1
+          continue
+        }
+        if (outcome.passed) {
+          if (row.status !== 'verified') {
+            markVerified.run(now, row.id)
+            verified += 1
+          }
+        } else if (row.status === 'verified') {
+          // 只有"曾经通过、现在失败"才叫回归；首次回放失败说明原问题仍在。
+          markRegressed.run(now, row.id)
+          regressed += 1
+        } else {
+          failed += 1
+        }
+      }
+    }).immediate()
+    return { verified, regressed, failed, skipped }
+  }
+
+  function countFindingsByStatus(): Record<EvalFindingStatus, number> {
+    const counts: Record<EvalFindingStatus, number> = {
+      open: 0,
+      promoted: 0,
+      ignored: 0,
+      verified: 0,
+      regressed: 0,
+    }
+    for (const row of countFindings.all() as Array<{ status: EvalFindingStatus; c: number }>) {
+      counts[row.status] = row.c
+    }
+    return counts
+  }
+
   function recordFlag(input: FlagInput): { finding: EvalFinding; flag: EvalFlag } {
     const createdAt = new Date().toISOString()
     const verdict = input.verdict ?? 'negative'
@@ -549,6 +638,8 @@ export function createEvalStore(dbPath: string): EvalStore {
     recordProductionFinding,
     resolveFinding,
     setFindingStatus,
+    recordReplays,
+    countFindingsByStatus,
     syncSnapshot,
     close: () => db.close(),
   }

@@ -159,7 +159,13 @@ export function createTrajectoryCandidate(input: TrajectoryCandidateInput): Traj
   const attempts = input.attempts ?? []
   const rawFinal = [...attempts].reverse().find((attempt) => typeof attempt.summary === 'string' && attempt.summary !== '')?.summary ?? ''
   const finalText = rawFinal === '' ? '' : scrub(rawFinal)
-  const tools = events.flatMap((row) => (row.tool?.name == null ? [] : [row.tool.name]))
+  // 判据只认 tool_call：tool.result 的 name 在遥测里可能是占位值（如 unknown），
+  // 拿它当 requiredTools 会让回放必然失败。
+  const tools = events.flatMap((row) => (
+    row.event === 'tool.call' && row.tool?.name != null && row.tool.name !== 'unknown'
+      ? [row.tool.name]
+      : []
+  ))
 
   if (input.onExists === 'refuse' && (existsSync(tracePath) || existsSync(draftPath))) {
     return { ok: false, reason: 'exists', display: traceFile }

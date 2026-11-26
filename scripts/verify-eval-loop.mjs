@@ -39,7 +39,7 @@ ensureBuilt('gateway')
 ensureBuilt('host')
 
 const { parseEvalCommand } = await import('../plugins/gateway/lib/index.js')
-const { createEvalStore, digestText, createCandidatePromoter, formatEvalWeekly } = await import('../plugins/eval/lib/index.js')
+const { createEvalStore, digestText, createCandidatePromoter, createTrajectoryCandidate, formatEvalWeekly } = await import('../plugins/eval/lib/index.js')
 const {
   createWfxmHost,
   formatEvalFindings,
@@ -222,16 +222,24 @@ function makeStubGateEngine() {
   const stubRoot = join(dir, `gate-engine-${stubSeq}`)
   mkdirSync(join(stubRoot, 'src'), { recursive: true })
   writeFileSync(join(stubRoot, 'src', 'cli.mjs'), `
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 const out = process.argv[process.argv.indexOf('--out') + 1]
 const ok = process.env.STUB_GATE_OK === '1'
 const advisory = process.argv.includes('--advisory')
 mkdirSync(out, { recursive: true })
-writeFileSync(out + '/gate.json', JSON.stringify({
-  ok,
-  advisory,
-  suites: [{ name: 'smoke', passed: ok ? 6 : 5, total: 6, rate: ok ? 1 : 0.83 }],
-}))
+const suites = [{ name: 'smoke', passed: ok ? 6 : 5, total: 6, rate: ok ? 1 : 0.83 }]
+const dir = process.env.DSH_EVAL_TRAJECTORY_DIR
+if (process.env.STUB_TRAJECTORY === '1' && dir) {
+  const pass = process.env.STUB_TRAJECTORY_PASS !== '0'
+  const results = readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => {
+    const task = JSON.parse(readFileSync(dir + '/' + name, 'utf8'))
+    return { taskId: task.id, passed: pass, passRate: pass ? 1 : 0 }
+  })
+  mkdirSync(out + '/trajectory', { recursive: true })
+  writeFileSync(out + '/trajectory/summary.json', JSON.stringify({ results }))
+  suites.push({ name: 'trajectory', passed: pass ? results.length : 0, total: results.length, rate: pass ? 1 : 0 })
+}
+writeFileSync(out + '/gate.json', JSON.stringify({ ok, advisory, suites }))
 process.exit(ok || advisory ? 0 : 1)
 `, 'utf8')
   return stubRoot
@@ -606,6 +614,14 @@ await check('weekly report summarizes runs and open findings', async () => {
   assert.match(text, new RegExp(`\\[${finding.id.slice(0, 8)}\\]`))
   assert.doesNotMatch(text, /om_weekly/)
   assert.equal(formatEvalWeekly({ runs: [], findings: [], from, to }), null)
+  const countsText = formatEvalWeekly({
+    runs: [],
+    findings: [],
+    from,
+    to,
+    statusCounts: { open: 0, promoted: 1, ignored: 0, verified: 2, regressed: 3 },
+  })
+  assert.match(countsText, /闭环：promoted 1 · verified 2 · regressed 3/)
   store.close()
   return true
 })
@@ -781,6 +797,8 @@ await check('nightly eval writes runs and findings to the eval DB', async () => 
     '--engine', stub,
     '--db', db,
     '--out', out,
+    '--candidates', join(dir, 'nightly-candidates'),
+    '--staging', join(dir, 'nightly-staging'),
   ], { env, encoding: 'utf8', timeout: 120_000 })
   assert.equal(run.status, 0, run.stderr)
   assert.match(run.stdout, /nightly eval: run /)
@@ -795,6 +813,114 @@ await check('nightly eval writes runs and findings to the eval DB', async () => 
   const findings = store.listFindings({ runId: runs[0].id })
   assert.equal(findings.length, 1)
   assert.equal(findings[0].suite, 'smoke')
+  store.close()
+  return true
+})
+
+// ---- P7-4 回放闭环 ----------------------------------------------------------------
+
+await check('replay outcomes move a finding promoted → verified → regressed', async () => {
+  const store = createEvalStore(join(dir, 'replay-store.sqlite'))
+  const { finding } = store.recordProductionFinding({ taskId: 'prod-replay', title: '生产失败：prod-replay' })
+  store.setFindingStatus(finding.id, 'promoted', 'dsh-prod-replay01')
+
+  // 首次回放失败 = 原失败仍复现，保持 promoted，不算回归。
+  let tally = store.recordReplays([{ taskId: 'dsh-prod-replay01', passed: false }])
+  assert.deepEqual(tally, { verified: 0, regressed: 0, failed: 1, skipped: 0 })
+  assert.equal(store.listFindings({ limit: 5 })[0].status, 'promoted')
+
+  tally = store.recordReplays([{ taskId: 'dsh-prod-replay01', passed: true }])
+  assert.deepEqual(tally, { verified: 1, regressed: 0, failed: 0, skipped: 0 })
+  let row = store.listFindings({ limit: 5 })[0]
+  assert.equal(row.status, 'verified')
+  assert.ok(typeof row.verifiedAt === 'string')
+  // 同一结论重复回放不重复计数。
+  tally = store.recordReplays([{ taskId: 'dsh-prod-replay01', passed: true }])
+  assert.deepEqual(tally, { verified: 0, regressed: 0, failed: 0, skipped: 0 })
+
+  tally = store.recordReplays([{ taskId: 'dsh-prod-replay01', passed: false }])
+  assert.deepEqual(tally, { verified: 0, regressed: 1, failed: 0, skipped: 0 })
+  row = store.listFindings({ limit: 5 })[0]
+  assert.equal(row.status, 'regressed')
+  assert.equal(row.verifiedAt, null)
+  assert.ok(typeof row.regressedAt === 'string')
+
+  tally = store.recordReplays([{ taskId: 'dsh-prod-replay01', passed: true }])
+  assert.equal(tally.verified, 1)
+  assert.equal(store.listFindings({ limit: 5 })[0].status, 'verified')
+
+  assert.equal(store.recordReplays([{ taskId: 'no-such-candidate', passed: true }]).skipped, 1)
+  assert.equal(store.countFindingsByStatus().verified, 1)
+  store.close()
+  return true
+})
+
+await check('nightly stages promoted candidates and records replay results', async () => {
+  const stub = makeStubGateEngine()
+  const candidatesDir = join(dir, 'replay-candidates')
+  const stagingDir = join(dir, 'replay-staging')
+  const task = { id: 'prod-task-7', taskRef: 'prod-task-7', correlationId: 'corr-7' }
+  const candidate = createTrajectoryCandidate({
+    task,
+    events: [
+      { ts: '2026-11-24T10:00:00.000Z', event: 'tool.call', level: 'info', phase: 'execute', status: 'ok', error: null, tool: { name: 'svc_list', exitCode: null } },
+      { ts: '2026-11-24T10:00:10.000Z', event: 'tool.result', level: 'info', phase: 'execute', status: 'ok', error: null, tool: { name: 'svc_list', exitCode: 0 } },
+    ],
+    attempts: [],
+    outDir: candidatesDir,
+    root: dir,
+    label: 'prod',
+  })
+  assert.equal(candidate.ok, true)
+
+  const db = join(dir, 'replay-nightly.sqlite')
+  const out = join(dir, 'replay-latest.json')
+  const seed = createEvalStore(db)
+  const { finding } = seed.recordProductionFinding({ taskId: task.id, title: '生产失败：prod-task-7' })
+  seed.setFindingStatus(finding.id, 'promoted', candidate.id)
+  seed.close()
+
+  const runNightly = (pass) => {
+    const env = {
+      ...process.env,
+      STUB_GATE_OK: '1',
+      STUB_TRAJECTORY: '1',
+      STUB_TRAJECTORY_PASS: pass ? '1' : '0',
+    }
+    delete env.LD_LIBRARY_PATH
+    return spawnSync(process.execPath, [
+      join(root, 'scripts/eval/nightly.mjs'),
+      '--engine', stub,
+      '--db', db,
+      '--out', out,
+      '--candidates', candidatesDir,
+      '--staging', stagingDir,
+    ], { env, encoding: 'utf8', timeout: 120_000 })
+  }
+
+  const pass = runNightly(true)
+  assert.equal(pass.status, 0, pass.stderr)
+  assert.match(pass.stdout, /candidates staged 1/)
+  assert.match(pass.stdout, /replay verified 1 regressed 0/)
+  const snapshot = JSON.parse(readFileSync(out, 'utf8'))
+  assert.equal(snapshot.trajectory.length, 1)
+  assert.equal(snapshot.trajectory[0].taskId, candidate.id)
+  assert.equal(snapshot.trajectory[0].passed, true)
+  const staged = JSON.parse(readFileSync(join(stagingDir, `${candidate.id}.json`), 'utf8'))
+  assert.ok(Array.isArray(staged.runtimeHints.dsh.events))
+  assert.equal(staged.runtimeHints.dsh.traceFile, undefined)
+
+  let store = createEvalStore(db)
+  assert.equal(store.listFindings({ limit: 5 })[0].status, 'verified')
+  store.close()
+
+  const fail = runNightly(false)
+  assert.equal(fail.status, 0, fail.stderr)
+  assert.match(fail.stdout, /replay verified 0 regressed 1/)
+  store = createEvalStore(db)
+  const row = store.listFindings({ limit: 5 })[0]
+  assert.equal(row.status, 'regressed')
+  assert.ok(typeof row.regressedAt === 'string')
   store.close()
   return true
 })

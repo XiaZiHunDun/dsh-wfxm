@@ -967,6 +967,7 @@ async function main() {
                 from,
                 to,
                 productionBacklog,
+                statusCounts: stores.eval.countFindingsByStatus(),
               })
           // P6-3: ⑦ 自己的轨迹指标（Top 错误码/阶段/时延/工具与执行失败率/可诊断率）。
           // 读取失败只丢这一段，不影响任务/会话/测评段。
