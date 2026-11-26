@@ -150,6 +150,36 @@ function newest(events: DiagEvent[], predicate: (event: DiagEvent) => boolean): 
   return found
 }
 
+/** The phase that actually failed; bookkeeping (`attempt`/`task`) never wins. */
+const PHASE_RANK: Record<string, number> = {
+  merge: 3,
+  delivery: 3,
+  isolation: 3,
+  verify: 3,
+  tool: 2,
+  execute: 1,
+  message: 1,
+}
+
+/**
+ * Root cause = highest-specificity error, earliest on ties. A prepare failure
+ * writes both `isolation.prepare.failed` and a wrapper `executor.finished`;
+ * the isolation row is what the user needs to see.
+ */
+function rootError(events: DiagEvent[]): DiagEvent | null {
+  let found: DiagEvent | null = null
+  let best = -1
+  for (const event of events) {
+    if (event.level !== 'error' || event.phase === 'attempt' || event.phase === 'task') continue
+    const rank = PHASE_RANK[event.phase] ?? 0
+    if (rank > best || (rank === best && (found === null || event.ts < found.ts))) {
+      found = event
+      best = rank
+    }
+  }
+  return found
+}
+
 export interface DiagReportInput {
   task: DiagTask
   attempts: DiagAttempt[]
@@ -176,9 +206,7 @@ export function formatDiagReport(input: DiagReportInput): string {
 
   // Prefer the failure's real phase (execute/verify/isolation/merge) over the
   // generic attempt/task bookkeeping events, which share the same timestamp.
-  const lastError = newest(events, (event) => event.level === 'error'
-    && event.phase !== 'attempt'
-    && event.phase !== 'task')
+  const lastError = rootError(events)
     ?? newest(events, (event) => event.level === 'error')
   const failedAttempt = latest !== null && latest.outcome === 'failed' ? latest : null
   const phase = lastError?.phase ?? null
@@ -349,11 +377,14 @@ export function enrichFailureReceipt<T extends { taskId: string; status?: string
     const attempts = reader.attempts(row.taskId)
     if (attempts.length === 0) return row
     const latest = attempts[attempts.length - 1]
-    const errors = reader.query?.({ taskId: row.taskId, level: 'error', limit: 1 }).rows ?? []
+    const errors = reader.query?.({ taskId: row.taskId, level: 'error', limit: 20 }).rows ?? []
+    // Same preference as `/diag`: the specific failure phase (verify/execute/
+    // isolation) beats the attempt/task bookkeeping error written last.
+    const primary = rootError(errors) ?? errors[0]
     return {
       ...row,
-      failurePhase: errors.length === 0 ? null : errors[0].phase,
-      errorCode: (errors.length === 0 ? null : errors[0].error?.code) ?? latest.errorCode,
+      failurePhase: primary === undefined ? null : primary.phase,
+      errorCode: primary?.error?.code ?? latest.errorCode,
       failureKind: latest.failureKind,
       attempt: latest.attempt,
       traceId: latest.traceId,

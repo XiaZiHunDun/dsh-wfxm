@@ -241,6 +241,9 @@ async function assertTaskFailure(ctx, task, expect) {
   assert.ok(receipt.split('\n').length <= 4, `receipt has ${receipt.split('\n').length} lines`)
   assert.match(receipt, /追踪：/)
   if (expect.code !== undefined) assert.ok(receipt.includes(expect.code), receipt)
+  // P6-4 real-channel finding: the receipt must name the real phase, not the
+  // attempt bookkeeping row that is written last.
+  if (expect.phaseLabel !== undefined) assert.ok(receipt.includes(`阶段：${expect.phaseLabel}`), receipt)
   return { latest, report, receipt }
 }
 
