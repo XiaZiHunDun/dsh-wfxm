@@ -14,9 +14,22 @@ export type {
   EvalFlag,
   FindingResolution,
   SnapshotLike,
+  ProductionFindingInput,
 } from './store.js'
 export { createEvalStore } from './store.js'
 export { digestText } from './digest.js'
+export type {
+  TraceAttemptLike,
+  TraceEventLike,
+  TrajectoryCandidate,
+  TrajectoryCandidateInput,
+  TrajectoryTaskLike,
+} from './trajectory.js'
+export {
+  buildDraftTask,
+  buildExportLines,
+  createTrajectoryCandidate,
+} from './trajectory.js'
 export type {
   EvalFailure,
   EvalL2Outcome,
@@ -41,6 +54,12 @@ export {
   formatEvalFindingMissing,
   formatEvalFlagNeedsQuote,
   formatEvalFlagRecorded,
+  formatEvalFromTaskCreated,
+  formatEvalFromTaskDisabled,
+  formatEvalFromTaskExists,
+  formatEvalFromTaskMissing,
+  formatEvalFromTaskNoTrace,
+  formatEvalFromTaskNotFailed,
   formatEvalPromoted,
   formatEvalRunFailed,
   formatEvalRunFinished,

@@ -143,7 +143,7 @@ function makeTransport() {
   }
 }
 
-function makeHost(evalOptions) {
+function makeHost(evalOptions, telemetry = null) {
   hostSeq += 1
   const dbPath = join(dir, `host-${hostSeq}.sqlite`)
   const evalStore = createEvalStore(dbPath)
@@ -153,9 +153,30 @@ function makeHost(evalOptions) {
     executor: () => ({ status: 'succeeded', summary: 'executor ok' }),
     transport,
     now,
+    telemetry,
     eval: evalOptions === null ? null : { store: evalStore, ...(evalOptions ?? {}) },
   })
   return { host, transport, evalStore }
+}
+
+/** 生产回流只需要读轨迹；用假端口避免真的写遥测表。 */
+function makeFakeTelemetry(byTask) {
+  return {
+    emit() { return true },
+    flush() { return Promise.resolve() },
+    close() {},
+    stats() {
+      return { mode: 'test', degraded: false, diskRatio: null, queueDepth: 0, events: 0, todayBytes: 0, dropped: {} }
+    },
+    attempts(taskId) {
+      return byTask[taskId]?.attempts ?? []
+    },
+    attemptsSince() { return [] },
+    query(input) {
+      const rows = input.taskId === undefined ? [] : byTask[input.taskId]?.events ?? []
+      return { rows, count: rows.length }
+    },
+  }
 }
 
 async function pair(host, { externalUserId = 'ou_owner', kind = 'owner' } = {}) {
@@ -237,6 +258,8 @@ await check('/eval parses status, findings, help and rejects other subcommands',
   assert.deepEqual(parseEvalCommand('/eval promote abc123'), { kind: 'promote', ref: 'abc123' })
   assert.deepEqual(parseEvalCommand('/eval ignore #abc123'), { kind: 'ignore', ref: '#abc123' })
   assert.equal(parseEvalCommand('/eval promote')?.kind, 'unsupported')
+  assert.deepEqual(parseEvalCommand('/eval from-task nhdn6m3wuh'), { kind: 'from-task', ref: 'nhdn6m3wuh' })
+  assert.equal(parseEvalCommand('/eval from-task')?.kind, 'unsupported')
   return true
 })
 
@@ -651,6 +674,128 @@ await check('production trace export drops text, args and absolute paths', async
   assert.deepEqual(task.expect.requiredTools, ['svc_list'])
   assert.deepEqual(task.turns, ['（生产轨迹回放）'])
   assert.match(task.runtimeHints.dsh.traceFile, /^eval\/trajectory\/dsh-test-[0-9a-f]{8}\.ndjson$/)
+  return true
+})
+
+// ---- P7-1 生产失败回流 ------------------------------------------------------------
+
+await check('production finding is recorded once per task', async () => {
+  const store = createEvalStore(join(dir, 'production.sqlite'))
+  const first = store.recordProductionFinding({
+    taskId: 'nhdn6m3wuh', title: '生产失败：nhdn6m3wuh', detail: 'eval/candidates/x.ndjson',
+  })
+  const second = store.recordProductionFinding({
+    taskId: 'nhdn6m3wuh', title: '生产失败：nhdn6m3wuh',
+  })
+  assert.equal(first.created, true)
+  assert.equal(second.created, false)
+  assert.equal(second.finding.id, first.finding.id)
+  assert.equal(first.finding.suite, 'production')
+  assert.equal(first.finding.status, 'open')
+  store.close()
+  return true
+})
+
+await check('/eval from-task turns a failed task into a redacted candidate', async () => {
+  const candidatesDir = join(dir, 'eval', 'candidates')
+  const events = [
+    { ts: '2026-11-24T09:59:00.000Z', event: 'tool.call', level: 'info', phase: 'execute', status: 'ok', error: null, tool: { name: 'svc_list', exitCode: null } },
+    { ts: '2026-11-24T09:59:20.000Z', event: 'tool.result', level: 'info', phase: 'execute', status: 'ok', error: null, tool: { name: 'svc_list', exitCode: 0 } },
+    { ts: '2026-11-24T09:59:30.000Z', event: 'attempt.finished', level: 'error', phase: 'execute', status: 'failed', error: { code: 'verification-failed', kind: 'failed' }, tool: null },
+  ]
+  const fake = makeFakeTelemetry({})
+  const { host, transport, evalStore } = makeHost(
+    { snapshotPath, rateLimitMs: 0, fromTask: { candidatesDir, root: dir } },
+    fake,
+  )
+  await pair(host)
+  const task = host.stores.tasks.createTask({
+    intent: '列出受管服务', riskLevel: 'R1', maxAttempts: 1, correlationId: 'trace-prod-fail',
+  })
+  host.stores.tasks.claimTask({ owner: 'test', leaseMs: 60_000, taskId: task.id })
+  host.stores.tasks.transition(task.id, { to: 'failed', summary: '验证失败', reason: 'test' })
+  fake.query = (input) => {
+    const rows = input.taskId === task.id ? events : []
+    return { rows, count: rows.length }
+  }
+  fake.attempts = (taskId) => (taskId === task.id
+    ? [{ summary: '看下 /home/ailearn/x，token=ghp_abcdefghijklmnopqrstuvwxyz0123' }]
+    : [])
+
+  await say(host, `/eval from-task ${task.taskRef ?? task.id}`)
+  const replied = texts(transport).at(-1) ?? ''
+  assert.match(replied, /已回流任务/)
+  assert.match(replied, /promoted/)
+  assert.doesNotMatch(replied, /\/home\/|ghp_abcdefghijklmnopqrstuvwxyz0123/)
+
+  const files = readdirSync(candidatesDir)
+  const traceName = files.find((name) => name.endsWith('.ndjson'))
+  const taskName = files.find((name) => name.endsWith('.json'))
+  assert.ok(traceName !== undefined && taskName !== undefined)
+  const trace = readFileSync(join(candidatesDir, traceName), 'utf8')
+  const draft = JSON.parse(readFileSync(join(candidatesDir, taskName), 'utf8'))
+  assert.match(trace, /"type":"tool_call","name":"svc_list"/)
+  assert.match(trace, /"phase":"turn_end"/)
+  assert.doesNotMatch(trace, /ailearn|\/home\/|ghp_abcdefghijklmnopqrstuvwxyz0123/)
+  assert.deepEqual(draft.expect.requiredTools, ['svc_list'])
+  assert.match(draft.runtimeHints.dsh.traceFile, /^eval\/candidates\/dsh-prod-[0-9a-f]{8}\.ndjson$/)
+
+  const findings = evalStore.listFindings({ status: 'promoted' })
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].suite, 'production')
+  assert.equal(findings[0].taskId, task.id)
+  assert.equal(findings[0].promotedTaskId, draft.id)
+
+  // 第二次不再落盘；非失败任务与未知任务都不生成候选。
+  await say(host, `/eval FROM-TASK ${task.taskRef ?? task.id}`)
+  assert.match(texts(transport).at(-1) ?? '', /候选已存在/)
+  const running = host.stores.tasks.createTask({
+    intent: '还在跑', riskLevel: 'R1', maxAttempts: 1, correlationId: 'trace-prod-open',
+  })
+  await say(host, `/eval from-task ${running.taskRef ?? running.id}`)
+  assert.match(texts(transport).at(-1) ?? '', /只有失败任务可回流/)
+  await say(host, '/eval from-task nosuchtask')
+  assert.match(texts(transport).at(-1) ?? '', /找不到任务/)
+  host.close()
+  evalStore.close()
+  return true
+})
+
+await check('weekly report shows the production backlog', async () => {
+  const to = new Date('2026-11-25T12:00:00.000Z')
+  const from = new Date(to.getTime() - 7 * 86_400_000)
+  const text = formatEvalWeekly({ runs: [], findings: [], from, to, productionBacklog: 2 })
+  assert.match(text, /可回流失败 2 条/)
+  assert.match(text, /from-task/)
+  return true
+})
+
+await check('nightly eval writes runs and findings to the eval DB', async () => {
+  const stub = makeStubGateEngine()
+  const db = join(dir, 'nightly.sqlite')
+  const out = join(dir, 'nightly-latest.json')
+  const env = { ...process.env, STUB_GATE_OK: '0' }
+  delete env.LD_LIBRARY_PATH
+  const run = spawnSync(process.execPath, [
+    join(root, 'scripts/eval/nightly.mjs'),
+    '--engine', stub,
+    '--db', db,
+    '--out', out,
+  ], { env, encoding: 'utf8', timeout: 120_000 })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /nightly eval: run /)
+
+  const store = createEvalStore(db)
+  const runs = store.listRuns()
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].status, 'failed')
+  assert.equal(runs[0].mode, 'snapshot')
+  assert.equal(runs[0].passed, 5)
+  assert.equal(runs[0].total, 6)
+  const findings = store.listFindings({ runId: runs[0].id })
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].suite, 'smoke')
+  store.close()
   return true
 })
 

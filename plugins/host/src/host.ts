@@ -47,6 +47,7 @@ import {
 import type { ApprovalLevel, ApprovalStore, GrantStore } from '@dsh-wfxm/governance'
 import {
   EvalTimeoutError,
+  createTrajectoryCandidate,
   formatEvalCandidateUnavailable,
   formatEvalDbFindings,
   formatEvalEngineMissing,
@@ -55,6 +56,12 @@ import {
   formatEvalFindingMissing,
   formatEvalFlagNeedsQuote,
   formatEvalFlagRecorded,
+  formatEvalFromTaskCreated,
+  formatEvalFromTaskDisabled,
+  formatEvalFromTaskExists,
+  formatEvalFromTaskMissing,
+  formatEvalFromTaskNoTrace,
+  formatEvalFromTaskNotFailed,
   formatEvalPromoted,
   formatEvalRunFailed,
   formatEvalRunFinished,
@@ -453,6 +460,8 @@ export interface WfxmHostOptions {
     runner?: EvalL2Runner | null
     /** P2-3: `/eval promote` 的候选生成器；缺省表示不可用。 */
     promoter?: CandidatePromoter | null
+    /** P7-1: `/eval from-task` 的落盘目录与相对路径根；缺省表示不可用。 */
+    fromTask?: { candidatesDir: string; root: string } | null
     /** `/eval run` 的幂等桶，默认 5 分钟。 */
     runRateLimitMs?: number
   } | null
@@ -553,6 +562,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   const evalStore = evalConfig?.store ?? null
   const evalRunner = evalConfig?.runner ?? null
   const evalPromoter = evalConfig?.promoter ?? null
+  const evalFromTask = evalConfig?.fromTask ?? null
   const evalRunRateLimitMs = evalConfig?.runRateLimitMs ?? 300_000
   let evalRunPending: Promise<void> | null = null
 
@@ -1386,6 +1396,61 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       return
     }
 
+    // P7-1: 生产失败 → 脱敏轨迹 + 候选，不把原文写进候选或 finding。
+    if (target.command.kind === 'from-task') {
+      if (evalStore === null || evalFromTask === null || telemetry?.query === undefined) {
+        reply(formatEvalFromTaskDisabled(), 'from-task-disabled')
+        return
+      }
+      const task = findTaskByRef(target.command.ref)
+      if (task === null) {
+        reply(formatEvalFromTaskMissing(target.command.ref), 'from-task-missing')
+        return
+      }
+      if (task.status !== 'failed') {
+        reply(formatEvalFromTaskNotFailed(task.status), 'from-task-status')
+        return
+      }
+      const events = telemetry.query({ taskId: task.id, limit: 5000 }).rows
+      if (events.length === 0) {
+        reply(formatEvalFromTaskNoTrace(task.taskRef ?? task.id), 'from-task-no-trace')
+        return
+      }
+      const result = createTrajectoryCandidate({
+        task,
+        events,
+        attempts: telemetry.attempts?.(task.id) ?? [],
+        outDir: evalFromTask.candidatesDir,
+        root: evalFromTask.root,
+        label: 'prod',
+        onExists: 'refuse',
+      })
+      if (!result.ok) {
+        if (result.reason === 'exists') {
+          reply(formatEvalFromTaskExists('display' in result ? result.display ?? '' : ''), 'from-task-exists')
+        } else if (result.reason === 'no-events') {
+          reply(formatEvalFromTaskNoTrace(task.taskRef ?? task.id), 'from-task-no-trace')
+        } else {
+          reply('候选目录不在允许的数据根内，拒绝落盘。', 'from-task-root')
+        }
+        return
+      }
+      const { finding } = evalStore.recordProductionFinding({
+        suite: 'production',
+        taskId: task.id,
+        title: `生产失败：${task.taskRef ?? task.id.slice(0, 8)}`,
+        detail: result.traceFile,
+      })
+      if (finding.status === 'open') evalStore.setFindingStatus(finding.id, 'promoted', result.id)
+      reply(formatEvalFromTaskCreated({
+        display: result.display,
+        taskRef: result.taskRef,
+        lines: result.lines,
+        findingId: finding.id,
+      }), 'from-task-done')
+      return
+    }
+
     // P2-2: `/eval run l2` 只在开发机（AGENT_EVAL_ROOT）执行；先回执再异步跑。
     if (target.command.kind === 'run') {
       if (target.command.mode === 'real') {
@@ -1482,9 +1547,14 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     }
     evalLastReadAt.set(key, at)
 
-    const load: EvalSnapshotLoad = evalSnapshotPath === null
-      ? { ok: false, reason: 'missing' }
-      : loadEvalSnapshot(evalSnapshotPath)
+    const load: EvalSnapshotLoad = (() => {
+      if (evalSnapshotPath === null) return { ok: false, reason: 'missing' }
+      const primary = loadEvalSnapshot(evalSnapshotPath)
+      if (primary.ok || primary.reason !== 'missing') return primary
+      // P7-2: 数据目录还没有 nightly 快照时，退回随发布生成的那份。
+      const fallback = defaultEvalSnapshotPath()
+      return evalSnapshotPath === fallback ? primary : loadEvalSnapshot(fallback)
+    })()
     // P2-2: 快照是 nightly/release 结果的只读载体；按 recordedAt 幂等落库。
     if (evalStore !== null && load.ok) {
       try {

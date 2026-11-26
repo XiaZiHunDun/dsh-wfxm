@@ -347,17 +347,24 @@ async function main() {
           // P2-2: `/eval` 落库；`/eval run l2` 只有开发机设置了 AGENT_EVAL_ROOT 才可用。
           eval: {
             store: stores.eval,
+            // P7-2: nightly 把快照写到数据目录（release 只读）；有就优先读它。
+            snapshotPath: join(config.dataDir, 'eval', 'latest.json'),
             runner: createL2Runner({
               root: process.env.AGENT_EVAL_ROOT ?? null,
               timeoutMs: 600_000,
               // P2-5: 有生产脱敏轨迹时，L2 门禁跑真实轨迹而不是内置种子。
               trajectoryDir: join(fileURLToPath(new URL('..', import.meta.url)), 'eval', 'trajectory'),
             }),
-            // P2-3: 候选只落 eval/candidates/，校验用 agent-eval 的 contract.mjs。
+            // P2-3: 候选不写 release（运行时只读），统一落数据目录。
             promoter: createCandidatePromoter({
               root: process.env.AGENT_EVAL_ROOT ?? null,
-              candidatesDir: join(fileURLToPath(new URL('..', import.meta.url)), 'eval', 'candidates'),
+              candidatesDir: join(config.dataDir, 'eval', 'candidates'),
             }),
+            // P7-1: 失败任务的脱敏轨迹也落同一候选目录，相对数据目录记路径。
+            fromTask: {
+              candidatesDir: join(config.dataDir, 'eval', 'candidates'),
+              root: config.dataDir,
+            },
           },
           // Startup recovery restores a `dir:` workspace snapshot before the
           // worker may re-queue anything (Slice AV).
@@ -929,6 +936,28 @@ async function main() {
             title: '会话（近 7 天）',
             semantic: false,
           })
+          // P7-1: 窗口内失败且有轨迹、还没回流成候选的任务数。
+          const productionBacklog = (() => {
+            if (stores?.eval === undefined || stores?.eval === null || telemetry === null) return 0
+            try {
+              const fromMs = from.getTime()
+              const toMs = to.getTime()
+              const covered = new Set(stores.eval.listFindings({ limit: 500 })
+                .filter((finding) => finding.suite === 'production')
+                .map((finding) => finding.taskId))
+              let count = 0
+              for (const task of taskStore.listTasks()) {
+                if (task.status !== 'failed' || covered.has(task.id)) continue
+                const at = Date.parse(task.finishedAt ?? task.startedAt ?? task.createdAt)
+                if (!Number.isFinite(at) || at < fromMs || at >= toMs) continue
+                if (telemetry.query({ taskId: task.id, limit: 1 }).rows.length > 0) count += 1
+              }
+              return count
+            } catch (error) {
+              log('weekly:backlog:warn', error instanceof Error ? error.message : String(error))
+              return 0
+            }
+          })()
           // P2-4: 周报带上 open findings；没有 run/finding 时该段自动省略。
           const evalSection = stores?.eval === undefined || stores?.eval === null
             ? null
@@ -937,6 +966,7 @@ async function main() {
                 findings: stores.eval.listOpenFindings(20),
                 from,
                 to,
+                productionBacklog,
               })
           // P6-3: ⑦ 自己的轨迹指标（Top 错误码/阶段/时延/工具与执行失败率/可诊断率）。
           // 读取失败只丢这一段，不影响任务/会话/测评段。

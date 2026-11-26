@@ -1,0 +1,35 @@
+[Unit]
+Description=dsh-wfxm nightly eval (L2 gate + real baselines -> eval_runs/eval_findings)
+Documentation=file:/opt/dsh-wfxm/current/docs/16-部署与运行.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dshwfxm
+Group=dshwfxm
+WorkingDirectory=/opt/dsh-wfxm/current
+EnvironmentFile=/etc/dsh-wfxm/env
+Environment=NODE_ENV=production
+Environment=HOME=/var/lib/dsh-wfxm/home
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=DSH_WFXM_DATA_DIR=/var/lib/dsh-wfxm
+# Engine is an immutable copy installed by deploy/install.sh (AGENT_EVAL_SRC).
+Environment=AGENT_EVAL_ROOT=/opt/agent-eval
+# Snapshot + DB write go to the data dir; the release stays read-only.
+ExecStart=/usr/bin/node /opt/dsh-wfxm/current/scripts/eval/nightly.mjs
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+ReadOnlyPaths=/opt/agent-eval
+ReadWritePaths=/var/lib/dsh-wfxm

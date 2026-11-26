@@ -15,12 +15,10 @@
  * from the same store the service writes; the CLI is read-only.
  */
 
-import { createHash } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { redactText } from '../plugins/redact/lib/index.js'
+import { createTrajectoryCandidate } from '@dsh-wfxm/eval'
 import { createTaskStore } from '@dsh-wfxm/tasks'
 import {
   computeTraceMetrics,
@@ -80,19 +78,6 @@ function parseOptions(argv, known) {
     index += 1
   }
   return options
-}
-
-function hash8(text) {
-  return createHash('sha256').update(text).digest('hex').slice(0, 8)
-}
-
-/** Absolute paths never leave the host, even in a `full`-mode export. */
-function scrub(text) {
-  return redactText(text).value
-    .replace(/(?:\/home|\/Users|\/root|\/opt|\/var|\/srv|\/tmp|\/etc)\/[^\s"'`<>，。；：)）\]]+/g, '<path>')
-    .replace(/[A-Za-z]:\\[^\s"'`<>]+/g, '<path>')
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 
 function findTask(tasks, ref) {
@@ -231,66 +216,6 @@ function commandStats(telemetry, argv) {
   return 0
 }
 
-/** `attempt.finished` failures map onto the export's `turn_end` status. */
-function statusFor(row) {
-  if (row.event !== 'attempt.finished' || row.status !== 'failed') return null
-  return { type: 'status', phase: 'turn_end', reason: { kind: row.error?.kind ?? 'error' } }
-}
-
-function buildExportLines(events, traceId, finalText) {
-  const lines = [JSON.stringify({ type: 'session', sessionId: `prod-${hash8(traceId)}` })]
-  for (const row of events) {
-    if (row.event === 'tool.call' && row.tool?.name != null) {
-      lines.push(JSON.stringify({ type: 'tool_call', name: row.tool.name }))
-    } else if (row.event === 'tool.result' && row.tool?.name != null) {
-      lines.push(JSON.stringify({
-        type: 'tool_result',
-        name: row.tool.name,
-        ok: row.status !== 'failed' && (row.tool.exitCode ?? 0) === 0,
-      }))
-    } else if (row.event === 'executor.step') {
-      lines.push(JSON.stringify({ type: 'status', phase: 'step_end' }))
-    } else {
-      const status = statusFor(row)
-      if (status !== null) {
-        lines.push(JSON.stringify(status))
-      } else if (row.level === 'error' && row.error?.code != null) {
-        // P6-4: merge/prepare/delivery failures have no attempt, but the
-        // replay must still show where it stopped.
-        lines.push(JSON.stringify({
-          type: 'status',
-          phase: 'error',
-          reason: { kind: row.error.code },
-        }))
-      }
-    }
-  }
-  if (finalText !== '') lines.push(JSON.stringify({ type: 'final', text: finalText }))
-  return lines
-}
-
-function buildDraftTask({ id, task, tools, finalText, traceFile }) {
-  const uniqueTools = [...new Set(tools)]
-  const expect = uniqueTools.length > 0
-    ? { requiredTools: uniqueTools }
-    : { containsAny: [finalText.slice(0, Math.min(12, finalText.length))] }
-  return {
-    id,
-    title: `生产任务轨迹 ${task.taskRef ?? task.id.slice(0, 8)}`,
-    suite: 'dsh-trajectory',
-    notes: '由 scripts/trace.mjs 导出的生产轨迹草稿：只保留工具名/成败与脱敏摘要，判据需人工确认。',
-    taxonomy: 'online-replay',
-    difficulty: 'medium',
-    source: 'online-replay',
-    split: 'dev',
-    kind: 'chat',
-    turns: ['（生产任务轨迹回放）'],
-    timeoutMs: 30000,
-    expect,
-    runtimeHints: { dsh: { traceFile } },
-  }
-}
-
 function commandExport(telemetry, tasks, argv) {
   const [ref, ...rest] = argv
   if (ref === undefined) throw new Error('export needs a task id or ref')
@@ -299,37 +224,32 @@ function commandExport(telemetry, tasks, argv) {
   if (task === null) throw new Error(`task ${ref} not found`)
   const knownRoot = resolve(options['repo-root'] ?? repoRoot)
   const outDir = resolve(options.out ?? join(knownRoot, 'eval', 'trajectory'))
-  const label = (options.label ?? 'prod').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || 'prod'
-  const id = `dsh-${label}-${hash8(task.correlationId ?? task.id)}`
 
   const { rows } = queryRows(telemetry, { taskId: task.id, limit: 5_000 })
-  const events = [...rows].sort((a, b) => a.ts.localeCompare(b.ts))
-  if (events.length === 0) throw new Error(`task ${task.taskRef ?? task.id} has no trace events`)
-  const attempts = telemetry.attempts(task.id)
-  const rawFinal = [...attempts].reverse().find((attempt) => attempt.summary !== null)?.summary ?? ''
-  const finalText = rawFinal === '' ? '' : scrub(rawFinal)
-  const tools = events.flatMap((row) => (row.tool?.name == null ? [] : [row.tool.name]))
-
-  const tracePath = join(outDir, `${id}.ndjson`)
-  const traceFile = relative(knownRoot, tracePath).split('\\').join('/')
-  if (traceFile.startsWith('..')) {
-    throw new Error(`output dir must stay inside --repo-root (${traceFile})`)
-  }
-  const lines = buildExportLines(events, task.correlationId ?? task.id, finalText)
-  const draft = buildDraftTask({ id, task, tools, finalText, traceFile })
-
-  if (options['dry-run'] !== true) {
-    mkdirSync(outDir, { recursive: true })
-    writeFileSync(tracePath, `${lines.join('\n')}\n`)
-    writeFileSync(join(outDir, `${id}.json`), `${JSON.stringify(draft, null, 2)}\n`)
+  const result = createTrajectoryCandidate({
+    task,
+    events: rows,
+    attempts: telemetry.attempts(task.id),
+    outDir,
+    root: knownRoot,
+    label: options.label,
+    onExists: 'overwrite',
+    dryRun: options['dry-run'] === true,
+  })
+  if (!result.ok) {
+    if (result.reason === 'no-events') throw new Error(`task ${task.taskRef ?? task.id} has no trace events`)
+    if (result.reason === 'outside-root') {
+      throw new Error(`output dir must stay inside --repo-root (${result.display ?? ''})`)
+    }
+    throw new Error(`candidate ${result.display ?? ''} already exists`)
   }
   console.log(
     `export ${options['dry-run'] === true ? '[dry-run] ' : ''}${task.taskRef ?? task.id} → `
-      + `${lines.length} 行，${tools.length} 次工具调用，判据 ${JSON.stringify(draft.expect)}`,
+      + `${result.lines} 行，${result.tools} 次工具调用，判据 ${JSON.stringify(result.draft.expect)}`,
   )
   if (options['dry-run'] !== true) {
-    console.log(`  轨迹：${tracePath}`)
-    console.log(`  草稿：${join(outDir, `${id}.json`)}`)
+    console.log(`  轨迹：${result.tracePath}`)
+    console.log(`  草稿：${result.draftPath}`)
   }
   return 0
 }

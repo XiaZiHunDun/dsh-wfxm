@@ -12,6 +12,7 @@ export type EvalCommand =
   | { kind: 'flag'; reason: string }
   | { kind: 'promote'; ref: string }
   | { kind: 'ignore'; ref: string }
+  | { kind: 'from-task'; ref: string }
   | { kind: 'help' }
   | { kind: 'unsupported'; detail: string }
 
@@ -50,10 +51,16 @@ export function parseEvalCommand(text: string): EvalCommand | null {
         ? { kind: 'unsupported', detail: `用法：/eval ${sub.toLowerCase()} <finding-id>` }
         : { kind: sub.toLowerCase() as 'promote' | 'ignore', ref }
     }
+    case 'from-task': {
+      const ref = (rest[0] ?? '').trim()
+      return ref === ''
+        ? { kind: 'unsupported', detail: '用法：/eval from-task <任务号>' }
+        : { kind: 'from-task', ref }
+    }
     default:
       return {
         kind: 'unsupported',
-        detail: `P2-3 支持 /eval、/eval findings、/eval run l2|real、/eval flag、/eval promote、/eval ignore、/eval help；收到 ${rest.length === 0 ? sub : args}`,
+        detail: `P2-3 支持 /eval、/eval findings、/eval run l2|real、/eval flag、/eval promote、/eval ignore、/eval from-task、/eval help；收到 ${rest.length === 0 ? sub : args}`,
       }
   }
 }

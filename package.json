@@ -31,6 +31,7 @@
     "verify:bench": "node bench/verify.mjs",
     "eval:driver": "node scripts/eval/run-task.mjs",
     "eval:driver:selftest": "node scripts/eval/driver-selftest.mjs",
-    "eval:snapshot": "node scripts/eval/snapshot.mjs"
+    "eval:snapshot": "node scripts/eval/snapshot.mjs",
+    "eval:nightly": "node scripts/eval/nightly.mjs"
   }
 }

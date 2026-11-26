@@ -22,6 +22,8 @@ BACKUP_UNIT_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-backup.service
 BACKUP_TIMER_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-backup.timer
 HEALTH_UNIT_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-health.service
 HEALTH_TIMER_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-health.timer
+EVAL_UNIT_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-eval.service
+EVAL_TIMER_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-eval.timer
 JOURNALD_SRC=$(cd "$(dirname "$0")" && pwd)/journald/10-dsh-wfxm.conf
 ENV_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm.env.example
 POLKIT_SRC=$(cd "$(dirname "$0")" && pwd)/polkit/50-dshwfxm.rules
@@ -32,6 +34,9 @@ SUDOERS_SRC=$(cd "$(dirname "$0")" && pwd)/sudoers/dsh-wfxm-unit-control
 HELPER_SRC=$(cd "$(dirname "$0")" && pwd)/bin/unit-control-server.mjs
 HELPER_CLIENT_SRC=$(cd "$(dirname "$0")" && pwd)/bin/unit-control-client.mjs
 HELPER_UNIT_SRC=$(cd "$(dirname "$0")" && pwd)/systemd/dsh-wfxm-unit-control.service
+# P7-2：nightly 需要一个服务用户可读的 agent-eval 副本（源仓默认在开发家目录）。
+AGENT_EVAL_SRC=${AGENT_EVAL_SRC:-/home/ailearn/projects/agent-eval}
+AGENT_EVAL_DEST=/opt/agent-eval
 
 run() {
   if [ "${DRY_RUN:-0}" = "1" ]; then
@@ -45,7 +50,7 @@ if [ "$(id -u)" -ne 0 ] && [ "${DRY_RUN:-0}" != "1" ]; then
   echo "需要 root：sudo bash $0" >&2
   exit 1
 fi
-for file in "$UNIT_SRC" "$BACKUP_UNIT_SRC" "$BACKUP_TIMER_SRC" "$JOURNALD_SRC" "$ENV_SRC" "$POLKIT_SRC" "$WRAPPER_SRC" "$SUDOERS_SRC"; do
+for file in "$UNIT_SRC" "$BACKUP_UNIT_SRC" "$BACKUP_TIMER_SRC" "$HEALTH_UNIT_SRC" "$HEALTH_TIMER_SRC" "$EVAL_UNIT_SRC" "$EVAL_TIMER_SRC" "$JOURNALD_SRC" "$ENV_SRC" "$POLKIT_SRC" "$WRAPPER_SRC" "$SUDOERS_SRC"; do
   [ -f "$file" ] || { echo "缺少 $file" >&2; exit 1; }
 done
 
@@ -131,6 +136,8 @@ run install -m 0644 -o root -g root "$BACKUP_UNIT_SRC" /etc/systemd/system/dsh-w
 run install -m 0644 -o root -g root "$BACKUP_TIMER_SRC" /etc/systemd/system/dsh-wfxm-backup.timer
 run install -m 0644 -o root -g root "$HEALTH_UNIT_SRC" /etc/systemd/system/dsh-wfxm-health.service
 run install -m 0644 -o root -g root "$HEALTH_TIMER_SRC" /etc/systemd/system/dsh-wfxm-health.timer
+run install -m 0644 -o root -g root "$EVAL_UNIT_SRC" /etc/systemd/system/dsh-wfxm-eval.service
+run install -m 0644 -o root -g root "$EVAL_TIMER_SRC" /etc/systemd/system/dsh-wfxm-eval.timer
 run install -m 0644 -o root -g root "$POLKIT_SRC" /etc/polkit-1/rules.d/50-dshwfxm.rules
 run install -m 0755 -o root -g root "$WRAPPER_SRC" /usr/local/sbin/dsh-wfxm-unit-control
 # Root-side helper (preferred path; works under NoNewPrivileges).
@@ -151,6 +158,22 @@ else
   install -m 0440 -o root -g root "$sudoers_tmp" /etc/sudoers.d/dsh-wfxm-unit-control
   rm -f "$sudoers_tmp"
 fi
+# 4b. agent-eval 副本（P7-2）：root:root、a+rX，服务用户只读；源仓缺失只提示。
+if [ -d "$AGENT_EVAL_SRC/src" ]; then
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    printf '+ %s\n' "cp -a $AGENT_EVAL_SRC $AGENT_EVAL_DEST（root:root，a+rX）"
+  else
+    rm -rf "$AGENT_EVAL_DEST.tmp"
+    cp -a "$AGENT_EVAL_SRC" "$AGENT_EVAL_DEST.tmp"
+    chown -R root:root "$AGENT_EVAL_DEST.tmp"
+    chmod -R a+rX "$AGENT_EVAL_DEST.tmp"
+    rm -rf "$AGENT_EVAL_DEST"
+    mv "$AGENT_EVAL_DEST.tmp" "$AGENT_EVAL_DEST"
+  fi
+else
+  echo "提示：未找到 $AGENT_EVAL_SRC；跳过 agent-eval 安装，dsh-wfxm-eval.timer 会因引擎缺失而跳过" >&2
+fi
+
 run systemctl daemon-reload
 run systemctl enable dsh-wfxm-unit-control.service
 
@@ -177,6 +200,8 @@ fi
 run systemctl enable dsh-wfxm-backup.timer
 # 健康告警：2 分钟一次；服务正常时脚本直接退出，不发消息。
 run systemctl enable dsh-wfxm-health.timer
+# 日常测评：每日 04:10 左右；只 enable，安装不立刻跑（`systemctl start dsh-wfxm-eval.service` 手动一次）。
+run systemctl enable dsh-wfxm-eval.timer
 
 # 5. 发布根目录：属主是调用 sudo 的人，服务只读（ProtectSystem=strict）。
 run install -d -m 0755 -o "$RELEASE_OWNER" -g "$RELEASE_OWNER" "$RELEASE_ROOT"
@@ -193,3 +218,5 @@ echo "下一步：install -m 0640 -o root -g $SERVICE_GROUP <凭据> $CRED_DIR/ 
 echo "定时备份：已 enable dsh-wfxm-backup.timer（每日 03:30 左右，Persistent 补跑）。"
 echo "  立即备份一次：systemctl start dsh-wfxm-backup.service"
 echo "  启动定时器：systemctl start dsh-wfxm-backup.timer"
+echo "日常测评：已 enable dsh-wfxm-eval.timer（每日 04:10 左右）；引擎副本 $AGENT_EVAL_DEST。"
+echo "  立即测评一次：systemctl start dsh-wfxm-eval.service"

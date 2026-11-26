@@ -108,6 +108,15 @@ export interface FlagInput {
   traceRef?: string | null
 }
 
+/** P7-1: 把一条生产失败任务登记成 finding（同一任务只登记一次）。 */
+export interface ProductionFindingInput {
+  /** 默认 `production`。 */
+  suite?: string
+  taskId: string
+  title: string
+  detail?: string | null
+}
+
 export interface EvalFlag {
   id: string
   messageId: string
@@ -135,6 +144,8 @@ export interface EvalStore {
   listOpenFindings(limit?: number): EvalFinding[]
   /** P2-3: 人工标记 → eval_flags + 一条 source=flag 的 finding。 */
   recordFlag(input: FlagInput): { finding: EvalFinding; flag: EvalFlag }
+  /** P7-1: 生产失败 → 一条 source=ci 的 finding；同 suite+task 只登记一次。 */
+  recordProductionFinding(input: ProductionFindingInput): { finding: EvalFinding; created: boolean }
   /** 按完整 id 或唯一前缀找 finding。 */
   resolveFinding(ref: string): FindingResolution
   setFindingStatus(id: string, status: EvalFindingStatus, promotedTaskId?: string | null): EvalFinding | null
@@ -278,6 +289,18 @@ export function createEvalStore(dbPath: string): EvalStore {
   const insertFlag = db.prepare(`
     INSERT INTO eval_flags(id, message_id, thread_id, verdict, reason_digest, trace_ref, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+  const selectProductionFinding = db.prepare(`
+    SELECT * FROM eval_findings
+     WHERE run_id IS NULL AND suite = ? AND task_id = ?
+     ORDER BY created_at DESC, rowid DESC
+     LIMIT 1
+  `)
+  const insertProductionFinding = db.prepare(`
+    INSERT INTO eval_findings(
+      id, run_id, suite, task_id, severity, title, detail_digest,
+      source, status, promoted_task_id, created_at
+    ) VALUES (?, NULL, ?, ?, 'fail', ?, ?, 'ci', 'open', NULL, ?)
   `)
 
   function getRun(id: string): EvalRun | null {
@@ -457,6 +480,21 @@ export function createEvalStore(dbPath: string): EvalStore {
     }
   }
 
+  function recordProductionFinding(input: ProductionFindingInput): { finding: EvalFinding; created: boolean } {
+    const suite = input.suite ?? 'production'
+    const existing = selectProductionFinding.get(suite, input.taskId) as FindingRow | undefined
+    if (existing !== undefined) return { finding: toFinding(existing), created: false }
+    const createdAt = new Date().toISOString()
+    const detail = input.detail === undefined || input.detail === null || input.detail === ''
+      ? digestText(input.title)
+      : digestText(input.detail)
+    const id = randomUUID()
+    insertProductionFinding.run(id, suite, input.taskId, input.title, detail, createdAt)
+    const row = selectFindingById.get(id) as FindingRow | undefined
+    if (row === undefined) throw new Error(`eval finding ${id} vanished after insert`)
+    return { finding: toFinding(row), created: true }
+  }
+
   function syncSnapshot(snapshot: SnapshotLike): { run: EvalRun; created: boolean; findings: number } {
     const failures = snapshot.failures ?? []
     let passed = 0
@@ -508,6 +546,7 @@ export function createEvalStore(dbPath: string): EvalStore {
     listFindings,
     listOpenFindings,
     recordFlag,
+    recordProductionFinding,
     resolveFinding,
     setFindingStatus,
     syncSnapshot,

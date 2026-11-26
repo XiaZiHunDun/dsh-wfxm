@@ -71,6 +71,41 @@ export function formatEvalCandidateUnavailable(): string {
   return '候选生成需要 AGENT_EVAL_ROOT（agent-eval/src/contract.mjs）；当前未部署。'
 }
 
+export interface EvalFromTaskCreated {
+  display: string
+  taskRef: string
+  lines: number
+  findingId: string
+}
+
+/** P7-1: 一条生产失败已经变成候选；绝不回显原文或绝对路径。 */
+export function formatEvalFromTaskCreated(input: EvalFromTaskCreated): string {
+  return [
+    `已回流任务 ${input.taskRef} → ${input.display}（${input.lines} 行轨迹）。`,
+    `finding [${input.findingId.slice(0, 8)}] 已置 promoted；补全 turns/expect 后再进 agent-eval 任务集。`,
+  ].join('\n')
+}
+
+export function formatEvalFromTaskExists(display: string): string {
+  return `候选已存在（${display}），不重复落盘；如需重导先人工删除。`
+}
+
+export function formatEvalFromTaskMissing(ref: string): string {
+  return `找不到任务 ${ref}；用「状态」或 /diag 确认任务号。`
+}
+
+export function formatEvalFromTaskNotFailed(status: string): string {
+  return `只有失败任务可回流（当前状态：${status}）。`
+}
+
+export function formatEvalFromTaskNoTrace(ref: string): string {
+  return `任务 ${ref} 没有可用轨迹；不导出空候选。`
+}
+
+export function formatEvalFromTaskDisabled(): string {
+  return '生产回流未启用（缺测评库、遥测或候选目录）；不生成候选。'
+}
+
 export function formatEvalFindingMissing(ref: string, reason: 'not-found' | 'ambiguous'): string {
   return reason === 'ambiguous'
     ? `finding 前缀 ${ref} 命中多条，请给更长的 id。`
@@ -90,6 +125,8 @@ export interface EvalWeeklyInput {
   findings: readonly EvalFinding[]
   from: Date
   to: Date
+  /** P7-1: 窗口内失败且尚未回流的任务数。 */
+  productionBacklog?: number
 }
 
 /** P2-4: 周报里的测评段；没有运行时返回 null，避免空段占版面。 */
@@ -100,12 +137,16 @@ export function formatEvalWeekly(input: EvalWeeklyInput): string | null {
     const at = Date.parse(run.startedAt)
     return Number.isFinite(at) && at >= from && at < to
   })
-  if (runs.length === 0 && input.findings.length === 0) return null
+  const backlog = input.productionBacklog ?? 0
+  if (runs.length === 0 && input.findings.length === 0 && backlog === 0) return null
 
   const failed = runs.filter((run) => run.status !== 'ok').length
   const lines = [
     `测评：近 7 天 run ${runs.length} · 通过 ${runs.length - failed} · 未通过/超时 ${failed} · 未处理 findings ${input.findings.length}`,
   ]
+  if (backlog > 0) {
+    lines.push(`可回流失败 ${backlog} 条：/eval from-task <任务号> 生成测评候选。`)
+  }
   for (const finding of input.findings.slice(0, 5)) {
     const label = finding.taskId === '' ? finding.suite : finding.taskId
     lines.push(`- [${finding.id.slice(0, 8)}] ${label} · ${finding.suite}`)

@@ -27,7 +27,9 @@ export interface DiagEvent {
   phase: string
   status: string | null
   durationMs: number | null
-  error: { code: string | null } | null
+  error: { code: string | null; kind?: string | null } | null
+  /** P7-1: 轨迹回流需要工具名与成败；诊断渲染不读这两个字段。 */
+  tool?: { name?: string | null; exitCode?: number | null } | null
   taskId?: string | null
 }
 
