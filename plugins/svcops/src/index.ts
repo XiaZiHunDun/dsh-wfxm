@@ -51,13 +51,24 @@ export { gradeInspection } from './inspection/alerting.js'
 export type { AlertDecision, AlertLevel } from './inspection/alerting.js'
 export { CANDIDATE_RULES, deriveCandidates } from './inspection/candidates.js'
 export type { CandidateInput, CandidateRule, CandidateStrength } from './inspection/candidates.js'
-export { deriveSuggestions, formatSuggestionDigest, formatSuggestions } from './suggestions.js'
+export {
+  DEFAULT_TRACE_HEALTH_THRESHOLDS,
+  deriveSuggestions,
+  evaluateTraceHealth,
+  formatSuggestionDigest,
+  formatSuggestions,
+  readTraceHealthConfig,
+} from './suggestions.js'
 export type {
   FailureBreakdown,
   Suggestion,
   SuggestionBudget,
   SuggestionEntry,
   SuggestionInput,
+  TraceBreach,
+  TraceBreachKind,
+  TraceHealth,
+  TraceHealthThresholds,
 } from './suggestions.js'
 export {
   parseExpectedPorts,
@@ -113,4 +124,5 @@ export type {
   PatrolConfigResult,
   PatrolDelivery,
   PatrolRunResult,
+  TraceHealthDigest,
 } from './patrol.js'

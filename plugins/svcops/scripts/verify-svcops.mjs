@@ -1,4 +1,13 @@
-import { createSystemdAdapter, deriveSuggestions, formatSuggestionDigest, formatSuggestions, SvcOpsError } from '../lib/index.js'
+import {
+  DEFAULT_TRACE_HEALTH_THRESHOLDS,
+  createSystemdAdapter,
+  deriveSuggestions,
+  evaluateTraceHealth,
+  formatSuggestionDigest,
+  formatSuggestions,
+  readTraceHealthConfig,
+  SvcOpsError,
+} from '../lib/index.js'
 
 const calls = []
 const customRunner = {
@@ -208,6 +217,66 @@ await check('P7-3 digest: entries carry stable ids while ordinals stay reply-fri
     && /2\. \[R2\] 处理合并冲突.* · 做 #sug_abcdef0123/.test(text)
     && /做 #1」或「做 #sug_xxxxxxxx/.test(text)
     && formatSuggestionDigest([]) === null
+})
+
+await check('P7-6 trace: 阈值越线生成建议，样本不足保持安静', () => {
+  const hot = deriveSuggestions({
+    candidates: [],
+    failures: { retryExhausted: 0, nonRetryable: 0, conflicts: 0 },
+    reviewFacts: 0,
+    budget: null,
+    trace: {
+      health: { attempts: 12, failedAttempts: 6, p95Ms: 420_000 },
+      thresholds: { failRate: 0.3, p95Ms: 300_000, minAttempts: 10 },
+    },
+  })
+  const cold = deriveSuggestions({
+    candidates: [],
+    failures: { retryExhausted: 0, nonRetryable: 0, conflicts: 0 },
+    reviewFacts: 0,
+    budget: null,
+    trace: {
+      health: { attempts: 4, failedAttempts: 4, p95Ms: 900_000 },
+      thresholds: { failRate: 0.3, p95Ms: 300_000, minAttempts: 10 },
+    },
+  })
+  return hot.length === 2
+    && hot[0].action.includes('失败率')
+    && hot[1].action.includes('p95')
+    && /失败 6\/12（50%）/.test(hot[0].evidence)
+    && /p95 7m0s/.test(hot[1].evidence)
+    && formatSuggestions(cold) === null
+})
+
+await check('P7-6 trace: 关闭开关后只报另一条', () => {
+  const onlyP95 = evaluateTraceHealth(
+    { attempts: 20, failedAttempts: 0, p95Ms: 300_000 },
+    { failRate: 0, p95Ms: 300_000, minAttempts: 10 },
+  )
+  const noRules = evaluateTraceHealth(
+    { attempts: 20, failedAttempts: 20, p95Ms: 900_000 },
+    { failRate: 0, p95Ms: 0, minAttempts: 10 },
+  )
+  return onlyP95.length === 1 && onlyP95[0].kind === 'p95' && noRules.length === 0
+})
+
+await check('P7-6 trace: env 配置与默认值', () => {
+  const defaults = readTraceHealthConfig({})
+  const custom = readTraceHealthConfig({
+    DSH_WFXM_TRACE_FAIL_RATE_PCT: '50',
+    DSH_WFXM_TRACE_P95_MS: '60000',
+    DSH_WFXM_TRACE_MIN_ATTEMPTS: '3',
+  })
+  const bad = readTraceHealthConfig({ DSH_WFXM_TRACE_FAIL_RATE_PCT: 'x' })
+  return defaults.thresholds.failRate === DEFAULT_TRACE_HEALTH_THRESHOLDS.failRate
+    && defaults.thresholds.p95Ms === DEFAULT_TRACE_HEALTH_THRESHOLDS.p95Ms
+    && defaults.thresholds.minAttempts === DEFAULT_TRACE_HEALTH_THRESHOLDS.minAttempts
+    && defaults.warnings.length === 0
+    && custom.thresholds.failRate === 0.5
+    && custom.thresholds.p95Ms === 60_000
+    && custom.thresholds.minAttempts === 3
+    && bad.warnings.length === 1
+    && bad.thresholds.failRate === DEFAULT_TRACE_HEALTH_THRESHOLDS.failRate
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

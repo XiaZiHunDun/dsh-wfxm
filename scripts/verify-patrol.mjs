@@ -918,6 +918,85 @@ check('runOnce: a throwing suggestion generator is isolated (Slice CD)', async (
   patrol.stop()
 })
 
+check('runOnce: trace thresholds alert immediately with the shared quiet window (P7-6)', async () => {
+  const deliveries = []
+  const calls = []
+  let current = new Date(2026, 10, 11, 10, 0, 0)
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('trace-alert'),
+    config: { intervalMinutes: 15, digestHour: -1, target: 'h' },
+    collect: async () => OK,
+    now: () => current,
+    deliver: (delivery) => deliveries.push(delivery),
+    traceHealth: (window) => {
+      calls.push(window)
+      return {
+        reasons: ['失败 6/12（50%） ≥ 阈值 30%', 'p95 7m0s ≥ 阈值 5m0s'],
+        key: 'fail-rate,p95',
+      }
+    },
+  })
+
+  const first = await patrol.runOnce()
+  assert.equal(first.pushed, 'trace')
+  assert.equal(deliveries.length, 1)
+  assert.match(deliveries[0].text, /^\[轨迹告警\] h · 近 24h/)
+  assert.match(deliveries[0].text, /失败 6\/12/)
+  assert.match(deliveries[0].dedupeKey, /^patrol-trace:h:fail-rate,p95:/)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].to.getTime(), current.getTime())
+  assert.equal(calls[0].from.getTime(), current.getTime() - 24 * 3_600_000)
+
+  current = new Date(2026, 10, 11, 10, 5, 0)
+  assert.equal((await patrol.runOnce()).pushed, null)
+  assert.equal(deliveries.length, 1)
+
+  current = new Date(2026, 10, 11, 10, 31, 0)
+  assert.equal((await patrol.runOnce()).pushed, 'trace')
+  assert.equal(deliveries.length, 2)
+  patrol.stop()
+})
+
+check('runOnce: a trace breach still lets the daily digest go out (P7-6)', async () => {
+  const deliveries = []
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('trace-digest'),
+    config: { intervalMinutes: 15, digestHour: 9, target: 'h' },
+    collect: async () => OK,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => deliveries.push(delivery),
+    traceHealth: () => ({ reasons: ['p95 9m0s ≥ 阈值 5m0s'], key: 'p95' }),
+  })
+  const result = await patrol.runOnce()
+  assert.equal(result.pushed, 'trace+digest')
+  assert.deepEqual(deliveries.map((item) => item.dedupeKey), [
+    'patrol-trace:h:p95:' + Math.floor(new Date(2026, 10, 11, 10, 0, 0).getTime() / (30 * 60_000)),
+    'patrol-digest:h:2026-11-11',
+  ])
+  patrol.stop()
+})
+
+check('runOnce: a throwing trace health is isolated (P7-6)', async () => {
+  const warnings = []
+  const deliveries = []
+  const patrol = createInspectionPatrol({
+    dbPath: tempPath('trace-throw'),
+    config: { intervalMinutes: 15, digestHour: 9, target: 'h' },
+    collect: async () => OK,
+    now: () => new Date(2026, 10, 11, 10, 0, 0),
+    deliver: (delivery) => deliveries.push(delivery),
+    logger: { warn: (message) => warnings.push(message) },
+    traceHealth: () => {
+      throw new Error('telemetry store gone')
+    },
+  })
+  const result = await patrol.runOnce()
+  assert.equal(result.pushed, 'digest')
+  assert.equal(deliveries.length, 1)
+  assert.match(warnings.join('\n'), /trace health failed: telemetry store gone/)
+  patrol.stop()
+})
+
 for (const [name, fn] of checks) {
   try {
     const detail = await fn()

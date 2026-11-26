@@ -20,12 +20,43 @@ export interface SuggestionBudget {
   limit: number
 }
 
+/** P7-6: 近 7 天轨迹指标（由遥测侧聚合，这里只做阈值判断）。 */
+export interface TraceHealth {
+  attempts: number
+  failedAttempts: number
+  p95Ms: number | null
+}
+
+export interface TraceHealthThresholds {
+  /** 失败率阈值（0-1）；0 关闭该条规则。 */
+  failRate: number
+  /** p95 时延阈值（毫秒）；0 关闭该条规则。 */
+  p95Ms: number
+  /** 少于该样本数时指标视为噪声，两条规则都不触发。 */
+  minAttempts: number
+}
+
+export const DEFAULT_TRACE_HEALTH_THRESHOLDS: TraceHealthThresholds = {
+  failRate: 0.3,
+  p95Ms: 300_000,
+  minAttempts: 10,
+}
+
+export type TraceBreachKind = 'fail-rate' | 'p95'
+
+export interface TraceBreach {
+  kind: TraceBreachKind
+  reason: string
+}
+
 export interface SuggestionInput {
   candidates: CandidateInput[]
   failures: FailureBreakdown
   /** Facts flagged by `mem_health` as review candidates (>30 days unused). */
   reviewFacts: number
   budget?: SuggestionBudget | null
+  /** P7-6：轨迹指标越过阈值时追加建议；`null`/缺省时不改变现有规则。 */
+  trace?: { health: TraceHealth; thresholds?: TraceHealthThresholds } | null
   max?: number
 }
 
@@ -39,9 +70,76 @@ const RULE_TITLES: Readonly<Record<string, string>> = Object.fromEntries(
   Object.values(CANDIDATE_RULES).map((rule) => [rule.ruleId, rule.title]),
 )
 
+const TRACE_ACTIONS: Readonly<Record<TraceBreachKind, string>> = {
+  'fail-rate': '排查近期执行失败率偏高，决定是否回退或补充失败说明',
+  p95: '排查近期执行 p95 偏高，定位慢步骤（执行器/工具）',
+}
+
+function formatMs(value: number): string {
+  if (value < 1_000) return `${Math.round(value)}ms`
+  if (value < 60_000) return `${(value / 1_000).toFixed(1)}s`
+  const minutes = Math.floor(value / 60_000)
+  const seconds = Math.round((value % 60_000) / 1_000)
+  return `${minutes}m${seconds}s`
+}
+
 /**
- * Deterministic order: data integrity first, then repeated failure, cost, and
- * finally observations. `max` caps the list (default 3).
+ * P7-6：阈值判断只在这里实现一次，日报建议与即时告警共用同一组原因。
+ * 样本不足（`minAttempts`）时不报，避免一两条长任务就触发告警。
+ */
+export function evaluateTraceHealth(
+  trace: TraceHealth,
+  thresholds: TraceHealthThresholds = DEFAULT_TRACE_HEALTH_THRESHOLDS,
+): TraceBreach[] {
+  if (trace.attempts < thresholds.minAttempts) return []
+  const breaches: TraceBreach[] = []
+  if (thresholds.failRate > 0) {
+    const rate = trace.failedAttempts / trace.attempts
+    if (rate >= thresholds.failRate) {
+      breaches.push({
+        kind: 'fail-rate',
+        reason: `失败 ${trace.failedAttempts}/${trace.attempts}（${Math.round(rate * 100)}%）`
+          + ` ≥ 阈值 ${Math.round(thresholds.failRate * 100)}%`,
+      })
+    }
+  }
+  if (thresholds.p95Ms > 0 && trace.p95Ms !== null && trace.p95Ms >= thresholds.p95Ms) {
+    breaches.push({
+      kind: 'p95',
+      reason: `p95 ${formatMs(trace.p95Ms)} ≥ 阈值 ${formatMs(thresholds.p95Ms)}`,
+    })
+  }
+  return breaches
+}
+
+/**
+ * `DSH_WFXM_TRACE_FAIL_RATE_PCT` / `DSH_WFXM_TRACE_P95_MS` /
+ * `DSH_WFXM_TRACE_MIN_ATTEMPTS`；非法值保留默认并给出警告。
+ */
+export function readTraceHealthConfig(env: NodeJS.ProcessEnv = process.env): {
+  thresholds: TraceHealthThresholds
+  warnings: string[]
+} {
+  const warnings: string[] = []
+  const read = (raw: string | undefined, field: string, min: number, max: number, fallback: number): number => {
+    if (raw === undefined || raw.trim() === '') return fallback
+    const value = Number(raw)
+    if (!Number.isInteger(value) || value < min || value > max) {
+      warnings.push(`${field}=${JSON.stringify(raw)} is not an integer in ${min}-${max}; using ${fallback}`)
+      return fallback
+    }
+    return value
+  }
+  const failRatePct = read(env.DSH_WFXM_TRACE_FAIL_RATE_PCT, 'DSH_WFXM_TRACE_FAIL_RATE_PCT', 0, 100, 30)
+  const p95Ms = read(env.DSH_WFXM_TRACE_P95_MS, 'DSH_WFXM_TRACE_P95_MS', 0, 86_400_000, 300_000)
+  const minAttempts = read(env.DSH_WFXM_TRACE_MIN_ATTEMPTS, 'DSH_WFXM_TRACE_MIN_ATTEMPTS', 1, 10_000, 10)
+  return { thresholds: { failRate: failRatePct / 100, p95Ms, minAttempts }, warnings }
+}
+
+/**
+ * Deterministic order: data integrity first, then repeated failure, cost,
+ * traces crossing the P7-6 thresholds, and finally observations. `max` caps
+ * the list (default 3).
  */
 export function deriveSuggestions(input: SuggestionInput): Suggestion[] {
   const max = input.max ?? 3
@@ -75,6 +173,16 @@ export function deriveSuggestions(input: SuggestionInput): Suggestion[] {
       suggestions.push({
         action: `今日 token 已用 ${Math.round(ratio * 100)}%，收紧任务或调高每日上限`,
         evidence: `预算 ${budget.tokens}/${budget.limit}`,
+        risk: 'R1',
+      })
+    }
+  }
+
+  if (input.trace !== null && input.trace !== undefined) {
+    for (const breach of evaluateTraceHealth(input.trace.health, input.trace.thresholds)) {
+      suggestions.push({
+        action: TRACE_ACTIONS[breach.kind],
+        evidence: breach.reason,
         risk: 'R1',
       })
     }

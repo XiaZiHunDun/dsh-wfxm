@@ -189,6 +189,13 @@ export interface MemoryHealthDigest {
   conflicts: number
 }
 
+/** P7-6: trace metrics crossing thresholds; the composition root evaluates them. */
+export interface TraceHealthDigest {
+  reasons: string[]
+  /** Stable breach shape (`fail-rate,p95`), used for the quiet window key. */
+  key: string
+}
+
 export interface InspectionPatrolOptions {
   dbPath: string
   config: PatrolConfig
@@ -245,6 +252,14 @@ export interface InspectionPatrolOptions {
     to: Date
     candidates: CandidateInput[]
   }) => string | null | Promise<string | null>
+  /**
+   * P7-6: trace thresholds. Called once per cycle with the 24h digest window;
+   * non-empty `reasons` pushes one immediate alert under the shared quiet
+   * window. `null` keeps the cycle unchanged; a throw is isolated.
+   */
+  traceHealth?: (
+    window: { from: Date; to: Date },
+  ) => TraceHealthDigest | null | Promise<TraceHealthDigest | null>
   logger?: {
     info?: (message: string) => void
     warn?: (message: string) => void
@@ -350,6 +365,20 @@ export function createInspectionPatrol(options: InspectionPatrolOptions): Inspec
     }
     let pushed: string | null = null
 
+    // P7-6: a trace snapshot every cycle; thresholds decide whether it is an
+    // alert. A failure leaves the cycle intact, like the other optional reads.
+    let trace: TraceHealthDigest | null = null
+    try {
+      trace = (await options.traceHealth?.({
+        from: new Date(at.getTime() - DEFAULT_DIGEST_WINDOW_HOURS * 3_600_000),
+        to: at,
+      })) ?? null
+    } catch (error) {
+      options.logger?.warn?.(
+        `trace health failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+
     if (alert.level === 'immediate') {
       const failedIds = report.items
         .filter((item) => item.status === 'fail')
@@ -392,6 +421,29 @@ export function createInspectionPatrol(options: InspectionPatrolOptions): Inspec
         })
         lastAlertAt.set(key, at.getTime())
         pushed = pushed === null ? 'memory' : `${pushed}+memory`
+      }
+    }
+
+    // P7-6: trace thresholds alert immediately when crossed; the same 30-minute
+    // quiet window keeps a persistent breach from spamming.
+    if (trace !== null && trace.reasons.length > 0) {
+      const key = `patrol-trace:${target}:${trace.key}`
+      const last = lastAlertAt.get(key) ?? 0
+      if (at.getTime() - last < quietMs) {
+        options.logger?.info?.(
+          `trace alert suppressed by the ${Math.round(quietMs / 60_000)}min quiet window: ${trace.key}`,
+        )
+      } else {
+        push({
+          text: [
+            `[轨迹告警] ${target} · 近 ${DEFAULT_DIGEST_WINDOW_HOURS}h`,
+            ...trace.reasons.map((reason) => `- ${reason}`),
+            '查看：node scripts/trace.mjs stats --since 7d',
+          ].join('\n'),
+          dedupeKey: `${key}:${Math.floor(at.getTime() / quietMs)}`,
+        })
+        lastAlertAt.set(key, at.getTime())
+        pushed = pushed === null ? 'trace' : `${pushed}+trace`
       }
     }
 

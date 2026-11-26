@@ -86,11 +86,13 @@ import {
   createResourceProbe,
   createSystemdAdapter,
   deriveSuggestions,
+  evaluateTraceHealth,
   formatSuggestionDigest,
   probeListeningPorts,
   probeLogErrors,
   readInspectionConfig,
   readPatrolConfig,
+  readTraceHealthConfig,
   spawnRunner,
 } from '@dsh-wfxm/svcops'
 import { createIsolationResolver, summarizeTaskDigest } from '@dsh-wfxm/tasks'
@@ -766,6 +768,9 @@ async function main() {
     }
     const inspection = readInspectionConfig(process.env)
     for (const warning of inspection.warnings) log('patrol:warn', warning)
+    // P7-6：轨迹阈值（失败率/p95），建议与即时告警共用同一组判定。
+    const { thresholds: traceThresholds, warnings: traceWarnings } = readTraceHealthConfig(process.env)
+    for (const warning of traceWarnings) log('patrol:warn', warning)
     // Slice O: a dedicated headless runner keeps the summary turn away from the
     // resident front-desk session (no interleaving) and pays one cold start per
     // day at most. `foreground=rule` drills have no model, so they skip it.
@@ -785,6 +790,21 @@ async function main() {
     // `semantic:false` keeps the weekly message model-free (Slice P).
     const gatewayStore = host.stores.gateway
     const taskStore = host.stores.tasks
+
+    // P7-6：轨迹指标（事件 + attempt）只在这一处读；失败返回 null，调用方静默跳过。
+    const readTraceMetrics = (from, to) => {
+      if (telemetry === null) return null
+      try {
+        const window = { from: from.toISOString(), to: to.toISOString(), limit: 5_000 }
+        return computeTraceMetrics({
+          events: telemetry.query(window).rows,
+          attempts: telemetry.attemptsSince(window),
+        })
+      } catch (error) {
+        log('patrol:warn', `trace metrics failed: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+    }
 
     const buildConversationDigest = async ({ from, to, title, semantic }) => {
       const taskById = new Map(taskStore.listTasks().map((task) => [task.id, task]))
@@ -1019,6 +1039,24 @@ async function main() {
         },
         // Slice CD (G4): advisory only — derives from state already collected and
         // never creates a task. "做 #n" still goes through the normal approval.
+        // P7-6：把近 7 天轨迹指标接到同一组建议规则上。
+        traceHealth: ({ from, to }) => {
+          const metrics = readTraceMetrics(from, to)
+          if (metrics === null) return null
+          const breaches = evaluateTraceHealth(
+            {
+              attempts: metrics.attempts,
+              failedAttempts: metrics.failedAttempts,
+              p95Ms: metrics.durationP95Ms,
+            },
+            traceThresholds,
+          )
+          if (breaches.length === 0) return null
+          return {
+            reasons: breaches.map((breach) => breach.reason),
+            key: breaches.map((breach) => breach.kind).sort().join(','),
+          }
+        },
         suggestionDigest: ({ to, candidates }) => {
           const since = new Date(to.getTime() - 7 * 24 * 3_600_000)
           const tasks = taskStore.listTasks()
@@ -1031,6 +1069,7 @@ async function main() {
           const budget = config.dailyTokenBudget > 0
             ? { tokens: usage.inputTokens + usage.outputTokens, limit: config.dailyTokenBudget }
             : null
+          const metrics = readTraceMetrics(since, to)
           // P7-3: 建议落库后带稳定 id 展示；已采纳/已忽略的同内容不再出现。
           const derived = deriveSuggestions({
             candidates,
@@ -1041,6 +1080,16 @@ async function main() {
             },
             reviewFacts: lastFactReview,
             budget,
+            trace: metrics === null
+              ? null
+              : {
+                  health: {
+                    attempts: metrics.attempts,
+                    failedAttempts: metrics.failedAttempts,
+                    p95Ms: metrics.durationP95Ms,
+                  },
+                  thresholds: traceThresholds,
+                },
           })
           const records = taskStore.recordSuggestions({
             day: dayKey(to),
