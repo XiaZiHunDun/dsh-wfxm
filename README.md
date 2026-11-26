@@ -52,7 +52,7 @@ dsh-wfxm/
 node scripts/build.mjs
 node scripts/build.mjs --noEmit
 
-# 全量验证（58 套件；preimages 为 advisory）
+# 全量验证（59 套件；preimages 为 advisory）
 node scripts/check-style.mjs
 node scripts/verify-all.mjs
 

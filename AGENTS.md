@@ -52,7 +52,7 @@
   项目注册已自动推导 VCS/`prepareCmd`/`rulesDoc`（Slice BR）；`/use` 项目粘性写 `threads.project_id`
   且锚点只在回复任务消息时继承（Slice BS）；真机 worktree 灰度通过。一期结项口径见 [09 §九](docs/09-能力对照与实现路径.md)。
 - **能力状态真源为 `docs/status.json`** —— 由 `scripts/verify-docs.mjs`（verify-all 第 1 套件）校验；
-  当前 `verify-all` 52 套件（P2-1 新增 `eval-loop`）。
+  当前 `verify-all` 59 套件（P2-1 新增 `eval-loop`，N8 新增 `migrations`）。
 - **第二阶段（测评体系）已收口（2026-11-25）** —— P0/P1/P2-1..P2-5 完成：引擎在公共仓 `agent-eval`，
   本仓只加薄驱动与 `/eval` 闭环；发布/nightly 硬门禁按 2026-12-08 观察期自动切换。
   运行口径见 [16 §12.65–12.67](docs/16-部署与运行.md)，状态见 `docs/status.json` 的 `EVAL-DSH`。

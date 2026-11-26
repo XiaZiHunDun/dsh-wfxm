@@ -73,7 +73,7 @@ await check('migration creates the module-① tables plus the B1 threads anchor'
     .all()
     .map((row) => row.name)
   const version = db
-    .prepare('SELECT version FROM schema_migrations WHERE module = ?')
+    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
     .get('gateway')
   const objects = db
     .prepare("SELECT name FROM sqlite_master WHERE type IN ('index','trigger')")
@@ -124,7 +124,7 @@ await check('a v1 database upgrades to the current schema: threads, dedupe, chat
     ALTER TABLE route_decisions DROP COLUMN project_id;
     ALTER TABLE route_decisions DROP COLUMN project_matched_by;
   `)
-  raw.prepare("UPDATE schema_migrations SET version = 1 WHERE module = 'gateway'").run()
+  raw.prepare("DELETE FROM schema_migrations WHERE module = 'gateway' AND version > 1").run()
   raw.close()
   const reopened = createGatewayStore(upgradePath)
   const db = new DatabaseConstructor(upgradePath, { readonly: true })
@@ -138,7 +138,7 @@ await check('a v1 database upgrades to the current schema: threads, dedupe, chat
     .prepare('PRAGMA table_info(session_routes)')
     .all()
     .map((row) => row.name)
-  const version = db.prepare("SELECT version FROM schema_migrations WHERE module = 'gateway'").get()
+  const version = db.prepare("SELECT MAX(version) AS version FROM schema_migrations WHERE module = 'gateway'").get()
   db.close()
   const migrated = reopened.getSessionRoute('cli_app', 'chat_legacy', 'orchestrator')
   const inboxStillWorks = reopened.listInbox().length === 0
@@ -490,7 +490,7 @@ await check('the session_routes contract step refuses a half-migrated row', () =
     INSERT INTO session_routes(channel_id, thread_id, chat_id, session_kind, session_id, updated_at)
       VALUES ('cli_app', 'chat_legacy', NULL, 'orchestrator', 'sess_legacy', '2026-11-01T00:00:00.000Z');
   `)
-  raw.prepare("UPDATE schema_migrations SET version = 5 WHERE module = 'gateway'").run()
+  raw.prepare("DELETE FROM schema_migrations WHERE module = 'gateway' AND version > 5").run()
   raw.close()
   assert.throws(
     () => createGatewayStore(path),

@@ -25,6 +25,7 @@ const only = argv.find((item) => item.startsWith('--only='))?.slice('--only='.le
 const SUITES = [
   { name: 'docs', file: 'scripts/verify-docs.mjs', ci: true },
   { name: 'supply', file: 'scripts/verify-supply.mjs', ci: true },
+  { name: 'migrations', file: 'scripts/verify-migrations.mjs', ci: true },
   { name: 'changes', file: 'plugins/changes/scripts/verify-changes.mjs', ci: true },
   { name: 'calendar', file: 'plugins/calendar/scripts/verify-calendar.mjs', ci: true },
   { name: 'search', file: 'scripts/verify-search.mjs', ci: true },

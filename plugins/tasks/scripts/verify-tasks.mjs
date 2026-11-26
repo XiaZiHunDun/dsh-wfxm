@@ -61,7 +61,9 @@ const store = createTaskStore(dbPath)
 
 await check('v15: tasks.expert migrates, persists and defaults to null', () => {
   const meta = new DatabaseConstructor(dbPath)
-  const row = meta.prepare("SELECT version FROM schema_migrations WHERE module = 'tasks'").get()
+  const row = meta
+    .prepare("SELECT MAX(version) AS version FROM schema_migrations WHERE module = 'tasks'")
+    .get()
   meta.close()
   assert.equal(row.version, 15)
 
@@ -135,7 +137,7 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     .all()
     .map((row) => row.name)
   const version = db
-    .prepare('SELECT version FROM schema_migrations WHERE module = ?')
+    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
     .get('tasks')
   const objects = db
     .prepare("SELECT name FROM sqlite_master WHERE type IN ('index','trigger','view')")
@@ -243,7 +245,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     ALTER TABLE tasks DROP COLUMN cost_usd;
     ALTER TABLE tasks DROP COLUMN approved_level;
     ALTER TABLE tasks DROP COLUMN expert;
-    UPDATE schema_migrations SET version = 1 WHERE module = 'tasks';
+    DELETE FROM schema_migrations WHERE module = 'tasks' AND version > 1;
   `)
   raw.close()
 
@@ -251,7 +253,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
   const keptTask = upgraded.listTasks().find((task) => task.id === kept.id)
   const fresh = upgraded.createTask({ intent: 'created after the upgrade', riskLevel: 'R1' })
   const db = new DatabaseConstructor(upgradeDb, { readonly: true })
-  const version = db.prepare('SELECT version FROM schema_migrations WHERE module = ?').get('tasks')
+  const version = db.prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?').get('tasks')
   const view = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name = 'v_task_anchors'")
     .get()

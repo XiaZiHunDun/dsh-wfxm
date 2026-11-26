@@ -37,8 +37,14 @@
       "name": "契约版本化与迁移",
       "state": "partial",
       "phase": "v2",
-      "evidence": ["plugins/gateway/src/store.ts", "docs/15-数据与契约.md"],
-      "note": "已有 schema_migrations(module, version)；缺 migrations/NNN_*.sql + checksum"
+      "evidence": [
+        "plugins/sql-migrate/src/index.ts",
+        "plugins/tasks/migrations",
+        "plugins/gateway/migrations",
+        "scripts/verify-migrations.mjs",
+        "docs/15-数据与契约.md"
+      ],
+      "note": "试点：tasks/gateway 用 migrations/NNN_*.sql + checksum + 篡改拒绝启动；其余 12 个 store 仍为代码内数组"
     },
     {
       "id": "N2",

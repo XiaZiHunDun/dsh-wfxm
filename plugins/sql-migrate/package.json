@@ -1,0 +1,22 @@
+{
+  "name": "@dsh-wfxm/sql-migrate",
+  "version": "0.1.0",
+  "description": "docs/15 §七 migration runner: per-module <NNN>_<name>.sql files, checksum verification and refuse-to-start on drift",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}

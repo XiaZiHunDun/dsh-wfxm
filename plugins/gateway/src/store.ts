@@ -8,8 +8,10 @@
 
 import { mkdirSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
+import { runMigrations, type MigrationDatabase } from '@dsh-wfxm/sql-migrate'
 import { guardOutboundPayload } from './outbound.js'
 import { inboundText } from './text.js'
 import {
@@ -41,177 +43,10 @@ import {
 } from './model.js'
 
 const MIGRATION_MODULE = 'gateway'
+/** docs/15 §七: SQL files sit next to the package, outside the compiled `lib/`. */
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
 
-const MIGRATIONS_DDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  module      TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  applied_at  TEXT NOT NULL,
-  PRIMARY KEY (module)
-);
-`
-
-const INBOX_DDL = `
-CREATE TABLE IF NOT EXISTS inbox (
-  id              TEXT PRIMARY KEY,
-  channel_id      TEXT NOT NULL,
-  msg_id          TEXT NOT NULL,
-  kind            TEXT NOT NULL CHECK (kind IN ('message','card_action','control')),
-  actor_id        TEXT,
-  content_json    TEXT NOT NULL,
-  chat_id         TEXT,
-  thread_id       TEXT,
-  reply_to_msg_id TEXT,
-  status          TEXT NOT NULL CHECK (status IN
-                    ('accepted','triaged','routed','done','failed','rejected')),
-  error_code      TEXT,
-  received_at     TEXT NOT NULL,
-  processed_at    TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_inbox_dedup ON inbox(channel_id, msg_id);
-CREATE INDEX IF NOT EXISTS ix_inbox_status ON inbox(status, received_at);
-`
-
-const ACTORS_DDL = `
-CREATE TABLE IF NOT EXISTS actors (
-  id           TEXT PRIMARY KEY,
-  kind         TEXT NOT NULL CHECK (kind IN ('owner','system')),
-  display_name TEXT,
-  created_at   TEXT NOT NULL
-);
-`
-
-const BINDINGS_DDL = `
-CREATE TABLE IF NOT EXISTS channel_bindings (
-  id               TEXT PRIMARY KEY,
-  actor_id         TEXT NOT NULL,
-  channel_id       TEXT NOT NULL,
-  external_user_id TEXT NOT NULL,
-  bound_at         TEXT NOT NULL,
-  revoked_at       TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_binding_live
-  ON channel_bindings(channel_id, external_user_id) WHERE revoked_at IS NULL;
-`
-
-const SESSION_ROUTES_DDL = `
-CREATE TABLE IF NOT EXISTS session_routes (
-  channel_id   TEXT NOT NULL,
-  thread_id    TEXT NOT NULL,
-  session_kind TEXT NOT NULL CHECK (session_kind IN ('orchestrator','chat')),
-  session_id   TEXT NOT NULL,
-  project_id   TEXT,
-  updated_at   TEXT NOT NULL,
-  PRIMARY KEY (channel_id, thread_id, session_kind)
-);
-`
-
-const ROUTE_DECISIONS_DDL = `
-CREATE TABLE IF NOT EXISTS route_decisions (
-  id             TEXT PRIMARY KEY,
-  trigger_id     TEXT NOT NULL,
-  action         TEXT NOT NULL CHECK (action IN
-                   ('answer','ack','ask','accept','attach','ignore','stop')),
-  target_task_id TEXT,
-  thread_id      TEXT,
-  reason         TEXT NOT NULL,
-  confidence     REAL,
-  prompt_version TEXT,
-  created_at     TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_route_decisions_trigger ON route_decisions(trigger_id, created_at);
-CREATE INDEX IF NOT EXISTS ix_route_decisions_action  ON route_decisions(action, created_at);
-CREATE TRIGGER IF NOT EXISTS route_decisions_no_update BEFORE UPDATE ON route_decisions
-  BEGIN SELECT RAISE(ABORT, 'route_decisions is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS route_decisions_no_delete BEFORE DELETE ON route_decisions
-  BEGIN SELECT RAISE(ABORT, 'route_decisions is append-only'); END;
-`
-
-const OUTBOX_DDL = `
-CREATE TABLE IF NOT EXISTS outbox (
-  id               TEXT PRIMARY KEY,
-  topic            TEXT NOT NULL,
-  payload_json     TEXT NOT NULL,
-  status           TEXT NOT NULL CHECK (status IN ('pending','sent','failed')),
-  attempts         INTEGER NOT NULL DEFAULT 0,
-  next_retry_at    TEXT,
-  created_at       TEXT NOT NULL,
-  sent_at          TEXT,
-  lease_owner      TEXT,
-  lease_expires_at TEXT,
-  external_msg_id  TEXT,
-  last_error       TEXT,
-  task_id          TEXT,
-  thread_id        TEXT,
-  reply_to_msg_id  TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_outbox_pending ON outbox(status, next_retry_at);
-CREATE INDEX IF NOT EXISTS ix_outbox_thread  ON outbox(thread_id, status, next_retry_at);
-`
-
-/** B1 Thread anchors (15 §9.1). */
-const THREADS_DDL = `
-CREATE TABLE IF NOT EXISTS threads (
-  id          TEXT PRIMARY KEY,
-  channel_id  TEXT NOT NULL,
-  chat_id     TEXT NOT NULL,
-  kind        TEXT NOT NULL CHECK (kind IN ('topic','root')),
-  topic_id    TEXT,
-  root_msg_id TEXT,
-  project_id  TEXT,
-  created_at  TEXT NOT NULL,
-  last_msg_at TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_thread_key
-  ON threads(channel_id, chat_id, kind, COALESCE(topic_id,''), COALESCE(root_msg_id,''));
-CREATE INDEX IF NOT EXISTS ix_threads_chat ON threads(channel_id, chat_id, last_msg_at);
-`
-
-/** v3: idempotency key for producers that may retry (e.g. ⑤ receipt closure). */
-const OUTBOX_DEDUPE_DDL = `
-ALTER TABLE outbox ADD COLUMN dedupe_key TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS ux_outbox_dedupe
-  ON outbox(dedupe_key) WHERE dedupe_key IS NOT NULL;
-`
-
-interface Migration {
-  version: number
-  sql: string
-  /** Runs before the DDL; a throw refuses the migration (and therefore startup). */
-  guard?: (db: Database) => void
-}
-
-/** v4 (§9.3 step 1, expand): the channel chat id gets its own column. */
-const SESSION_ROUTE_ADD_CHAT_ID_DDL = `
-ALTER TABLE session_routes ADD COLUMN chat_id TEXT;
-`
-
-/** v5 (§9.3 step 2, migrate): backfill from the old `thread_id` column. */
-const SESSION_ROUTE_BACKFILL_CHAT_ID_DDL = `
-UPDATE session_routes SET chat_id = thread_id WHERE chat_id IS NULL;
-`
-
-/**
- * v6 (§9.3 step 3, contract): rebuild with PK `(channel_id, chat_id,
- * session_kind)` and drop `thread_id`. Refuses to run on half-migrated rows.
- */
-const SESSION_ROUTE_DROP_THREAD_ID_DDL = `
-CREATE TABLE session_routes_next (
-  channel_id   TEXT NOT NULL,
-  chat_id      TEXT NOT NULL,
-  session_kind TEXT NOT NULL CHECK (session_kind IN ('orchestrator','chat')),
-  session_id   TEXT NOT NULL,
-  project_id   TEXT,
-  updated_at   TEXT NOT NULL,
-  PRIMARY KEY (channel_id, chat_id, session_kind)
-);
-INSERT INTO session_routes_next(channel_id, chat_id, session_kind, session_id, project_id, updated_at)
-  SELECT channel_id, chat_id, session_kind, session_id, project_id, updated_at FROM session_routes;
-DROP TABLE session_routes;
-ALTER TABLE session_routes_next RENAME TO session_routes;
-`
-
-function assertSessionRoutesContractible(db: Database): void {
+function assertSessionRoutesContractible(db: MigrationDatabase): void {
   const empty = db
     .prepare("SELECT COUNT(*) AS n FROM session_routes WHERE chat_id IS NULL OR TRIM(chat_id) = ''")
     .get() as { n: number }
@@ -239,94 +74,6 @@ function assertSessionRoutesContractible(db: Database): void {
   }
 }
 
-/**
- * v7 (11 §5.3.1): every routing decision records which project it resolved to
- * and how (`explicit` / `anchor` / `sticky` / `single` / `asked`), so a wrong
- * answer can be explained later without guessing.
- */
-const DECISION_PROJECT_DDL = `
-ALTER TABLE route_decisions ADD COLUMN project_id TEXT;
-ALTER TABLE route_decisions ADD COLUMN project_matched_by TEXT;
-`
-
-/**
- * v8 (AR37): a finished task can be woken after ③ re-verifies the actor, and
- * that decision deserves its own audited action. SQLite cannot alter a CHECK
- * constraint, so the append-only table is rebuilt (triggers and indexes drop
- * with it and are recreated here).
- */
-const DECISION_WAKE_ACTION_DDL = `
-CREATE TABLE route_decisions_next (
-  id             TEXT PRIMARY KEY,
-  trigger_id     TEXT NOT NULL,
-  action         TEXT NOT NULL CHECK (action IN
-                   ('answer','ack','ask','accept','attach','ignore','stop','wake')),
-  target_task_id TEXT,
-  thread_id      TEXT,
-  reason         TEXT NOT NULL,
-  confidence     REAL,
-  prompt_version TEXT,
-  created_at     TEXT NOT NULL,
-  project_id     TEXT,
-  project_matched_by TEXT
-);
-INSERT INTO route_decisions_next(
-  id, trigger_id, action, target_task_id, thread_id, reason,
-  confidence, prompt_version, created_at, project_id, project_matched_by
-)
-SELECT id, trigger_id, action, target_task_id, thread_id, reason,
-       confidence, prompt_version, created_at, project_id, project_matched_by
-  FROM route_decisions;
-DROP TABLE route_decisions;
-ALTER TABLE route_decisions_next RENAME TO route_decisions;
-CREATE INDEX IF NOT EXISTS ix_route_decisions_trigger ON route_decisions(trigger_id, created_at);
-CREATE INDEX IF NOT EXISTS ix_route_decisions_action  ON route_decisions(action, created_at);
-CREATE TRIGGER IF NOT EXISTS route_decisions_no_update BEFORE UPDATE ON route_decisions
-  BEGIN SELECT RAISE(ABORT, 'route_decisions is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS route_decisions_no_delete BEFORE DELETE ON route_decisions
-  BEGIN SELECT RAISE(ABORT, 'route_decisions is append-only'); END;
-`
-
-/**
- * v9 (docs/14 §四): one-time pairing codes. Only the sha256 hash of the code
- * is stored; the raw code is shown to the owner once at mint time. Codes are
- * short-lived (default 5 min) and consumed exactly once — a successful consume
- * also creates the channel binding atomically.
- */
-const PAIRING_CODES_DDL = `
-CREATE TABLE IF NOT EXISTS pairing_codes (
-  code_hash   TEXT PRIMARY KEY,
-  actor_id    TEXT NOT NULL,
-  channel_id  TEXT,
-  created_at  TEXT NOT NULL,
-  expires_at  TEXT NOT NULL,
-  consumed_at TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_pairing_codes_expiry ON pairing_codes(expires_at);
-`
-
-/** Append-only list; each version runs once per database. */
-const MIGRATIONS: readonly Migration[] = [
-  {
-    version: 1,
-    sql: [
-      INBOX_DDL,
-      ACTORS_DDL,
-      BINDINGS_DDL,
-      SESSION_ROUTES_DDL,
-      ROUTE_DECISIONS_DDL,
-      OUTBOX_DDL,
-    ].join('\n'),
-  },
-  { version: 2, sql: THREADS_DDL },
-  { version: 3, sql: OUTBOX_DEDUPE_DDL },
-  { version: 4, sql: SESSION_ROUTE_ADD_CHAT_ID_DDL },
-  { version: 5, sql: SESSION_ROUTE_BACKFILL_CHAT_ID_DDL },
-  { version: 6, sql: SESSION_ROUTE_DROP_THREAD_ID_DDL, guard: assertSessionRoutesContractible },
-  { version: 7, sql: DECISION_PROJECT_DDL },
-  { version: 8, sql: DECISION_WAKE_ACTION_DDL },
-  { version: 9, sql: PAIRING_CODES_DDL },
-]
 
 export interface AcceptInboundInput {
   channelId: string
@@ -774,32 +521,11 @@ function toOutbox(row: OutboxRow): OutboxItem {
 }
 
 function migrate(db: Database): void {
-  db.exec(MIGRATIONS_DDL)
-  const row = db
-    .prepare('SELECT MAX(version) AS version FROM schema_migrations WHERE module = ?')
-    .get(MIGRATION_MODULE) as { version: number | null } | undefined
-  let current = row?.version ?? 0
-
-  for (const migration of MIGRATIONS) {
-    if (migration.version <= current) continue
-    db.transaction(() => {
-      migration.guard?.(db)
-      db.exec(migration.sql)
-      // `schema_migrations` is shared by every module on the same `ops.sqlite`.
-      // Modules that predate docs/15 created it with `PRIMARY KEY (module)`,
-      // while ③/⑦ use `PRIMARY KEY (module, version)`; `CREATE TABLE IF NOT
-      // EXISTS` lets whoever opens first decide. A DELETE + INSERT keeps one
-      // row per module without relying on an `ON CONFLICT` target that may not
-      // exist, so migration stays correct regardless of which shape won.
-      db.prepare('DELETE FROM schema_migrations WHERE module = ?').run(MIGRATION_MODULE)
-      db.prepare('INSERT INTO schema_migrations(module, version, applied_at) VALUES (?, ?, ?)').run(
-        MIGRATION_MODULE,
-        migration.version,
-        new Date().toISOString(),
-      )
-    }).immediate()
-    current = migration.version
-  }
+  runMigrations(db, {
+    module: MIGRATION_MODULE,
+    dir: MIGRATIONS_DIR,
+    guards: { 6: assertSessionRoutesContractible },
+  })
 }
 
 function requiredText(value: unknown, field: string): string {
