@@ -23,6 +23,7 @@ import {
   createReceiptRelay,
   createTaskProgressRelay,
   ingestInbound,
+  parseSuggestionCommand,
   redactedText,
   type DispatchReport,
   type DiagCommand,
@@ -39,6 +40,7 @@ import {
   type RouteAction,
   type RunningTaskSnapshot,
   type SpillPort,
+  type SuggestionCommand,
   type TaskControlReport,
   type TaskProgressReport,
   type WakeReport,
@@ -88,6 +90,7 @@ import { nextDueAt as advanceReminder, type ReminderStore } from '@dsh-wfxm/remi
 import {
   createTaskStore,
   createTaskWorker,
+  planTaskRisk,
   type CheckpointRollbackPort,
   type LifecycleAudit,
   type SnapshotPort,
@@ -1205,6 +1208,21 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       return
     }
 
+    if (command.kind === 'suggestions') {
+      const rows = tasks.listSuggestions({ limit: 10 })
+      const lines = ['最近建议：']
+      if (rows.length === 0) lines.push('（暂无）')
+      for (const row of rows) {
+        const task = row.taskId === null ? null : tasks.getTask(row.taskId)
+        const link = row.taskId === null
+          ? ''
+          : ` · 任务 ${task?.taskRef ?? row.taskId.slice(0, 8)}`
+        lines.push(`- [${row.status}] ${row.id} · ${row.action}${link}`)
+      }
+      reply(lines.join('\n'), 'suggestions')
+      return
+    }
+
     if (command.kind === 'status') {
       const at = now()
       const all = tasks.listTasks()
@@ -1308,6 +1326,67 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     } catch (error) {
       logger?.warn?.(`diagnostics sweep failed: ${messageOf(error)}`)
     }
+  }
+
+  function suggestionTaskLabel(taskId: string | null): string {
+    if (taskId === null) return '—'
+    return tasks.getTask(taskId)?.taskRef ?? taskId.slice(0, 8)
+  }
+
+  /**
+   * P7-3: 「做 #n」→ 建任务并记录采纳；「忽略 #n」→ 只记状态。
+   * 采纳仍走正常审批：任务创建后由下面的 task-created 分支决定是否发确认卡。
+   */
+  function handleSuggestionCommand(
+    result: IngestResult,
+    command: SuggestionCommand,
+  ): ForegroundOutcome {
+    const reply = (text: string): ForegroundOutcome => ({
+      action: 'reply',
+      text,
+      threadId: result.thread?.id ?? '',
+    })
+    if (result.actor === null || result.actor.kind !== 'owner') {
+      return reply('仅 owner 可采纳日报建议。')
+    }
+    const suggestion = tasks.resolveSuggestion(command.ref)
+    if (suggestion === null) {
+      return reply(`找不到建议 #${command.ref}；用 /diag suggestions 查看最近的建议与 id。`)
+    }
+    if (command.kind === 'ignore') {
+      if (suggestion.status === 'accepted') {
+        return reply(`建议 ${suggestion.id} 已采纳为任务 ${suggestionTaskLabel(suggestion.taskId)}，不能忽略。`)
+      }
+      tasks.ignoreSuggestion(suggestion.id)
+      return reply(`已忽略建议 ${suggestion.id}，后续日报不再重复；如需执行请直接描述需求。`)
+    }
+    if (suggestion.status === 'accepted') {
+      return reply(`建议 ${suggestion.id} 已采纳（任务 ${suggestionTaskLabel(suggestion.taskId)}）。`)
+    }
+    if (suggestion.status === 'ignored') {
+      return reply(`建议 ${suggestion.id} 已忽略；如需执行请直接描述需求。`)
+    }
+
+    const plan = planTaskRisk(suggestion.action, suggestion.risk)
+    const task = tasks.createTask({
+      intent: suggestion.action,
+      riskLevel: plan.risk,
+      originMsgId: result.inbox.msgId,
+      projectId: result.project?.projectId ?? null,
+      correlationId: result.inbox.id,
+      suggestionId: suggestion.id,
+    })
+    for (const assertion of plan.assertions) tasks.addAssertion(task.id, assertion)
+    if (result.thread !== null) {
+      tasks.bindThread({
+        taskId: task.id,
+        threadId: result.thread.id,
+        relation: 'default_owner',
+        anchorMsgId: result.inbox.msgId,
+      })
+    }
+    tasks.acceptSuggestion(suggestion.id, task.id)
+    return { action: 'task-created', taskId: task.id, note: `suggestion:${suggestion.id}` }
   }
 
   /**
@@ -1621,6 +1700,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       return { result, foreground: null, error: null }
     }
 
+    // P7-3: 建议命令可能落在活跃任务线程里，必须在 task 路由/补料之前截获。
+    const suggestionCommand = parseSuggestionCommand(textOf(input.content) ?? '')
+
     // Read-only "details" click (Slice L): a separate card, never a decision.
     // Nothing here touches ③, so the pending approval and its nonce survive.
     if (result.details !== null && result.details !== undefined) {
@@ -1784,7 +1866,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       })
     }
 
-    if (result.target.kind !== 'orchestrator' || result.duplicate) {
+    if (result.duplicate || (suggestionCommand === null && result.target.kind !== 'orchestrator')) {
       // An anchored message on a live task is routed by ① straight to ⑤; that
       // path used to end here with the input parked forever (Slice AO).
       if (result.target.kind === 'task' && !result.duplicate && result.relay?.enqueued === true
@@ -1821,36 +1903,41 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     }
 
     let turn: ForegroundOutcome
-    try {
-      const history = result.thread === null ? [] : gateway.threadHistory(result.thread.id, 12)
-      turn = await foreground({
-        result,
-        text: textOf(input.content),
-        ...history.length === 0 ? {} : { history },
-      })
-    } catch (error) {
-      // AR13: a foreground that cannot decide is not a silent drop.
-      const reason = `foreground failed: ${messageOf(error)}`
-      gateway.updateInboxStatus(result.inbox.id, 'failed', 'foreground-unavailable')
-      gateway.appendRouteDecision({
-        triggerId: result.inbox.id,
-        action: 'ignore',
-        reason,
-        threadId: result.thread?.id ?? null,
-      })
-      logger?.warn?.(reason)
-      noteTelemetry({
-        event: 'message.failed',
-        level: 'error',
-        phase: 'ingest',
-        traceId: result.inbox.id,
-        spanId: result.inbox.id,
-        messageId: result.inbox.msgId,
-        ...result.thread === null ? {} : { threadId: result.thread.id },
-        status: 'failed',
-        error: { code: 'foreground-unavailable', message: reason },
-      })
-      return { result, foreground: null, error: 'foreground-unavailable' }
+    // P7-3: 采纳后仍复用下面的 task-created 审批/回执。
+    if (suggestionCommand !== null) {
+      turn = handleSuggestionCommand(result, suggestionCommand)
+    } else {
+      try {
+        const history = result.thread === null ? [] : gateway.threadHistory(result.thread.id, 12)
+        turn = await foreground({
+          result,
+          text: textOf(input.content),
+          ...history.length === 0 ? {} : { history },
+        })
+      } catch (error) {
+        // AR13: a foreground that cannot decide is not a silent drop.
+        const reason = `foreground failed: ${messageOf(error)}`
+        gateway.updateInboxStatus(result.inbox.id, 'failed', 'foreground-unavailable')
+        gateway.appendRouteDecision({
+          triggerId: result.inbox.id,
+          action: 'ignore',
+          reason,
+          threadId: result.thread?.id ?? null,
+        })
+        logger?.warn?.(reason)
+        noteTelemetry({
+          event: 'message.failed',
+          level: 'error',
+          phase: 'ingest',
+          traceId: result.inbox.id,
+          spanId: result.inbox.id,
+          messageId: result.inbox.msgId,
+          ...result.thread === null ? {} : { threadId: result.thread.id },
+          status: 'failed',
+          error: { code: 'foreground-unavailable', message: reason },
+        })
+        return { result, foreground: null, error: 'foreground-unavailable' }
+      }
     }
 
     // A turn with a note is recorded, not hidden (AR13): either the front desk
@@ -1948,6 +2035,11 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
             ack = `任务 ${ref} 在确认前已进入执行，未能挂起，请检查。`
           }
         }
+      }
+
+      // P7-3: 让 owner 看到这条任务来自哪条建议。
+      if (task !== null && task.suggestionId !== null && task.suggestionId !== undefined) {
+        ack = ack.replace(/^收到，/, `已采纳建议 ${task.suggestionId}，`)
       }
 
       gateway.enqueueOutbox({

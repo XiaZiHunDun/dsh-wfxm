@@ -76,6 +76,11 @@ export type {
   TaskStore,
   TaskUsage,
   TransitionInput,
+  RecordSuggestionsInput,
+  ListSuggestionsOptions,
+  SuggestionItem,
+  SuggestionRecord,
+  SuggestionStatus,
   WakeTaskInput,
 } from './store.js'
 export { createTaskStore } from './store.js'

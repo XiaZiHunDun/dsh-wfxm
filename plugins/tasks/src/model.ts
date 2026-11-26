@@ -106,6 +106,8 @@ export interface Task {
   originMsgId: string | null
   /** Short unguessable routing hint (15 §9.2); never an authorization input. */
   taskRef: string | null
+  /** P7-3: 由「做 #n」采纳的日报建议；普通对话任务为 null。 */
+  suggestionId?: string | null
   /** B4-b: `serial` (workspace root) or `worktree` (one git worktree per task). */
   isolation: IsolationMode
   worktreePath: string | null

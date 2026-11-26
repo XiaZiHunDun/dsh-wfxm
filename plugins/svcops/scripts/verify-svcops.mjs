@@ -1,4 +1,4 @@
-import { createSystemdAdapter, deriveSuggestions, formatSuggestions, SvcOpsError } from '../lib/index.js'
+import { createSystemdAdapter, deriveSuggestions, formatSuggestionDigest, formatSuggestions, SvcOpsError } from '../lib/index.js'
 
 const calls = []
 const customRunner = {
@@ -197,6 +197,17 @@ await check('CD suggestions: quiet state renders nothing; candidates respect max
     max: 2,
   })
   return formatSuggestions(empty) === null && many.length === 2
+})
+
+await check('P7-3 digest: entries carry stable ids while ordinals stay reply-friendly', () => {
+  const text = formatSuggestionDigest([
+    { id: 'sug_0123456789', ordinal: 1, action: '排查重试耗尽', evidence: '近 7 天重试耗尽 2 个', risk: 'R1' },
+    { id: 'sug_abcdef0123', ordinal: 2, action: '处理合并冲突', evidence: 'merge_state=conflict', risk: 'R2' },
+  ])
+  return /1\. \[R1\] 排查重试耗尽.* · 做 #sug_0123456789/.test(text)
+    && /2\. \[R2\] 处理合并冲突.* · 做 #sug_abcdef0123/.test(text)
+    && /做 #1」或「做 #sug_xxxxxxxx/.test(text)
+    && formatSuggestionDigest([]) === null
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

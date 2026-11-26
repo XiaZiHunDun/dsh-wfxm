@@ -8,7 +8,7 @@
 
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import DatabaseConstructor, { type Database } from 'better-sqlite3'
 import { runMigrations } from '@dsh-wfxm/sql-migrate'
@@ -69,6 +69,37 @@ export interface CreateTaskInput {  intent: string
   maxAttempts?: number
   round?: number
   correlationId?: string
+  /** P7-3: 采纳的日报建议 id；写进 tasks.suggestion_id。 */
+  suggestionId?: string | null
+}
+
+export type SuggestionStatus = 'pending' | 'accepted' | 'ignored'
+
+export interface SuggestionItem {
+  action: string
+  evidence: string
+  risk: 'R1' | 'R2'
+}
+
+export interface SuggestionRecord extends SuggestionItem {
+  id: string
+  digestDay: string
+  ordinal: number
+  status: SuggestionStatus
+  taskId: string | null
+  createdAt: string
+  decidedAt: string | null
+}
+
+export interface RecordSuggestionsInput {
+  day: string
+  items: readonly SuggestionItem[]
+  now?: string
+}
+
+export interface ListSuggestionsOptions {
+  status?: SuggestionStatus
+  limit?: number
 }
 
 export interface TransitionInput {
@@ -206,6 +237,16 @@ export interface TaskStore {
   createTask(input: CreateTaskInput): Task
   getTask(id: string): Task | null
   listTasks(filter?: TaskFilter): Task[]
+  /**
+   * P7-3: 把当天的建议落库并返回要展示的条目。
+   * 已 accepted/ignored 的同内容建议不再返回（日报不重复刷屏）。
+   */
+  recordSuggestions(input: RecordSuggestionsInput): SuggestionRecord[]
+  /** 按稳定 id / 唯一前缀 / 最新日报的序号（#1）解析建议。 */
+  resolveSuggestion(ref: string): SuggestionRecord | null
+  acceptSuggestion(id: string, taskId: string): SuggestionRecord | null
+  ignoreSuggestion(id: string): SuggestionRecord | null
+  listSuggestions(options?: ListSuggestionsOptions): SuggestionRecord[]
   /**
    * Read-only health check for the task lifecycle: no lease-less `running`, no
    * unclaimable `queued`, no event seq gap, no terminal row without a receipt.
@@ -485,6 +526,7 @@ interface TaskRow {
   round: number
   origin_msg_id: string | null
   task_ref: string | null
+  suggestion_id: string | null
   next_attempt_at: string | null
   isolation: IsolationMode
   worktree_path: string | null
@@ -501,8 +543,21 @@ interface TaskRow {
   cost_usd: number | null
 }
 
-interface EventRow {
+interface SuggestionRow {
   id: string
+  fingerprint: string
+  digest_day: string
+  ordinal: number
+  action: string
+  evidence: string
+  risk: 'R1' | 'R2'
+  status: SuggestionStatus
+  task_id: string | null
+  created_at: string
+  decided_at: string | null
+}
+
+interface EventRow {  id: string
   task_id: string
   seq: number
   type: TaskEventType
@@ -620,6 +675,7 @@ function toTask(row: TaskRow): Task {
     round: row.round,
     originMsgId: row.origin_msg_id,
     taskRef: row.task_ref,
+    suggestionId: row.suggestion_id,
     isolation: row.isolation,
     worktreePath: row.worktree_path,
     baseCommit: row.base_commit,
@@ -633,6 +689,21 @@ function toTask(row: TaskRow): Task {
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     costUsd: row.cost_usd,
+  }
+}
+
+function toSuggestion(row: SuggestionRow): SuggestionRecord {
+  return {
+    id: row.id,
+    digestDay: row.digest_day,
+    ordinal: row.ordinal,
+    action: row.action,
+    evidence: row.evidence,
+    risk: row.risk,
+    status: row.status,
+    taskId: row.task_id,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at,
   }
 }
 
@@ -789,8 +860,8 @@ export function createTaskStore(dbPath: string): TaskStore {
     INSERT INTO tasks(
       id, project_id, conversation_id, session_id, start_cursor, intent, expert, risk_level,
       status, plan_json, attempt, max_attempts, lease_owner, lease_expires_at,
-      correlation_id, round, origin_msg_id, task_ref, created_at, started_at, finished_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL)
+      correlation_id, round, origin_msg_id, task_ref, suggestion_id, created_at, started_at, finished_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)
   `)
   const selectTask = db.prepare('SELECT * FROM tasks WHERE id = ?')
   const listTasksAll = db.prepare('SELECT * FROM tasks ORDER BY created_at ASC, rowid ASC')
@@ -800,6 +871,38 @@ export function createTaskStore(dbPath: string): TaskStore {
   const listTasksByProject = db.prepare(
     'SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC, rowid ASC',
   )
+  // P7-3: 日报建议台账；id 由内容指纹派生，跨天保持稳定。
+  const selectSuggestionById = db.prepare('SELECT * FROM suggestions WHERE id = ?')
+  const selectSuggestionByFingerprint = db.prepare('SELECT * FROM suggestions WHERE fingerprint = ?')
+  const selectLatestSuggestionDay = db.prepare('SELECT MAX(digest_day) AS day FROM suggestions')
+  const selectSuggestionByOrdinal = db.prepare(
+    'SELECT * FROM suggestions WHERE digest_day = ? AND ordinal = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+  )
+  const selectSuggestionPrefix = db.prepare(
+    'SELECT * FROM suggestions WHERE id LIKE ? ORDER BY created_at DESC, rowid DESC LIMIT 3',
+  )
+  const listSuggestionsAll = db.prepare(
+    'SELECT * FROM suggestions ORDER BY created_at DESC, rowid DESC LIMIT ?',
+  )
+  const listSuggestionsByStatus = db.prepare(
+    'SELECT * FROM suggestions WHERE status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
+  )
+  const clearSuggestionOrdinals = db.prepare('UPDATE suggestions SET ordinal = 0 WHERE digest_day = ?')
+  const updateSuggestionOrdinal = db.prepare('UPDATE suggestions SET digest_day = ?, ordinal = ? WHERE id = ?')
+  const insertSuggestion = db.prepare(`
+    INSERT INTO suggestions(
+      id, fingerprint, digest_day, ordinal, action, evidence, risk,
+      status, task_id, created_at, decided_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)
+  `)
+  const acceptSuggestionStmt = db.prepare(`
+    UPDATE suggestions SET status = 'accepted', task_id = ?, decided_at = ?
+     WHERE id = ? AND status = 'pending'
+  `)
+  const ignoreSuggestionStmt = db.prepare(`
+    UPDATE suggestions SET status = 'ignored', decided_at = ?
+     WHERE id = ? AND status = 'pending'
+  `)
   // Slice BK (I5): accumulate across retries; NULL is treated as zero.
   const addTaskUsage = db.prepare(`
     UPDATE tasks
@@ -1524,6 +1627,72 @@ export function createTaskStore(dbPath: string): TaskStore {
     return getTask(taskId) as Task
   }
 
+  function recordSuggestions(input: RecordSuggestionsInput): SuggestionRecord[] {
+    const now = input.now ?? new Date().toISOString()
+    const shown: SuggestionRecord[] = []
+    db.transaction(() => {
+      clearSuggestionOrdinals.run(input.day)
+      const seen = new Set<string>()
+      for (const item of input.items) {
+        const fingerprint = createHash('sha256')
+          .update(`${item.action}\u0000${item.evidence}`)
+          .digest('hex')
+        if (seen.has(fingerprint)) continue
+        seen.add(fingerprint)
+        const existing = selectSuggestionByFingerprint.get(fingerprint) as SuggestionRow | undefined
+        // 已采纳/已忽略的同一建议不再出现在日报里。
+        if (existing !== undefined && existing.status !== 'pending') continue
+        const ordinal = shown.length + 1
+        if (existing !== undefined) {
+          updateSuggestionOrdinal.run(input.day, ordinal, existing.id)
+          shown.push(toSuggestion({ ...existing, digest_day: input.day, ordinal }))
+        } else {
+          const id = `sug_${fingerprint.slice(0, 10)}`
+          insertSuggestion.run(id, fingerprint, input.day, ordinal, item.action, item.evidence, item.risk, now)
+          const row = selectSuggestionById.get(id) as SuggestionRow
+          shown.push(toSuggestion(row))
+        }
+      }
+    }).immediate()
+    return shown
+  }
+
+  function resolveSuggestion(ref: string): SuggestionRecord | null {
+    const clean = ref.trim().replace(/^#/, '')
+    if (clean === '') return null
+    if (/^\d+$/.test(clean)) {
+      const latest = selectLatestSuggestionDay.get() as { day: string | null }
+      if (latest.day === null) return null
+      const row = selectSuggestionByOrdinal.get(latest.day, Number(clean)) as SuggestionRow | undefined
+      return row === undefined ? null : toSuggestion(row)
+    }
+    const id = clean.startsWith('sug_') ? clean : `sug_${clean}`
+    const exact = selectSuggestionById.get(id) as SuggestionRow | undefined
+    if (exact !== undefined) return toSuggestion(exact)
+    const rows = selectSuggestionPrefix.all(`${id}%`) as SuggestionRow[]
+    return rows.length === 1 ? toSuggestion(rows[0]) : null
+  }
+
+  function acceptSuggestion(id: string, taskId: string): SuggestionRecord | null {
+    acceptSuggestionStmt.run(taskId, new Date().toISOString(), id)
+    const row = selectSuggestionById.get(id) as SuggestionRow | undefined
+    return row === undefined ? null : toSuggestion(row)
+  }
+
+  function ignoreSuggestion(id: string): SuggestionRecord | null {
+    ignoreSuggestionStmt.run(new Date().toISOString(), id)
+    const row = selectSuggestionById.get(id) as SuggestionRow | undefined
+    return row === undefined ? null : toSuggestion(row)
+  }
+
+  function listSuggestions(options?: ListSuggestionsOptions): SuggestionRecord[] {
+    const limit = options?.limit ?? 10
+    const rows = options?.status === undefined
+      ? listSuggestionsAll.all(limit)
+      : listSuggestionsByStatus.all(options.status, limit)
+    return (rows as SuggestionRow[]).map(toSuggestion)
+  }
+
   return {
     createTask(input) {
       if (typeof input.intent !== 'string' || input.intent.trim() === '') {
@@ -1575,6 +1744,7 @@ export function createTaskStore(dbPath: string): TaskStore {
         round,
         originMsgId: optionalText(input.originMsgId, 'originMsgId'),
         taskRef: null,
+        suggestionId: optionalText(input.suggestionId, 'suggestionId'),
         isolation: 'serial',
         worktreePath: null,
         baseCommit: null,
@@ -1608,6 +1778,7 @@ export function createTaskStore(dbPath: string): TaskStore {
               task.round,
               task.originMsgId,
               task.taskRef,
+              task.suggestionId ?? null,
               task.createdAt,
             )
             appendEvent(task.id, 'task.created', {
@@ -1625,6 +1796,16 @@ export function createTaskStore(dbPath: string): TaskStore {
     },
 
     getTask,
+
+    recordSuggestions,
+
+    resolveSuggestion,
+
+    acceptSuggestion,
+
+    ignoreSuggestion,
+
+    listSuggestions,
 
     recordUsage,
 

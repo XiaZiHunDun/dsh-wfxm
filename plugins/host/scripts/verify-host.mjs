@@ -2123,6 +2123,64 @@ await check('BD 5: an IMAP failure is retried later, not persisted', async () =>
   return ok
 })
 
+await check('P7-3: 「做 #1」creates a linked task and suppresses repeats', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const items = [{
+    action: '排查近期重试耗尽的任务',
+    evidence: '近 7 天重试耗尽 2 个',
+    risk: 'R1',
+  }]
+  const [suggestion] = host.stores.tasks.recordSuggestions({
+    day: '2026-11-10', items, now: '2026-11-10T09:00:00.000Z',
+  })
+  await say(host, '做 #1')
+  const tasks = host.stores.tasks.listTasks()
+  const task = tasks[0]
+  const ack = host.stores.gateway.listOutbox({ status: 'pending' })
+    .filter((item) => item.topic === 'say' && String(item.payload.text).includes('已采纳建议'))
+    .at(-1)
+  const ackText = String(ack?.payload?.text ?? '')
+
+  // 再发一次（用稳定 id）：不重复建任务。
+  await say(host, `做 #${suggestion.id}`)
+  const taskCount = host.stores.tasks.listTasks().length
+  // 第二天日报不再出现已采纳项。
+  const nextDay = host.stores.tasks.recordSuggestions({
+    day: '2026-11-11', items, now: '2026-11-11T09:00:00.000Z',
+  })
+
+  const items2 = [{
+    action: '复核长期未引用的事实',
+    evidence: '事实体检复核候选 4 条',
+    risk: 'R1',
+  }]
+  const [ignoredTarget] = host.stores.tasks.recordSuggestions({
+    day: '2026-11-11', items: items2, now: '2026-11-11T09:00:00.000Z',
+  })
+  await say(host, '忽略 #1')
+  const ignored = host.stores.tasks.listSuggestions({ status: 'ignored' })
+  await say(host, 'diag-suggestions', { content: { text: '/diag suggestions', externalMsgId: 'om_sug_diag' } })
+  const diagText = String(host.stores.gateway.listOutbox({ status: 'pending' })
+    .filter((item) => item.topic === 'say' && String(item.payload.text).includes('最近建议'))
+    .at(-1)?.payload?.text ?? '')
+  const quiet = host.stores.tasks.recordSuggestions({
+    day: '2026-11-12', items: items2, now: '2026-11-12T09:00:00.000Z',
+  })
+  host.close()
+  return tasks.length === 1
+    && task.suggestionId === suggestion.id
+    && ackText.includes('已采纳建议')
+    && ackText.includes(suggestion.id)
+    && taskCount === 1
+    && nextDay.length === 0
+    && ignored.length === 1
+    && ignored[0].id === ignoredTarget.id
+    && diagText.includes(suggestion.id)
+    && diagText.includes('accepted')
+    && quiet.length === 0
+})
+
 rmSync(dir, { recursive: true, force: true })
 
 console.log(`\nhost: ${pass} passed, ${fail} failed`)

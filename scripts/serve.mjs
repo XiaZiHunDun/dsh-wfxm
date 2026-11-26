@@ -86,7 +86,7 @@ import {
   createResourceProbe,
   createSystemdAdapter,
   deriveSuggestions,
-  formatSuggestions,
+  formatSuggestionDigest,
   probeListeningPorts,
   probeLogErrors,
   readInspectionConfig,
@@ -1031,7 +1031,8 @@ async function main() {
           const budget = config.dailyTokenBudget > 0
             ? { tokens: usage.inputTokens + usage.outputTokens, limit: config.dailyTokenBudget }
             : null
-          return formatSuggestions(deriveSuggestions({
+          // P7-3: 建议落库后带稳定 id 展示；已采纳/已忽略的同内容不再出现。
+          const derived = deriveSuggestions({
             candidates,
             failures: {
               retryExhausted: failed.filter((task) => task.attempt >= task.maxAttempts).length,
@@ -1040,7 +1041,13 @@ async function main() {
             },
             reviewFacts: lastFactReview,
             budget,
-          }))
+          })
+          const records = taskStore.recordSuggestions({
+            day: dayKey(to),
+            items: derived,
+            now: to.toISOString(),
+          })
+          return formatSuggestionDigest(records)
         },
         deliver: ({ text, dedupeKey }) => {
           // v1 has one owner; `listBindings` is ascending, so the newest live

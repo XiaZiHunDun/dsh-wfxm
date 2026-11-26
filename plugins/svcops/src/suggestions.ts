@@ -104,6 +104,12 @@ export function deriveSuggestions(input: SuggestionInput): Suggestion[] {
   return suggestions.slice(0, max)
 }
 
+/** 落库后的建议（tasks 模块返回的结构与本类型兼容）。 */
+export interface SuggestionEntry extends Suggestion {
+  id: string
+  ordinal: number
+}
+
 /** Renders the digest block; `null` when there is nothing to suggest. */
 export function formatSuggestions(suggestions: Suggestion[]): string | null {
   if (suggestions.length === 0) return null
@@ -112,5 +118,22 @@ export function formatSuggestions(suggestions: Suggestion[]): string | null {
     lines.push(`${index + 1}. [${suggestion.risk}] ${suggestion.action}（依据：${suggestion.evidence}）`)
   })
   lines.push('回复「做 #n」按正常审批流程发起，不会自动执行。')
+  return lines.join('\n')
+}
+
+/**
+ * P7-3: 带稳定 id 的日报建议块。
+ *
+ * 序号仍然从 1 开始方便回复「做 #1」，同时给出可跨天引用的 `#sug_*`。
+ */
+export function formatSuggestionDigest(entries: readonly SuggestionEntry[]): string | null {
+  if (entries.length === 0) return null
+  const lines = ['建议：']
+  for (const entry of entries) {
+    lines.push(
+      `${entry.ordinal}. [${entry.risk}] ${entry.action}（依据：${entry.evidence}） · 做 #${entry.id}`,
+    )
+  }
+  lines.push('回复「做 #1」或「做 #sug_xxxxxxxx」按正常审批流程发起；「忽略 #1」记录为已忽略，不会自动执行。')
   return lines.join('\n')
 }

@@ -201,10 +201,10 @@ check('runMigrations reports applied once, then verified on the next open', () =
   const first = runMigrations(db, { module: 'tasks', dir: TASKS_DIR })
   const second = runMigrations(db, { module: 'tasks', dir: TASKS_DIR })
   db.close()
-  return first.applied.length === 15
+  return first.applied.length === 16
     && first.verified === 0
     && second.applied.length === 0
-    && second.verified === 15
+    && second.verified === 16
 })
 
 check('editing an applied SQL file refuses to start', () => {
@@ -234,9 +234,9 @@ check('a missing file for an applied version refuses to start', () => {
   const db = new DatabaseConstructor(path)
   runMigrations(db, { module: 'tasks', dir })
   db.close()
-  // Remove the newest file: the remaining 1..14 stay contiguous, so the
-  // failure has to come from "applied version 15 has no file".
-  rmSync(join(dir, '015_expert.sql'))
+  // Remove the newest file: the remaining 1..15 stay contiguous, so the
+  // failure has to come from "applied version 16 has no file".
+  rmSync(join(dir, '016_suggestions.sql'))
   const reopened = new DatabaseConstructor(path)
   try {
     assert.throws(

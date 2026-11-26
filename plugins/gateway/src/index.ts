@@ -131,6 +131,8 @@ export type {
 } from './project-resolver.js'
 export { parseEvalCommand } from './eval-command.js'
 export type { EvalCommand } from './eval-command.js'
+export { parseSuggestionCommand } from './suggestion-command.js'
+export type { SuggestionCommand } from './suggestion-command.js'
 export { parseDiagCommand } from './diag-command.js'
 export type { DiagCommand } from './diag-command.js'
 export type {

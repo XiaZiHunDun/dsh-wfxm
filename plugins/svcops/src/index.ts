@@ -51,11 +51,12 @@ export { gradeInspection } from './inspection/alerting.js'
 export type { AlertDecision, AlertLevel } from './inspection/alerting.js'
 export { CANDIDATE_RULES, deriveCandidates } from './inspection/candidates.js'
 export type { CandidateInput, CandidateRule, CandidateStrength } from './inspection/candidates.js'
-export { deriveSuggestions, formatSuggestions } from './suggestions.js'
+export { deriveSuggestions, formatSuggestionDigest, formatSuggestions } from './suggestions.js'
 export type {
   FailureBreakdown,
   Suggestion,
   SuggestionBudget,
+  SuggestionEntry,
   SuggestionInput,
 } from './suggestions.js'
 export {

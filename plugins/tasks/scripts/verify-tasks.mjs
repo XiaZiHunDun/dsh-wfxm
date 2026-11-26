@@ -65,7 +65,7 @@ await check('v15: tasks.expert migrates, persists and defaults to null', () => {
     .prepare("SELECT MAX(version) AS version FROM schema_migrations WHERE module = 'tasks'")
     .get()
   meta.close()
-  assert.equal(row.version, 15)
+  assert.equal(row.version, 16)
 
   const explicit = store.createTask({ intent: '修 bug', riskLevel: 'R1', expert: 'dsh' })
   assert.equal(explicit.expert, 'dsh')
@@ -154,9 +154,10 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     && names.includes('task_checkpoints')
     && names.includes('resource_locks')
     && names.includes('task_usage_daily')
-    && version.version === 15
-    && ['input_tokens', 'output_tokens', 'cost_usd', 'approved_level', 'expert'].every((column) =>
-      columns.includes(column))
+    && names.includes('suggestions')
+    && version.version === 16
+    && ['input_tokens', 'output_tokens', 'cost_usd', 'approved_level', 'expert', 'suggestion_id']
+      .every((column) => columns.includes(column))
     && objects.includes('ux_task_events_seq')
     && objects.includes('task_events_no_update')
     && objects.includes('task_events_no_delete')
@@ -226,6 +227,9 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     DROP VIEW v_task_anchors;
     DROP TABLE task_inputs;
     DROP TABLE task_threads;
+    DROP INDEX ix_suggestions_status;
+    DROP INDEX ix_suggestions_day;
+    DROP TABLE suggestions;
     DROP INDEX ux_tasks_task_ref;
     ALTER TABLE tasks DROP COLUMN task_ref;
     ALTER TABLE tasks DROP COLUMN origin_msg_id;
@@ -245,6 +249,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     ALTER TABLE tasks DROP COLUMN cost_usd;
     ALTER TABLE tasks DROP COLUMN approved_level;
     ALTER TABLE tasks DROP COLUMN expert;
+    ALTER TABLE tasks DROP COLUMN suggestion_id;
     DELETE FROM schema_migrations WHERE module = 'tasks' AND version > 1;
   `)
   raw.close()
@@ -268,7 +273,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     && keptTask.taskRef === null
     && fresh.taskRef !== null
     && fresh.taskRef.length === 10
-    && version.version === 15
+    && version.version === 16
     && keptTask.isolation === 'serial'
     && fresh.isolation === 'serial'
     && fresh.worktreePath === null
@@ -2861,6 +2866,58 @@ await check('auditLifecycle detects every structural anomaly', () => {
   } finally {
     raw.close()
     auditStore.close()
+  }
+})
+
+// P7-3: 建议台账（稳定 id、序号解析、采纳/忽略抑制）。
+await check('suggestions: stable ids, ordinal refs, accept/ignore suppression', async () => {
+  const suggestionStore = createTaskStore(join(dir, 'suggestions.sqlite'))
+  try {
+    const items = [
+      { action: '排查近期重试耗尽的任务', evidence: '近 7 天重试耗尽 2 个', risk: 'R1' },
+      { action: '处理 1 个合并冲突任务', evidence: '任务 merge_state=conflict', risk: 'R2' },
+    ]
+    const first = suggestionStore.recordSuggestions({
+      day: '2026-11-26', items, now: '2026-11-26T00:00:00.000Z',
+    })
+    assert.equal(first.length, 2)
+    assert.match(first[0].id, /^sug_[0-9a-f]{10}$/)
+    assert.equal(first[0].ordinal, 1)
+
+    // 同内容跨天复用 id，序号重新编号。
+    const next = suggestionStore.recordSuggestions({
+      day: '2026-11-27', items, now: '2026-11-27T00:00:00.000Z',
+    })
+    assert.equal(next[0].id, first[0].id)
+    assert.equal(next[1].id, first[1].id)
+
+    // #1 / 前缀 / 全 id 都解析到同一条。
+    assert.equal(suggestionStore.resolveSuggestion('#1')?.id, first[0].id)
+    assert.equal(suggestionStore.resolveSuggestion(first[0].id.slice(0, 8))?.id, first[0].id)
+    assert.equal(suggestionStore.resolveSuggestion('999')?.id ?? null, null)
+
+    const task = suggestionStore.createTask({
+      intent: first[0].action, riskLevel: 'R1', suggestionId: first[0].id,
+    })
+    assert.equal(task.suggestionId, first[0].id)
+    suggestionStore.acceptSuggestion(first[0].id, task.id)
+    assert.equal(suggestionStore.listSuggestions({ status: 'accepted' }).length, 1)
+
+    // 已采纳项不再进入下一天的日报。
+    const after = suggestionStore.recordSuggestions({
+      day: '2026-11-28', items, now: '2026-11-28T00:00:00.000Z',
+    })
+    assert.equal(after.length, 1)
+    assert.equal(after[0].id, first[1].id)
+
+    suggestionStore.ignoreSuggestion(first[1].id)
+    const quiet = suggestionStore.recordSuggestions({
+      day: '2026-11-29', items, now: '2026-11-29T00:00:00.000Z',
+    })
+    return quiet.length === 0
+      && suggestionStore.listSuggestions({ status: 'ignored' }).length === 1
+  } finally {
+    suggestionStore.close()
   }
 })
 
