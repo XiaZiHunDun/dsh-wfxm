@@ -70,6 +70,7 @@ const SUITES = [
   { name: 'risk', file: 'plugins/tasks/scripts/verify-risk.mjs', ci: true },
   { name: 'telemetry', file: 'plugins/telemetry/scripts/verify-telemetry.mjs', ci: true },
   { name: 'instrumentation', file: 'plugins/telemetry/scripts/verify-instrumentation.mjs', ci: true },
+  { name: 'trace-cli', file: 'plugins/telemetry/scripts/verify-trace-cli.mjs', ci: true },
   { name: 'backup', file: 'scripts/verify-backup.mjs', ci: true },
   { name: 'deploy', file: 'scripts/verify-deploy.mjs', ci: false },
   { name: 'health-alert', file: 'scripts/verify-health-alert.mjs', ci: true },

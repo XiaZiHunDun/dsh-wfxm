@@ -52,7 +52,7 @@ import {
   summarizeConversationDigest,
 } from '@dsh-wfxm/gateway'
 import { createWfxmHost, createRuleForeground } from '@dsh-wfxm/host'
-import { createTelemetryStore } from '@dsh-wfxm/telemetry'
+import { computeTraceMetrics, createTelemetryStore, formatTraceWeekly } from '@dsh-wfxm/telemetry'
 import {
   buildMailDigest,
   buildTodoExtractionPrompt,
@@ -925,7 +925,21 @@ async function main() {
                 from,
                 to,
               })
-          return [tasks, conversations, evalSection]
+          // P6-3: ⑦ 自己的轨迹指标（Top 错误码/阶段/时延/工具与执行失败率/可诊断率）。
+          // 读取失败只丢这一段，不影响任务/会话/测评段。
+          let traceSection = null
+          try {
+            const window = { from: from.toISOString(), to: to.toISOString(), limit: 5_000 }
+            traceSection = telemetry === null
+              ? null
+              : formatTraceWeekly(computeTraceMetrics({
+                  events: telemetry.query(window).rows,
+                  attempts: telemetry.attemptsSince(window),
+                }))
+          } catch (error) {
+            log('weekly:trace:warn', error instanceof Error ? error.message : String(error))
+          }
+          return [tasks, conversations, evalSection, traceSection]
             .filter((section) => section !== null && section !== '')
             .join('\n') || null
         },

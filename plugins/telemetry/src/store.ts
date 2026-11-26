@@ -195,7 +195,7 @@ export interface TraceQueryInput {
   from?: string
   /** Exclusive ISO upper bound on `ts`. */
   to?: string
-  /** 1..500; defaults to 100. */
+  /** 1..5000; defaults to 100. Reports pass a larger limit explicitly. */
   limit?: number
 }
 
@@ -277,6 +277,15 @@ export interface FinishAttemptInput {
   costUsd?: number
 }
 
+export interface AttemptWindowInput {
+  /** Inclusive ISO lower bound on `started_at`. */
+  from?: string
+  /** Exclusive ISO upper bound on `started_at`. */
+  to?: string
+  /** 1..5000; defaults to 1000. */
+  limit?: number
+}
+
 export interface TaskAttempt {
   id: string
   taskId: string
@@ -326,6 +335,8 @@ export interface TelemetryStore {
   finishAttempt(taskId: string, attempt: number, input: FinishAttemptInput): boolean
   getAttempt(taskId: string, attempt: number): TaskAttempt | null
   attempts(taskId: string): TaskAttempt[]
+  /** Attempts whose `started_at` falls in the window, newest first (reports/stats). */
+  attemptsSince(input?: AttemptWindowInput): TaskAttempt[]
   query(input?: TraceQueryInput): TraceQueryResult
   stats(): TelemetryStats
   prune(input?: { now?: Date }): PruneResult
@@ -723,6 +734,13 @@ export function createTelemetryStore(options: TelemetryStoreOptions): TelemetryS
   const selectAttempts = db.prepare(
     'SELECT * FROM task_attempts WHERE task_id = ? ORDER BY attempt ASC',
   )
+  const selectAttemptsSince = db.prepare(`
+    SELECT * FROM task_attempts
+    WHERE (@from IS NULL OR started_at >= @from)
+      AND (@to IS NULL OR started_at < @to)
+    ORDER BY started_at DESC
+    LIMIT @limit
+  `)
   const insertAttempt = db.prepare(`
     INSERT INTO task_attempts (
       id, task_id, attempt, trace_id, executor, model, started_at, finished_at, outcome,
@@ -998,6 +1016,16 @@ export function createTelemetryStore(options: TelemetryStoreOptions): TelemetryS
     return (selectAttempts.all(taskId) as AttemptRow[]).map(toAttempt)
   }
 
+  function attemptsSince(input: AttemptWindowInput = {}): TaskAttempt[] {
+    const limit = Math.min(5_000, Math.max(1, Math.trunc(input.limit ?? 1_000)))
+    const rows = selectAttemptsSince.all({
+      from: input.from ?? null,
+      to: input.to ?? null,
+      limit,
+    }) as AttemptRow[]
+    return rows.map(toAttempt)
+  }
+
   function query(input: TraceQueryInput = {}): TraceQueryResult {
     const clauses: string[] = []
     const params: Record<string, string | number> = {}
@@ -1026,7 +1054,7 @@ export function createTelemetryStore(options: TelemetryStoreOptions): TelemetryS
       params.to = input.to
     }
     const where = clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`
-    const limit = Math.min(500, Math.max(1, Math.trunc(input.limit ?? 100)))
+    const limit = Math.min(5_000, Math.max(1, Math.trunc(input.limit ?? 100)))
     const counted = db
       .prepare(`SELECT COUNT(*) AS n FROM trace_events ${where}`)
       .get(params) as { n: number }
@@ -1100,6 +1128,7 @@ export function createTelemetryStore(options: TelemetryStoreOptions): TelemetryS
     finishAttempt,
     getAttempt,
     attempts,
+    attemptsSince,
     query,
     stats,
     prune,

@@ -11,6 +11,7 @@ export {
 } from './store.js'
 export type {
   AttemptOutcome,
+  AttemptWindowInput,
   BeginAttemptInput,
   DiskUsage,
   DropReason,
@@ -54,6 +55,19 @@ export type {
   TelemetryMode,
   ValidatedTelemetryEvent,
 } from './event.js'
+
+export {
+  PHASE_LABELS,
+  computeTraceMetrics,
+  formatDurationMs,
+  formatTraceWeekly,
+  percentile,
+} from './report.js'
+export type {
+  TraceErrorCount,
+  TraceMetrics,
+  TracePhaseCount,
+} from './report.js'
 
 export { dayKey, uuidv7 } from './ids.js'
 
