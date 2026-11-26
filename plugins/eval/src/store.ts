@@ -347,6 +347,7 @@ export function createEvalStore(dbPath: string): EvalStore {
      WHERE id = ?
   `)
   const countFindings = db.prepare('SELECT status, COUNT(*) AS c FROM eval_findings GROUP BY status')
+  const selectOpenFindingKeys = db.prepare("SELECT suite, task_id FROM eval_findings WHERE status = 'open'")
 
   function getRun(id: string): EvalRun | null {
     const row = selectRunById.get(id) as RunRow | undefined
@@ -613,7 +614,14 @@ export function createEvalStore(dbPath: string): EvalStore {
       finishedAt: snapshot.recordedAt,
     })
 
-    const findings = upsertFindings(run.id, failures.map((item) => ({
+    // 同一 suite+task 已经有 open finding 时不再重复登记：nightly 每天跑，
+    // 否则未处理 findings 会按天膨胀；run 本身仍然完整入库。
+    const openKeys = new Set(
+      (selectOpenFindingKeys.all() as Array<{ suite: string; task_id: string }>)
+        .map((row) => `${row.suite}\u0000${row.task_id}`),
+    )
+    const fresh = failures.filter((item) => !openKeys.has(`${item.suite}\u0000${item.taskId ?? ''}`))
+    const findings = upsertFindings(run.id, fresh.map((item) => ({
       suite: item.suite,
       taskId: item.taskId ?? null,
       severity: 'fail' as const,

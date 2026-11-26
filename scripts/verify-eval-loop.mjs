@@ -814,6 +814,21 @@ await check('nightly eval writes runs and findings to the eval DB', async () => 
   assert.equal(findings.length, 1)
   assert.equal(findings[0].suite, 'smoke')
   store.close()
+
+  // 第二天再跑：run 继续累积，但同一 suite+task 的 open finding 不重复登记。
+  const again = spawnSync(process.execPath, [
+    join(root, 'scripts/eval/nightly.mjs'),
+    '--engine', stub,
+    '--db', db,
+    '--out', out,
+    '--candidates', join(dir, 'nightly-candidates'),
+    '--staging', join(dir, 'nightly-staging'),
+  ], { env, encoding: 'utf8', timeout: 120_000 })
+  assert.equal(again.status, 0, again.stderr)
+  const store2 = createEvalStore(db)
+  assert.equal(store2.listRuns().length, 2)
+  assert.equal(store2.listFindings({ limit: 10 }).length, 1)
+  store2.close()
   return true
 })
 
