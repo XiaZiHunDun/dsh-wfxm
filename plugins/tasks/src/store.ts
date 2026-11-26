@@ -400,6 +400,16 @@ const TASKS_V14_DDL = `
 ALTER TABLE tasks ADD COLUMN approved_level TEXT CHECK (approved_level IN ('R2','R3'));
 `
 
+/**
+ * v15 (O1 / Slice CH): explicit expert chosen by `/expert <name>`. Null means
+ * "decide at execution time" (project default, then global default). The value
+ * is intentionally not constrained by a CHECK: the registry lives in code and
+ * unknown names must fail loudly at execution, not be silently coerced here.
+ */
+const TASKS_V15_DDL = `
+ALTER TABLE tasks ADD COLUMN expert TEXT;
+`
+
 const MIGRATIONS: ReadonlyArray<{ version: number; ddl: string }> = [
   {
     version: 1,
@@ -418,6 +428,7 @@ const MIGRATIONS: ReadonlyArray<{ version: number; ddl: string }> = [
   { version: 12, ddl: TASKS_V12_DDL },
   { version: 13, ddl: TASKS_V13_DDL },
   { version: 14, ddl: TASKS_V14_DDL },
+  { version: 15, ddl: TASKS_V15_DDL },
 ]
 
 /** Slice BK (I5): one attempt's observed usage, accumulated per task. */
@@ -429,6 +440,8 @@ export interface TaskUsage {
 
 export interface CreateTaskInput {  intent: string
   riskLevel: RiskLevel
+  /** Slice CH (O1): explicit expert from `/expert <name>`; omitted = route later. */
+  expert?: string | null
   projectId?: string | null
   conversationId?: string | null
   sessionId?: string | null
@@ -841,6 +854,7 @@ interface TaskRow {
   session_id: string | null
   start_cursor: string | null
   intent: string
+  expert: string | null
   risk_level: RiskLevel
   approved_level: RiskLevel | null
   status: TaskStatus
@@ -975,6 +989,7 @@ function toTask(row: TaskRow): Task {
     sessionId: row.session_id,
     startCursor: row.start_cursor,
     intent: row.intent,
+    expert: row.expert,
     riskLevel: row.risk_level,
     approvedLevel: row.approved_level,
     status: row.status,
@@ -1177,10 +1192,10 @@ export function createTaskStore(dbPath: string): TaskStore {
 
   const insertTask = db.prepare(`
     INSERT INTO tasks(
-      id, project_id, conversation_id, session_id, start_cursor, intent, risk_level,
+      id, project_id, conversation_id, session_id, start_cursor, intent, expert, risk_level,
       status, plan_json, attempt, max_attempts, lease_owner, lease_expires_at,
       correlation_id, round, origin_msg_id, task_ref, created_at, started_at, finished_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL)
   `)
   const selectTask = db.prepare('SELECT * FROM tasks WHERE id = ?')
   const listTasksAll = db.prepare('SELECT * FROM tasks ORDER BY created_at ASC, rowid ASC')
@@ -1953,6 +1968,7 @@ export function createTaskStore(dbPath: string): TaskStore {
         sessionId: optionalText(input.sessionId, 'sessionId'),
         startCursor: optionalText(input.startCursor, 'startCursor'),
         intent: input.intent.trim(),
+        expert: optionalText(input.expert, 'expert'),
         riskLevel: input.riskLevel,
         status: 'queued',
         plan: input.plan ?? null,
@@ -1989,6 +2005,7 @@ export function createTaskStore(dbPath: string): TaskStore {
               task.sessionId,
               task.startCursor,
               task.intent,
+              task.expert ?? null,
               task.riskLevel,
               task.plan === null ? null : JSON.stringify(task.plan),
               task.maxAttempts,

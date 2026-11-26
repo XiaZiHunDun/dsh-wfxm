@@ -64,6 +64,8 @@ export interface DiagTask {
   round: number
   correlationId: string
   riskLevel: string
+  /** Slice CH (O1): explicit expert, when one was chosen. */
+  expert?: string | null
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
@@ -85,6 +87,7 @@ const PHASE_LABELS: Record<string, string> = {
 }
 
 const ERROR_HINTS: Record<string, string> = {
+  'expert-unavailable': '专家未注册，任务未执行',
   invalid_input: '输入不完整或无法解析',
   transient: '瞬时故障，可重试',
   timeout: '执行超时',
@@ -198,6 +201,7 @@ export function formatDiagReport(input: DiagReportInput): string {
 
   lines.push(`状态：${task.status} · 第 ${attemptNo}/${task.maxAttempts} 次尝试`
     + (task.round > 0 ? ` · 轮次 ${task.round}` : ''))
+  if (typeof task.expert === 'string' && task.expert !== '') lines.push(`专家：${task.expert}`)
 
   if (!input.hasTelemetry) {
     lines.push('诊断数据未启用（DSH_WFXM_TRACE=off 或未注入遥测）。')

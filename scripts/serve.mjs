@@ -24,7 +24,7 @@ import { accessSync, constants, existsSync, mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-import { createDshExecutor } from '@dsh-wfxm/executor'
+import { createDshExecutor, createExpertExecutor } from '@dsh-wfxm/executor'
 import { createChangeStore } from '@dsh-wfxm/changes'
 import { createEvalStore, createL2Runner, createCandidatePromoter, formatEvalWeekly } from '@dsh-wfxm/eval'
 import {
@@ -272,7 +272,7 @@ async function main() {
           })
           return isolation(record, project, config.workdir)
         }
-        const executor = createDshExecutor({
+        const dshExecutor = createDshExecutor({
           dshBin: config.dshBin,
           env: { ...process.env },
           telemetry,
@@ -290,6 +290,19 @@ async function main() {
             closeCheckpoint: (id, status) => stores.tasks.closeCheckpoint(id, status),
           },
         })
+        // Slice CH (O1): project default comes from ⑥'s public API at the
+        // composition root; the executor never reads another module's table.
+        const defaultExpert = process.env.DSH_WFXM_DEFAULT_EXPERT ?? 'dsh'
+        const executor = createExpertExecutor({
+          adapters: [{ name: 'dsh', execute: dshExecutor }],
+          defaultExpert,
+          projectExpert: (projectId) => {
+            const project = stores.memory.getProject(projectId)
+            return project?.defaultExpert ?? null
+          },
+          telemetry,
+        })
+        log('expert', { default: defaultExpert, adapters: ['dsh'] })
         const systemd = createSystemdAdapter({ runner: spawnRunner })
         // Slice AZ (AR37): the policy version in force at boot. Wake
         // re-verification rejects grants issued under a different version.

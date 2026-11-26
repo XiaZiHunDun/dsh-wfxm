@@ -181,6 +181,22 @@ await check('update changes fields; empty value clears prepare and worktree_root
   return true
 })
 
+await check('O1: --default-expert accepted, unknown rejected, empty clears', () => {
+  const added = run(['add', '--name', 'expert-add', '--root', plainDir2, '--default-expert', 'dsh'])
+  assert.equal(added.status, 0, added.stderr)
+  assert.equal(byName('expert-add').defaultExpert, 'dsh')
+
+  const bad = run(['update', 'expert-add', '--default-expert', 'ghost'])
+  assert.equal(bad.status, 1)
+  assert.match(bad.stderr, /--default-expert must be one of dsh/)
+  assert.equal(byName('expert-add').defaultExpert, 'dsh')
+
+  const cleared = run(['update', 'expert-add', '--default-expert', ''])
+  assert.equal(cleared.status, 0, cleared.stderr)
+  assert.equal(byName('expert-add').defaultExpert, null)
+  return true
+})
+
 await check('remove archives (hidden by default, visible with --all, idempotent)', () => {
   const removed = run(['remove', 'plain'])
   assert.equal(removed.status, 0, removed.stderr)

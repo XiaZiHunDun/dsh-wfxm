@@ -75,10 +75,15 @@
     {
       "id": "O1",
       "name": "领域路由与专家接入",
-      "state": "planned",
+      "state": "partial",
       "phase": "v2",
-      "evidence": ["plugins/knowledge/src/store.ts"],
-      "note": "projects.default_expert 字段已有；缺 ExpertExecutor"
+      "evidence": [
+        "plugins/executor/src/expert.ts",
+        "plugins/executor/scripts/verify-expert.mjs",
+        "plugins/tasks/src/expert.ts",
+        "plugins/knowledge/src/store.ts"
+      ],
+      "note": "Slice CH（2026-11-26）：ExpertExecutor + `/expert` + 项目/全局默认 + 未知专家硬失败（expert-unavailable）+ AR34 治理穿透验收；只注册 dsh，第二个真实专家与“问一次写回”未做"
     },
     {
       "id": "N6",

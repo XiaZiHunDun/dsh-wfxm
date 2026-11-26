@@ -20,7 +20,7 @@
  */
 
 import type { IngestResult } from '@dsh-wfxm/gateway'
-import { planTaskRisk } from '@dsh-wfxm/tasks'
+import { EXPERT_USAGE, parseExpertDirective, planTaskRisk } from '@dsh-wfxm/tasks'
 import type { RiskLevel, TaskStore } from '@dsh-wfxm/tasks'
 import { parseDecision, type Decision, type DecisionRepeat } from './decision.js'
 import { buildDecisionPrompt, type ConversationTurn } from './prompt.js'
@@ -279,12 +279,19 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
   const clock = options.now ?? (() => new Date())
 
   /** Rule-shaped actions, so a model decision and a fallback look the same. */
-  function createTask(result: IngestResult, threadId: string, intent: string, risk: RiskLevel): ForegroundOutcome {
+  function createTask(
+    result: IngestResult,
+    threadId: string,
+    intent: string,
+    risk: RiskLevel,
+    expert: string | null = null,
+  ): ForegroundOutcome {
     // The model never raises risk; this deterministic layer may (17 §7.1), and
     // attaches the template assertion that makes the escalation verifiable.
     const plan = planTaskRisk(intent, risk)
     const task = tasks.createTask({
       intent,
+      expert,
       riskLevel: plan.risk,
       originMsgId: result.inbox.msgId,
       projectId: result.project?.projectId ?? null,
@@ -397,11 +404,19 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
     if (mailRequest !== null) return runMailTodos(thread.id, mailRequest.hours)
 
     const live = liveTaskOn(tasks, thread.id, liveStatuses)
+    // Slice CH (O1): `/expert` is a deterministic command for the new-task
+    // path only. A live task keeps its expert and receives the text unchanged.
+    const directive = parseExpertDirective(trimmed)
+    const promptText = live === null ? directive.intent : trimmed
+    const taskExpert = live === null ? directive.expert : null
+    if (live === null && directive.usage) {
+      return { action: 'reply', text: EXPERT_USAGE, threadId: thread.id }
+    }
     const nowAt = clock()
     // 本轮只读一次：prompt 里的序号与取消时用的是同一份列表。
     const pendingReminders = reminders === null ? [] : reminders.listPending(thread.id, 8)
     const prompt = buildDecisionPrompt({
-      text: trimmed,
+      text: promptText,
       projectName: result.project?.name ?? null,
       liveTask: live,
       ...history === undefined ? {} : { history },
@@ -512,6 +527,6 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
     // A second task on the same thread would fight the live owner slot (#9), so
     // a work request while something is live is delivered as an input instead.
     if (live !== null) return queue(result, live.id)
-    return createTask(result, thread.id, decision.intent, decision.risk)
+    return createTask(result, thread.id, decision.intent, decision.risk, taskExpert)
   }
 }

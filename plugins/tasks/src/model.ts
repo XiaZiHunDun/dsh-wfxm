@@ -85,6 +85,8 @@ export interface Task {
   sessionId: string | null
   startCursor: string | null
   intent: string
+  /** Slice CH (O1): expert adapter chosen for this task; null = route at execution time. */
+  expert?: string | null
   riskLevel: RiskLevel
   /**
    * L2: the level a human approved for this task; null/undefined means no

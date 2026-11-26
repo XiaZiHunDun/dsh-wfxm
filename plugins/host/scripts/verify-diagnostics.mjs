@@ -334,6 +334,26 @@ await checkAsync('executor failure → /diag names execute + invalid_input + tra
   })
 })
 
+await checkAsync('O1: a task with an explicit expert shows the 专家 line', async () => {
+  await withEnv(async ({ dir, telemetry, tasks }) => {
+    const task = tasks.createTask({
+      intent: 'expert task',
+      riskLevel: 'R1',
+      expert: 'dsh',
+      correlationId: 'trace-expert',
+    })
+    const worker = createTaskWorker({
+      store: tasks,
+      execute: () => ({ status: 'succeeded', summary: 'ok' }),
+      telemetry,
+    })
+    await worker.runOnce()
+    await telemetry.flush()
+    const text = diagnose(telemetry, tasks, task.id)
+    assert.match(text, /专家：dsh/)
+  })
+})
+
 await checkAsync('verifier failure → /diag names verify + verification-failed', async () => {
   await withEnv(async ({ dir, telemetry, tasks }) => {
     const task = tasks.createTask({ intent: 'verify', riskLevel: 'R1', correlationId: 'trace-verify' })

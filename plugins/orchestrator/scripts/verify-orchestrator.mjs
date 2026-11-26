@@ -457,6 +457,43 @@ await check('a progress question is answered from ⑤ without a decision run', a
     && transport.sent.length === 0
 })
 
+await check('O1: /expert dsh is stripped before the decision and stored on the task', async () => {
+  let seenPrompt = ''
+  const { host } = makeHost({
+    decide: async (prompt) => {
+      seenPrompt = prompt
+      return JSON.stringify({ action: 'task', intent: '把 X 修好', risk: 'R1' })
+    },
+  })
+  await pair(host)
+  const { result } = await say(host, '/expert dsh 把 X 修好')
+  const task = host.stores.tasks.getTask(result.foreground?.taskId)
+  host.close()
+  assert.equal(result.foreground?.action, 'task-created', `foreground=${JSON.stringify(result.foreground)}`)
+  assert.equal(task.expert, 'dsh')
+  assert.equal(task.intent, '把 X 修好')
+  assert.ok(seenPrompt.includes('把 X 修好'), `prompt=${seenPrompt}`)
+  // History keeps the raw owner message on purpose; only the 消息 block is stripped.
+  assert.match(seenPrompt, /消息：\n"""\n把 X 修好\n"""/)
+  return true
+})
+
+await check('O1: bare /expert replies with usage without calling the decision model', async () => {
+  let decided = 0
+  const { host } = makeHost({
+    decide: async () => {
+      decided += 1
+      return '{"action":"reply","text":"不该走到这里"}'
+    },
+  })
+  await pair(host)
+  const { result } = await say(host, '/expert dsh')
+  host.close()
+  return result.foreground?.action === 'reply'
+    && result.foreground.text.includes('用法：/expert')
+    && decided === 0
+})
+
 await check('writing to an absolute file is escalated to R2 with file_exists', async () => {
   const { host } = makeHost({
     decide: async () => JSON.stringify({

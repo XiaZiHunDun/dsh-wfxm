@@ -1132,6 +1132,42 @@ await check('审批 9: without an approval store an R2 task is cancelled, never 
     && ack !== undefined
 })
 
+// ---- 切片 CH (O1)：/expert 只对新任务生效 ---------------------------------------------
+
+await check('O1: /expert dsh 建任务时剥离命令并写入 expert', async () => {
+  const dbPath = join(dir, 'rule-expert.sqlite')
+  const { host } = makeHost({
+    options: {
+      dbPath,
+      foregroundFactory: ({ tasks }) => createRuleForeground({ tasks, defaultRiskLevel: 'R1' }),
+    },
+  })
+  await pair(host)
+  const said = await say(host, '/expert dsh 把 X 修好')
+  const task = host.stores.tasks.getTask(said.result.foreground.taskId)
+  host.close()
+  return said.result.foreground.action === 'task-created'
+    && task.expert === 'dsh'
+    && task.intent === '把 X 修好'
+})
+
+await check('O1: /expert without a body replies with the usage and creates no task', async () => {
+  const dbPath = join(dir, 'rule-expert-usage.sqlite')
+  const { host } = makeHost({
+    options: {
+      dbPath,
+      foregroundFactory: ({ tasks }) => createRuleForeground({ tasks, defaultRiskLevel: 'R1' }),
+    },
+  })
+  await pair(host)
+  const said = await say(host, '/expert dsh')
+  const tasks = host.stores.tasks.listTasks()
+  host.close()
+  return said.result.foreground.action === 'reply'
+    && said.result.foreground.text.includes('用法：/expert')
+    && tasks.length === 0
+})
+
 // ---- 切片 K：确定性风险升级（R1 → R3）+ 模板断言（service_active） ----------------------
 
 await check('审批 10: 「重启 demo 服务」被规则层升到 R3、带 unit_restarted + service_active，批准后执行并复验通过', async () => {

@@ -103,6 +103,8 @@ export interface ExecutorTaskRef {
    */
   correlationId?: string | null
   projectId?: string | null
+  /** Slice CH (O1): explicit expert from `/expert`; absent = route in the executor. */
+  expert?: string | null
   riskLevel?: string
   /**
    * L2: the level a human approved for this task. Absent/null means the child

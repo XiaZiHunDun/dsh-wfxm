@@ -18,6 +18,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { createMemoryStore } from '@dsh-wfxm/knowledge'
+import { BUILTIN_EXPERTS } from '@dsh-wfxm/executor'
 import { parseServeConfig } from './lib/startup.mjs'
 import { detectPrepareCmd, detectRulesDoc } from './lib/project-detect.mjs'
 
@@ -29,12 +30,15 @@ function usage() {
     'usage:',
     '  projects.mjs add --name <name> --root <path> [--prepare-cmd <cmd>] [--rules-doc <path>]',
     '                   [--worktree-root <path>] [--merge-mode manual|pr] [--vcs git|none]',
+    '                   [--default-expert dsh]',
     '  projects.mjs list [--all] [--json]',
     '  projects.mjs update <id|name> [--root <path>] [--prepare-cmd <cmd>] [--rules-doc <path>]',
     '                   [--worktree-root <path>] [--merge-mode manual|pr] [--vcs git|none]',
+    '                   [--default-expert dsh]',
     '  projects.mjs remove <id|name>',
     '',
-    'values: --prepare-cmd "" clears prepare, --rules-doc "" clears the doc;',
+    `values: --default-expert is one of ${BUILTIN_EXPERTS.join(', ')}; "" clears it;`,
+    '        --prepare-cmd "" clears prepare, --rules-doc "" clears the doc;',
     '        omitted values are auto-detected from lockfiles / AGENTS.md / README;',
     '        --worktree-root "" restores the default (<root>/.agents/worktrees);',
     '        project name is identity and cannot be renamed.',
@@ -104,6 +108,16 @@ function resolveRulesDoc(root, raw) {
   return checkRulesDoc(root, raw)
 }
 
+/** Slice CH (O1): only registered experts may become a project default. */
+function checkExpert(raw, fallback) {
+  if (raw === undefined) return fallback
+  if (raw === '') return null
+  if (!BUILTIN_EXPERTS.includes(raw)) {
+    throw new Error(`--default-expert must be one of ${BUILTIN_EXPERTS.join(', ')} (got ${JSON.stringify(raw)})`)
+  }
+  return raw
+}
+
 function detectVcs(root) {
   return existsSync(join(root, '.git')) ? 'git' : 'none'
 }
@@ -160,12 +174,13 @@ function sameRoot(left, right) {
 
 function printProject(project) {
   const archived = project.archivedAt === null ? '' : `  archived=${project.archivedAt}`
-  console.log(`${project.id}  ${project.name}  ${project.vcs}  ${project.mergeMode}  ${project.rootPath}${archived}`)
+  const expert = project.defaultExpert ?? '-'
+  console.log(`${project.id}  ${project.name}  ${project.vcs}  ${project.mergeMode}  ${expert}  ${project.rootPath}${archived}`)
 }
 
 function addProject(memory, rest) {
   const options = parseOptions(rest, {
-    values: ['name', 'root', 'prepare-cmd', 'rules-doc', 'worktree-root', 'merge-mode', 'vcs'],
+    values: ['name', 'root', 'prepare-cmd', 'rules-doc', 'worktree-root', 'merge-mode', 'vcs', 'default-expert'],
   })
   if (options.name === undefined) throw new Error('add needs --name')
   if (options.root === undefined) throw new Error('add needs --root')
@@ -195,10 +210,11 @@ function addProject(memory, rest) {
     vcs,
     prepareCmd: resolvePrepareCmd(rootPath, options['prepare-cmd']),
     rulesDoc: resolveRulesDoc(rootPath, options['rules-doc']),
+    defaultExpert: checkExpert(options['default-expert'], null),
     worktreeRoot,
     mergeMode,
   })
-  console.log(`added ${project.id}  ${project.name}  ${project.vcs}  ${project.mergeMode}  ${project.rootPath}`)
+  console.log(`added ${project.id}  ${project.name}  ${project.vcs}  ${project.mergeMode}  ${project.defaultExpert ?? '-'}  ${project.rootPath}`)
 }
 
 function listProjects(memory, rest) {
@@ -219,7 +235,7 @@ function updateProject(memory, rest) {
   const [ref, ...optionArgs] = rest
   if (ref === undefined) throw new Error('update needs a project id or name')
   const options = parseOptions(optionArgs, {
-    values: ['root', 'prepare-cmd', 'rules-doc', 'worktree-root', 'merge-mode', 'vcs'],
+    values: ['root', 'prepare-cmd', 'rules-doc', 'worktree-root', 'merge-mode', 'vcs', 'default-expert'],
   })
   const project = findProject(memory, ref)
   if (project === null) throw new Error(`project not found: ${ref}`)
@@ -246,7 +262,7 @@ function updateProject(memory, rest) {
     rulesDoc: options['rules-doc'] === undefined
       ? project.rulesDoc
       : checkRulesDoc(rootPath, options['rules-doc']),
-    defaultExpert: project.defaultExpert,
+    defaultExpert: checkExpert(options['default-expert'], project.defaultExpert),
     vcs,
     prepareCmd: options['prepare-cmd'] === undefined
       ? project.prepareCmd
@@ -256,7 +272,7 @@ function updateProject(memory, rest) {
     worktreeRoot,
     mergeMode,
   })
-  console.log(`updated ${updated.id}  ${updated.name}  ${updated.vcs}  ${updated.mergeMode}  ${updated.rootPath}`)
+  console.log(`updated ${updated.id}  ${updated.name}  ${updated.vcs}  ${updated.mergeMode}  ${updated.defaultExpert ?? '-'}  ${updated.rootPath}`)
 }
 
 function removeProject(memory, rest) {

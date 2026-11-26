@@ -36,6 +36,8 @@ export {
   requiresCriteria,
   uuidv7,
 } from './model.js'
+export type { ExpertDirective } from './expert.js'
+export { EXPERT_USAGE, parseExpertDirective } from './expert.js'
 export type { AssertionValidationOptions, PreparedAssertion } from './assertions.js'
 export { MAX_ASSERTIONS, prepareAssertion, prepareAssertions } from './assertions.js'
 export type { RiskPlan } from './risk.js'

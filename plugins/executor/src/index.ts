@@ -9,6 +9,14 @@ export {
   MAX_ATTACHMENTS,
   NEED_INPUT_MARKER,
 } from './executor.js'
+export { BUILTIN_EXPERTS, createExpertExecutor } from './expert.js'
+export type {
+  ExpertAdapter,
+  ExpertExecutorOptions,
+  ExpertRoute,
+  ExpertRouteReason,
+  ExpertTaskRef,
+} from './expert.js'
 export type {
   CheckpointPort,
   DshExecutorOptions,

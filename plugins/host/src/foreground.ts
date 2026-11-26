@@ -11,7 +11,7 @@
  */
 
 import type { IngestResult } from '@dsh-wfxm/gateway'
-import { planTaskRisk } from '@dsh-wfxm/tasks'
+import { EXPERT_USAGE, parseExpertDirective, planTaskRisk } from '@dsh-wfxm/tasks'
 import type { RiskLevel, TaskStore } from '@dsh-wfxm/tasks'
 
 /** 体现前台的提醒视图（与 orchestrator 的结构一致；本包不依赖它）。 */
@@ -114,9 +114,14 @@ export function createRuleForeground(options: RuleForegroundOptions): Foreground
       return { action: 'input-queued', taskId: live.id, inputId: input.id }
     }
 
-    const plan = planTaskRisk(trimmed, riskLevel)
+    // Slice CH (O1): explicit expert only on the new-task path. A live task
+    // above keeps its expert; switching mid-run would change the executor.
+    const directive = parseExpertDirective(trimmed)
+    if (directive.usage) return { action: 'reply', text: EXPERT_USAGE, threadId: thread.id }
+    const plan = planTaskRisk(directive.intent, riskLevel)
     const task = tasks.createTask({
-      intent: trimmed,
+      intent: directive.intent,
+      expert: directive.expert,
       riskLevel: plan.risk,
       originMsgId: result.inbox.msgId,
       projectId: result.project?.projectId ?? null,

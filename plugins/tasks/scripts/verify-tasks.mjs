@@ -18,6 +18,7 @@ import {
   evaluateAssertion,
   inject,
   name,
+  parseExpertDirective,
   prepareAssertions,
   registerTaskTools,
   rollbackTask,
@@ -55,6 +56,33 @@ async function check(name, fn) {
 const dir = mkdtempSync(join(tmpdir(), 'tasks-'))
 const dbPath = join(dir, 'ops.sqlite')
 const store = createTaskStore(dbPath)
+
+// ---- Slice CH (O1): expert column + directive parser -----------------------
+
+await check('v15: tasks.expert migrates, persists and defaults to null', () => {
+  const meta = new DatabaseConstructor(dbPath)
+  const row = meta.prepare("SELECT version FROM schema_migrations WHERE module = 'tasks'").get()
+  meta.close()
+  assert.equal(row.version, 15)
+
+  const explicit = store.createTask({ intent: '修 bug', riskLevel: 'R1', expert: 'dsh' })
+  assert.equal(explicit.expert, 'dsh')
+  assert.equal(store.getTask(explicit.id).expert, 'dsh')
+
+  const plain = store.createTask({ intent: '看日志', riskLevel: 'R1' })
+  assert.equal(plain.expert, null)
+  assert.equal(store.getTask(plain.id).expert, null)
+  return true
+})
+
+await check('/expert directive: strips the prefix, flags an empty body, leaves other text alone', () => {
+  assert.deepEqual(parseExpertDirective('/expert dsh 修 bug'), { expert: 'dsh', intent: '修 bug', usage: false })
+  assert.deepEqual(parseExpertDirective('/EXPERT dsh'), { expert: 'dsh', intent: '', usage: true })
+  assert.deepEqual(parseExpertDirective('/expert'), { expert: null, intent: '', usage: true })
+  assert.deepEqual(parseExpertDirective('修 bug'), { expert: null, intent: '修 bug', usage: false })
+  assert.deepEqual(parseExpertDirective('/experts dsh 修 bug'), { expert: null, intent: '/experts dsh 修 bug', usage: false })
+  return true
+})
 
 const fixturePath = join(dir, 'nginx.conf')
 writeFileSync(fixturePath, 'server { listen 80; }\n')
@@ -124,8 +152,8 @@ await check('migration creates the four base tables at v1 and the v2 additions',
     && names.includes('task_checkpoints')
     && names.includes('resource_locks')
     && names.includes('task_usage_daily')
-    && version.version === 14
-    && ['input_tokens', 'output_tokens', 'cost_usd', 'approved_level'].every((column) =>
+    && version.version === 15
+    && ['input_tokens', 'output_tokens', 'cost_usd', 'approved_level', 'expert'].every((column) =>
       columns.includes(column))
     && objects.includes('ux_task_events_seq')
     && objects.includes('task_events_no_update')
@@ -214,6 +242,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     ALTER TABLE tasks DROP COLUMN output_tokens;
     ALTER TABLE tasks DROP COLUMN cost_usd;
     ALTER TABLE tasks DROP COLUMN approved_level;
+    ALTER TABLE tasks DROP COLUMN expert;
     UPDATE schema_migrations SET version = 1 WHERE module = 'tasks';
   `)
   raw.close()
@@ -237,7 +266,7 @@ await check('a v1 database upgrades in place to v3 without rebuilding old tables
     && keptTask.taskRef === null
     && fresh.taskRef !== null
     && fresh.taskRef.length === 10
-    && version.version === 14
+    && version.version === 15
     && keptTask.isolation === 'serial'
     && fresh.isolation === 'serial'
     && fresh.worktreePath === null
