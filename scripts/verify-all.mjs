@@ -67,6 +67,7 @@ const SUITES = [
   { name: 'merge', file: 'plugins/tasks/scripts/verify-merge.mjs', ci: true },
   { name: 'resource-locks', file: 'plugins/tasks/scripts/verify-resource-locks.mjs', ci: true },
   { name: 'risk', file: 'plugins/tasks/scripts/verify-risk.mjs', ci: true },
+  { name: 'telemetry', file: 'plugins/telemetry/scripts/verify-telemetry.mjs', ci: true },
   { name: 'backup', file: 'scripts/verify-backup.mjs', ci: true },
   { name: 'deploy', file: 'scripts/verify-deploy.mjs', ci: false },
   { name: 'health-alert', file: 'scripts/verify-health-alert.mjs', ci: true },

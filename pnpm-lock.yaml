@@ -339,6 +339,28 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  plugins/telemetry:
+    dependencies:
+      '@dsh-wfxm/redact':
+        specifier: workspace:*
+        version: link:../redact
+      better-sqlite3:
+        specifier: ^13.0.3
+        version: 13.0.3
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
+      '@types/node':
+        specifier: ^24.10.0
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
 packages:
 
   '@agentclientprotocol/sdk@1.4.0':
