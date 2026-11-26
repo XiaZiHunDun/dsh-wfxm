@@ -624,6 +624,30 @@ ingestStore.bindChannel({
 const bot = ingestStore.createActor({ kind: 'system', displayName: 'CI' })
 ingestStore.bindChannel({ actorId: bot.id, channelId: 'cli_ing', externalUserId: 'open_bot' })
 
+await check('P6-2: /diag and /status bypass the model as diag commands', async () => {
+  const diag = await ingestInbound({ store: ingestStore }, {
+    channelId: 'cli_ing',
+    msgId: 'evt_diag',
+    externalUserId: 'open_ing',
+    content: { text: '/diag abc123' },
+    chatId: 'chat_ing',
+  })
+  const status = await ingestInbound({ store: ingestStore }, {
+    channelId: 'cli_ing',
+    msgId: 'evt_status',
+    externalUserId: 'open_ing',
+    content: { text: '/status' },
+    chatId: 'chat_ing',
+  })
+  return diag.target.kind === 'diag'
+    && diag.target.command.kind === 'diag'
+    && diag.target.command.ref === 'abc123'
+    && diag.bypassReason === 'diag'
+    && status.target.kind === 'diag'
+    && status.target.command.kind === 'status'
+    && status.bypassReason === 'diag'
+})
+
 await check('an unpaired identity is stored, silently rejected and audited', async () => {
   const result = await ingestInbound({ store: ingestStore }, {
     channelId: 'cli_ing',
@@ -821,8 +845,8 @@ await check('an approval answer bypasses the model and a replay reuses it', asyn
     && replay.duplicate === true
     && replay.inbox.id === first.inbox.id
     && replay.disposition.id === first.disposition.id
-    // unpaired + /bind×2 + post-bind + chat + card×1 = 6 stored rows
-    && ingestStore.listInbox({ channelId: 'cli_ing' }).length === 6
+    // unpaired + /bind×2 + post-bind + chat + card×1 + /diag + /status = 8
+    && ingestStore.listInbox({ channelId: 'cli_ing' }).length === 8
 })
 
 await check('a wired approval store accepts the decision and records the actor', async () => {

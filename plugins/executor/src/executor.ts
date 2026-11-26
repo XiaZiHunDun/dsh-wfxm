@@ -485,7 +485,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
 
       const fail = (failure: FailureKind, summary: string): void => {
         const usage = usageOf()
-        finish('failed', { code: failure, message: summary })
+        finish('failed', { code: lastRunCode ?? failure, message: summary })
         resolve({
           status: 'failed',
           failure,

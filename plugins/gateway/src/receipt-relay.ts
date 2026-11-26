@@ -33,6 +33,12 @@ export interface TaskReceipt {
   taskRef?: string | null
   /** L4: terminal status (`succeeded` / `failed` / `cancelled`) for the header. */
   status?: string | null
+  /** P6-2: structured failure context, joined by the host from telemetry. */
+  failurePhase?: string | null
+  errorCode?: string | null
+  failureKind?: string | null
+  attempt?: number | null
+  traceId?: string | null
 }
 
 /** `TaskReceiptApi` as implemented by ⑤ (`@dsh-wfxm/tasks`). */
@@ -110,12 +116,56 @@ function receiptHead(receipt: TaskReceipt): string {
   return `任务 ${ref} ${statusLabel(receipt.status)}。`
 }
 
+const PHASE_LABELS: Record<string, string> = {
+  ingest: '接入',
+  task: '任务',
+  attempt: '尝试',
+  execute: '执行',
+  tool: '工具调用',
+  verify: '验证',
+  isolation: '隔离',
+  merge: '合并',
+  deliver: '投递',
+}
+
+/** Short chat handle; `/diag` prints the full trace id. */
+function shortTrace(traceId: string | null | undefined): string | null {
+  if (typeof traceId !== 'string' || traceId === '') return null
+  return `tr_${traceId.replace(/-/g, '').slice(0, 8)}`
+}
+
+/**
+ * P6-2 failure copy: at most four lines — task, phase, code, trace. Legacy
+ * receipts without structured fields keep the old summary + retry hint.
+ */
+function failureText(receipt: TaskReceipt): string {
+  const lines = [receiptHead(receipt)]
+  if (typeof receipt.failurePhase === 'string' && receipt.failurePhase !== '') {
+    lines.push(`阶段：${PHASE_LABELS[receipt.failurePhase] ?? receipt.failurePhase}`)
+  }
+  if (typeof receipt.errorCode === 'string' && receipt.errorCode !== '') {
+    const kind = receipt.failureKind !== null
+      && receipt.failureKind !== undefined
+      && receipt.failureKind !== receipt.errorCode
+      ? `（${receipt.failureKind}）`
+      : ''
+    lines.push(`原因：${receipt.errorCode}${kind}`)
+  }
+  const trace = shortTrace(receipt.traceId)
+  if (trace !== null) lines.push(`追踪：${trace}`)
+  if (lines.length === 1) {
+    lines.push(receipt.summary.trim())
+  }
+  if (lines.length < 4) lines.push('如需重试，请补充要求后重新发送。')
+  return lines.slice(0, 4).join('\n')
+}
+
 function receiptText(receipt: TaskReceipt): string {
+  if (receipt.status === 'failed') return failureText(receipt)
   const lines = [receiptHead(receipt), receipt.summary.trim()]
   if (typeof receipt.evidenceLocator === 'string' && receipt.evidenceLocator !== '') {
     lines.push(`证据：${receipt.evidenceLocator}`)
   }
-  if (receipt.status === 'failed') lines.push('如需重试，请补充要求后重新发送。')
   return lines.join('\n')
 }
 

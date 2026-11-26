@@ -25,6 +25,7 @@ import {
   ingestInbound,
   redactedText,
   type DispatchReport,
+  type DiagCommand,
   type EvalCommand,
   type GatewayStore,
   type IngestInboundInput,
@@ -83,6 +84,7 @@ import {
   type CheckpointRollbackPort,
   type LifecycleAudit,
   type SnapshotPort,
+  type Task,
   type TaskExecutor,
   type TaskRunReport,
   type TaskStore,
@@ -90,6 +92,18 @@ import {
   type VerifyContext,
 } from '@dsh-wfxm/tasks'
 import { createRuleForeground, type ForegroundHandler, type ForegroundOutcome } from './foreground.js'
+import {
+  enrichFailureReceipt,
+  formatDiagReport,
+  formatRepeatAlert,
+  formatStatusReport,
+  formatStuckAlert,
+  groupErrorCodes,
+  isStuck,
+  taskRefOf,
+  type DiagTelemetryReader,
+  type StuckTask,
+} from './diagnostics.js'
 import { createHostPorts, type HostPorts } from './ports.js'
 import {
   defaultEvalSnapshotPath,
@@ -333,8 +347,8 @@ export interface RequestApprovalResult {
   outboxId: string
 }
 
-/** P6-1: the host only needs emit/flush/close; serve.mjs owns the instance. */
-export interface HostTelemetryPort {
+/** P6-1/P6-2: emit/flush/close plus optional read methods for `/diag` `/status`. */
+export interface HostTelemetryPort extends DiagTelemetryReader {
   emit(event: Record<string, unknown>): boolean
   beginAttempt(input: {
     taskId: string
@@ -368,6 +382,12 @@ export interface WfxmHostOptions {
   executor: TaskExecutor
   /** P6-1: structured trace; absent means no telemetry. */
   telemetry?: HostTelemetryPort | null
+  /** P6-2: a `running` task quiet for this long is reported as stuck. */
+  stuckAfterMs?: number
+  /** P6-2: alert sweep cadence; `0` disables the sweep. */
+  diagnosticsIntervalMs?: number
+  /** P6-2: repeated same-code errors in 1h that trigger an owner alert. */
+  repeatFailureThreshold?: number
   /** Absent = routing only (no outbound delivery). */
   transport?: OutboxTransport | null
   /** Defaults to the deterministic rule foreground. */
@@ -581,7 +601,14 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
 
   const receiptRelay = createReceiptRelay({
     store: gateway,
-    receipts: ports.receipts,
+    receipts: {
+      pendingReceipts(limit) {
+        const rows = ports.receipts.pendingReceipts(limit)
+        if (telemetry === null) return rows
+        return rows.map((row) => enrichFailureReceipt(row, telemetry))
+      },
+      markReceiptDelivered: ports.receipts.markReceiptDelivered,
+    },
     spill: spillPort,
     spillThresholdChars: spillOptions?.thresholdChars ?? DEFAULT_SPILL_CHARS,
     // L3: a row that went out before its receipt was settled rebuilds the
@@ -1041,6 +1068,9 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   }
 
   async function pump(): Promise<HostPumpReport> {
+    // P6-2: stuck / repeated-failure notices are queued before dispatch, so the
+    // owner sees them in this same tick.
+    sweepDiagnostics()
     // Settle expired approvals first: a task released here produces its receipt
     // in this same tick instead of the next one.
     const expired = expireOverdueApprovals()
@@ -1107,12 +1137,174 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     }
   }
 
+  /** P6-2: resolve a task ref, full id or id prefix. */
+  function findTaskByRef(ref: string): Task | null {
+    const all = tasks.listTasks()
+    const normalized = ref.trim()
+    if (normalized === '') return null
+    return all.find((task) => task.taskRef === normalized)
+      ?? all.find((task) => task.id === normalized)
+      ?? all.find((task) => task.id.startsWith(normalized))
+      ?? all.find((task) => task.taskRef?.startsWith(normalized) === true)
+      ?? null
+  }
+
+  /** P6-2: `running` tasks whose latest event is older than the threshold. */
+  function stuckTasks(): StuckTask[] {
+    const at = now()
+    const thresholdMs = options.stuckAfterMs ?? 15 * 60_000
+    const result: StuckTask[] = []
+    for (const task of tasks.listTasks({ status: 'running' })) {
+      let lastActivityAt: string | null = null
+      try {
+        lastActivityAt = tasks.latestEvent(task.id)?.createdAt ?? null
+      } catch {
+        lastActivityAt = null
+      }
+      if (!isStuck({ task, lastActivityAt, now: at, thresholdMs })) continue
+      const anchor = Date.parse(lastActivityAt ?? task.startedAt ?? task.createdAt)
+      result.push({
+        task,
+        quietMs: Number.isFinite(anchor) ? Math.max(0, at.getTime() - anchor) : 0,
+      })
+    }
+    return result.sort((a, b) => b.quietMs - a.quietMs)
+  }
+
+  /**
+   * P6-2: `/diag <ref>` and `/status` are owner-only and read-only. They never
+   * create a task or call the model.
+   */
+  function handleDiagCommand(
+    result: IngestResult,
+    command: DiagCommand,
+  ): void {
+    const threadId = result.thread?.id ?? null
+    const replyToMsgId = result.inbox.replyToMsgId ?? null
+    const reply = (text: string, suffix: string): void => {
+      gateway.enqueueOutbox({
+        topic: 'say',
+        payload: { text },
+        threadId,
+        replyToMsgId,
+        dedupeKey: `diag:${result.inbox.id}:${suffix}`,
+      })
+    }
+    if (result.actor === null || result.actor.kind !== 'owner') {
+      reply('仅 owner 可使用 /diag 与 /status。', 'denied')
+      return
+    }
+
+    if (command.kind === 'status') {
+      const at = now()
+      const all = tasks.listTasks()
+      const cutoff = at.getTime() - 60 * 60_000
+      const recent = all.filter((task) => {
+        if (task.finishedAt === null) return false
+        if (task.status !== 'failed' && task.status !== 'succeeded' && task.status !== 'cancelled') {
+          return false
+        }
+        const finished = Date.parse(task.finishedAt)
+        return Number.isFinite(finished) && finished >= cutoff
+      })
+      reply(formatStatusReport({
+        halted: isHalted(),
+        tasks: all,
+        failures: {
+          failed: recent.filter((task) => task.status === 'failed').length,
+          total: recent.length,
+        },
+        stuck: stuckTasks(),
+        telemetry: telemetry?.stats?.() ?? null,
+        now: at,
+      }), 'status')
+      return
+    }
+
+    if (command.ref === null) {
+      reply('用法：/diag <任务号>，例如 /diag abc123。', 'usage')
+      return
+    }
+    const task = findTaskByRef(command.ref)
+    if (task === null) {
+      reply(`没有找到任务 ${command.ref}。`, 'missing')
+      return
+    }
+    const attempts = telemetry?.attempts?.(task.id) ?? []
+    const events = telemetry?.query?.({ taskId: task.id, limit: 500 }).rows ?? []
+    reply(formatDiagReport({
+      task,
+      attempts,
+      events,
+      now: now(),
+      hasTelemetry: telemetry?.query !== undefined,
+    }), 'diag')
+  }
+
+  let lastDiagnosticsSweepAt = 0
+
+  /** P6-2: stuck / repeated-failure alerts reuse outbox dedupe as the throttle. */
+  function sweepDiagnostics(): void {
+    const at = now()
+    const interval = options.diagnosticsIntervalMs ?? 60_000
+    if (interval <= 0 || at.getTime() - lastDiagnosticsSweepAt < interval) return
+    lastDiagnosticsSweepAt = at.getTime()
+
+    const enqueue = (input: {
+      text: string
+      threadId: string
+      dedupeKey: string
+    }): void => {
+      try {
+        if (gateway.findOutboxByDedupe(input.dedupeKey) !== null) return
+        gateway.enqueueOutbox({
+          topic: 'say',
+          payload: { text: input.text },
+          threadId: input.threadId,
+          dedupeKey: input.dedupeKey,
+        })
+      } catch (error) {
+        logger?.warn?.(`diagnostics alert skipped: ${messageOf(error)}`)
+      }
+    }
+
+    for (const { task, quietMs } of stuckTasks().slice(0, 3)) {
+      const thread = tasks.listTaskThreads({ taskId: task.id, liveOnly: true })[0]
+      if (thread === undefined) continue
+      enqueue({
+        text: formatStuckAlert(task, quietMs),
+        threadId: thread.threadId,
+        dedupeKey: `diag:stuck:${task.id}:${task.attempt}`,
+      })
+    }
+
+    if (telemetry?.query === undefined) return
+    try {
+      const from = new Date(at.getTime() - 60 * 60_000).toISOString()
+      const events = telemetry.query({ level: 'error', from, limit: 500 }).rows
+      for (const group of groupErrorCodes(events)) {
+        if (group.count < (options.repeatFailureThreshold ?? 3)) continue
+        if (group.latestTaskId === null) continue
+        const task = tasks.getTask(group.latestTaskId)
+        if (task === null) continue
+        const thread = tasks.listTaskThreads({ taskId: task.id, liveOnly: true })[0]
+        if (thread === undefined) continue
+        enqueue({
+          text: formatRepeatAlert(group.code, group.count, taskRefOf(task)),
+          threadId: thread.threadId,
+          dedupeKey: `diag:repeat:${group.code}:${Math.floor(at.getTime() / 3_600_000)}`,
+        })
+      }
+    } catch (error) {
+      logger?.warn?.(`diagnostics sweep failed: ${messageOf(error)}`)
+    }
+  }
+
   /**
    * P2-1: `/eval` 是只读命令——不建任务、不进模型、不执行测评。
    * 生产读随发布生成的 `eval/latest.json`；缺快照就明说，绝不推断通过。
    */
-  async function handleEvalCommand(
-    result: IngestResult,
+  async function handleEvalCommand(    result: IngestResult,
     target: { kind: 'eval'; command: EvalCommand },
   ): Promise<void> {
     const threadId = result.thread?.id ?? null
@@ -1351,6 +1543,11 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     // P2-1/P2-3: `/eval` 直接回执，不进前台、不建任务；flag/promote/ignore 只写测评库。
     if (result.target.kind === 'eval') {
       await handleEvalCommand(result, result.target)
+      return { result, foreground: null, error: null }
+    }
+    // P6-2: owner diagnostics bypass the foreground/model entirely.
+    if (result.target.kind === 'diag') {
+      handleDiagCommand(result, result.target.command)
       return { result, foreground: null, error: null }
     }
 

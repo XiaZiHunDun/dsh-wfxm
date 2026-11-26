@@ -44,6 +44,7 @@ const SUITES = [
   // Root cannot be denied by `chmod 000`; the failure is environmental, not a regression.
   { name: 'preimages', file: 'plugins/governance/scripts/verify-preimages.mjs', ci: true, advisoryWhenRoot: true },
   { name: 'host', file: 'plugins/host/scripts/verify-host.mjs', ci: true },
+  { name: 'diagnostics', file: 'plugins/host/scripts/verify-diagnostics.mjs', ci: true },
   { name: 'knowledge', file: 'plugins/knowledge/scripts/verify-knowledge.mjs', ci: true },
   { name: 'mail', file: 'plugins/mail/scripts/verify-mail.mjs', ci: true },
   { name: 'projects-cli', file: 'plugins/knowledge/scripts/verify-projects-cli.mjs', ci: true },

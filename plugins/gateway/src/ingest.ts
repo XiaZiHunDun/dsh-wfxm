@@ -31,6 +31,7 @@ import {
 } from './approval.js'
 import { relayToTask, type TaskRelayPort, type TaskRelayReport } from './task-relay.js'
 import { parseEvalCommand, type EvalCommand } from './eval-command.js'
+import { parseDiagCommand, type DiagCommand } from './diag-command.js'
 import {
   controlGlobally,
   controlTask,
@@ -124,6 +125,7 @@ export type BypassReason =
   | 'control'
   | 'project'
   | 'eval'
+  | 'diag'
   | 'system-message'
   | 'task-anchor'
   | 'ambiguous-task'
@@ -145,6 +147,7 @@ export type RouteTarget =
     candidates: ProjectChoice[]
   }
   | { kind: 'eval'; command: EvalCommand }
+  | { kind: 'diag'; command: DiagCommand }
   | { kind: 'ask'; candidates: string[] }
   | { kind: 'none' }
 
@@ -970,8 +973,7 @@ export async function ingestInbound(
     }
 
     const command = parseProjectCommand(textOf(input.content))
-    if (command !== null) {
-      const resolution: ProjectResolution = command.kind === 'list'
+    if (command !== null) {      const resolution: ProjectResolution = command.kind === 'list'
         ? {
           available: deps.project !== undefined && deps.project !== null,
           projectId: null,
@@ -1028,6 +1030,30 @@ export async function ingestInbound(
         disposition,
         followUp: null,
         project: resolution,
+        error: null,
+      }
+    }
+
+    // P6-2: `/diag <任务号>` / `/status` 是 owner 只读诊断，不进模型。
+    const diag = parseDiagCommand(textOf(input.content) ?? '')
+    if (diag !== null) {
+      const disposition = store.appendRouteDecision({
+        triggerId: inbox.id,
+        action: 'ack',
+        reason: `diag command: ${diag.kind}`,
+        threadId,
+      })
+      return {
+        inbox: store.updateInboxStatus(inbox.id, 'triaged'),
+        duplicate: false,
+        actor: resolved.actor,
+        thread,
+        intent,
+        target: { kind: 'diag', command: diag },
+        bypassReason: 'diag',
+        disposition,
+        followUp: null,
+        project: null,
         error: null,
       }
     }
