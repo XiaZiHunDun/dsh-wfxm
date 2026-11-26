@@ -91,6 +91,11 @@ export interface CommitWorktreeResult {
 
 const COMMIT_SUBJECT_CHARS = 120
 
+/** 带 `commit-failed` 码的失败：worker 直接把 code 写进任务失败原因。 */
+function commitFailure(message: string): Error {
+  return Object.assign(new Error(message), { code: 'commit-failed' })
+}
+
 /** `task <ref>: <intent 首行>`，单行且限长，避免提交信息里塞进整段需求。 */
 function commitSubject(task: Task): string {
   const firstLine = task.intent.replace(/\s+/g, ' ').trim()
@@ -116,7 +121,7 @@ export async function commitWorktreeChanges(
   }
   const cwd = task.worktreePath
   if (!existsSync(cwd)) {
-    throw new Error(`isolation: worktree ${cwd} is missing; cannot commit the task branch`)
+    throw commitFailure(`isolation: worktree ${cwd} is missing; cannot commit the task branch`)
   }
   const run = options.run ?? realRun
   const gitTimeoutMs = options.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS
@@ -125,13 +130,13 @@ export async function commitWorktreeChanges(
 
   const status = await git(['status', '--porcelain'])
   if (status.code !== 0) {
-    throw new Error(`isolation: git status failed: ${status.stderr.trim() || `exit ${status.code}`}`)
+    throw commitFailure(`isolation: git status failed: ${status.stderr.trim() || `exit ${status.code}`}`)
   }
   if (status.stdout.trim() === '') return { committed: false, commit: null }
 
   const added = await git(['add', '-A'])
   if (added.code !== 0) {
-    throw new Error(`isolation: git add failed: ${added.stderr.trim() || `exit ${added.code}`}`)
+    throw commitFailure(`isolation: git add failed: ${added.stderr.trim() || `exit ${added.code}`}`)
   }
   const committed = await git([
     '-c',
@@ -144,7 +149,7 @@ export async function commitWorktreeChanges(
     commitSubject(task),
   ])
   if (committed.code !== 0) {
-    throw new Error(`isolation: git commit failed: ${committed.stderr.trim() || `exit ${committed.code}`}`)
+    throw commitFailure(`isolation: git commit failed: ${committed.stderr.trim() || `exit ${committed.code}`}`)
   }
   const head = await git(['rev-parse', 'HEAD'])
   const commit = head.code === 0 ? head.stdout.trim() : null

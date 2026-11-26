@@ -339,29 +339,9 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         const latest = store.getTask(task.id) ?? task
         // 11 §14.5 / 17 §8.5：执行器只改工作区、不碰 git；合并闸门要求任务
         // 分支干净，所以进入 `succeeded` 前由 worker 提交一次（干净则不提交）。
+        // 失败由下方 catch 统一收敛，错误码 `commit-failed` 会写进失败原因。
         if (latest.isolation === 'worktree') {
-          try {
-            await commitWorktreeChanges(latest)
-          } catch (error) {
-            try {
-              store.transition(task.id, {
-                to: 'failed',
-                summary: messageOf(error),
-                reason: 'commit-failed',
-              })
-            } catch (transitionError) {
-              options.onError?.(transitionError)
-            }
-            noteChange('markFailed', task, messageOf(error))
-            return {
-              taskId: task.id,
-              outcome: 'failed',
-              failure: 'unknown',
-              skipped: null,
-              attempt: task.attempt,
-              wakeAt: null,
-            }
-          }
+          await commitWorktreeChanges(latest)
         }
         const verify = options.verify === undefined
           ? undefined
