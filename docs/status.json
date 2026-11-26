@@ -4,7 +4,7 @@
     {
       "id": "P6",
       "name": "可观测性与故障自适应",
-      "state": "partial",
+      "state": "done",
       "phase": "done",
       "evidence": [
         "plugins/telemetry/src/store.ts",
@@ -14,7 +14,7 @@
         "scripts/verify-drills.mjs",
         "docs/21-第六阶段验收记录.md"
       ],
-      "note": "P6-0～P6-3 完成并部署 2026.11.26-1；P6-4 11 类演练 12/12 通过，真实飞书待 owner 手动发 1 条验证失败消息后置 done"
+      "note": "P6-0～P6-4 完成并部署 2026.11.26-2；11 类演练 12/12 通过，真实飞书验证失败端到端 + /diag 5ms 已回填"
     },
     {
       "id": "A8",
