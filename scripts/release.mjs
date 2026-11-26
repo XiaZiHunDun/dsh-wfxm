@@ -109,11 +109,19 @@ function linkDependencies(sourceRoot, destRoot) {
     const from = join(sourceRoot, rel)
     const to = join(destRoot, rel)
     if (!existsSync(from)) continue
+    // A hard-link pass can leave a partial tree when it fails mid-way (EXDEV,
+    // permissions). Clear the target before each attempt so the copy fallback
+    // never dies with EEXIST on its own leftovers.
+    rmSync(to, { recursive: true, force: true })
     try {
       execFileSync('cp', ['-a', '--link', from, to], { stdio: 'pipe' })
       linked += 1
     } catch {
-      cpSync(from, to, { recursive: true, dereference: false })
+      rmSync(to, { recursive: true, force: true })
+      // Plain `cp -a` (not Node cpSync) keeps relative workspace symlinks
+      // relative; cpSync rewrites them to absolute paths and breaks release
+      // self-containment (`release verify` rejects it).
+      execFileSync('cp', ['-a', from, to], { stdio: 'pipe' })
       copied += 1
     }
   }
