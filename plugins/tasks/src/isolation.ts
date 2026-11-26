@@ -322,7 +322,11 @@ export function createIsolationResolver(
           error: { code: 'prepare-failed', message: summary },
           attrs: { worktree: worktreePath, prepare_state: 'failed' },
         })
-        throw new Error(summary)
+        // P6-4: carry the code so the executor/receipt can name the failure
+        // instead of degrading to `workdir-resolver`.
+        const failure = new Error(summary) as Error & { code: string }
+        failure.code = 'prepare-failed'
+        throw failure
       }
       tasks.setIsolation(task.id, {
         prepareState: 'done',

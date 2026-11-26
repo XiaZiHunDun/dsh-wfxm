@@ -252,7 +252,17 @@ function buildExportLines(events, traceId, finalText) {
       lines.push(JSON.stringify({ type: 'status', phase: 'step_end' }))
     } else {
       const status = statusFor(row)
-      if (status !== null) lines.push(JSON.stringify(status))
+      if (status !== null) {
+        lines.push(JSON.stringify(status))
+      } else if (row.level === 'error' && row.error?.code != null) {
+        // P6-4: merge/prepare/delivery failures have no attempt, but the
+        // replay must still show where it stopped.
+        lines.push(JSON.stringify({
+          type: 'status',
+          phase: 'error',
+          reason: { kind: row.error.code },
+        }))
+      }
     }
   }
   if (finalText !== '') lines.push(JSON.stringify({ type: 'final', text: finalText }))

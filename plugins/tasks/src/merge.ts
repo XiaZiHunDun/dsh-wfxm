@@ -482,7 +482,9 @@ export function createIsolationService(options: IsolationServiceOptions): Isolat
         )
         noteTelemetry(telemetry, {
           event: 'merge.conflict',
-          level: 'warn',
+          // P6-4: a conflict is terminal for the merge, so `/diag` must surface
+          // it as an error; a warn-level row was invisible to the report.
+          level: 'error',
           phase: 'merge',
           traceId,
           spanId: span,

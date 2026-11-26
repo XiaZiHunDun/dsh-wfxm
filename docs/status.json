@@ -2,6 +2,21 @@
   "note": "Capability status source of truth for docs/00 §7 and docs/09 §9.3. Checked by scripts/verify-docs.mjs; keep evidence paths real.",
   "capabilities": [
     {
+      "id": "P6",
+      "name": "可观测性与故障自适应",
+      "state": "partial",
+      "phase": "done",
+      "evidence": [
+        "plugins/telemetry/src/store.ts",
+        "plugins/telemetry/src/report.ts",
+        "plugins/host/src/diagnostics.ts",
+        "scripts/trace.mjs",
+        "scripts/verify-drills.mjs",
+        "docs/21-第六阶段验收记录.md"
+      ],
+      "note": "P6-0～P6-3 完成；P6-4 11 类确定性故障演练 12/12 通过，真实飞书三项待回填后置 done"
+    },
+    {
       "id": "A8",
       "name": "语音转写",
       "state": "done",

@@ -56,6 +56,8 @@ export interface ExecFailure {
   status: 'failed'
   summary: string
   failure: FailureKind
+  /** P6-4 structural twin of the executor's specific code (falls back to `failure`). */
+  errorCode?: string
   usage?: ExecUsage
 }
 
@@ -420,6 +422,50 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     }, options.onError)
   }
 
+  /**
+   * P6-4: a crashed attempt leaves a `running` row with no error code, which
+   * would be the one failure `/diag` cannot explain. Close it in telemetry
+   * during the recovery sweep; a telemetry failure still cannot block recovery.
+   */
+  function recoverExpired(): { requeued: string[]; failed: string[] } {
+    const result = store.recoverExpiredLeases({ now: now() })
+    if (telemetry === null) return result
+    for (const taskId of [...result.requeued, ...result.failed]) {
+      try {
+        const task = store.getTask(taskId)
+        if (task === null) continue
+        const terminal = result.failed.includes(taskId)
+        telemetry.finishAttempt(taskId, task.attempt, {
+          outcome: 'failed',
+          failureKind: 'crash',
+          errorCode: 'lease-expired',
+          summary: 'worker exited before this attempt finished; lease expired',
+          finishedAt: now(),
+        })
+        noteTelemetry(telemetry, {
+          event: 'attempt.finished',
+          level: terminal ? 'error' : 'warn',
+          phase: 'attempt',
+          traceId: task.correlationId,
+          spanId: attemptSpanId(taskId, task.attempt),
+          parentSpanId: taskSpanId(taskId),
+          taskId,
+          taskRef: task.taskRef ?? undefined,
+          attempt: task.attempt,
+          status: terminal ? 'failed' : 'recovered',
+          error: {
+            code: 'lease-expired',
+            kind: 'crash',
+            message: 'lease expired before the attempt finished',
+          },
+        }, options.onError)
+      } catch (error) {
+        options.onError?.(error)
+      }
+    }
+    return result
+  }
+
   async function settle(task: Task, outcome: ExecOutcome, wakeAt: string | null): Promise<TaskRunReport> {
     // Slice BK (I5): count usage on every settle path, including retries and
     // needs-input, so cost is not lost when a run ends early.
@@ -657,7 +703,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
       finishAttemptTracking(task, {
         outcome: 'failed',
         failureKind: outcome.failure,
-        errorCode: outcome.failure,
+        errorCode: outcome.errorCode ?? outcome.failure,
         summary: outcome.summary,
         usage: outcome.usage,
       })
@@ -684,7 +730,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     finishAttemptTracking(task, {
       outcome: 'failed',
       failureKind: outcome.failure,
-      errorCode: outcome.failure,
+      errorCode: outcome.errorCode ?? outcome.failure,
       summary: outcome.summary,
       usage: outcome.usage,
       terminalStatus: 'failed',
@@ -700,7 +746,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
   }
 
   async function runOnce(): Promise<TaskRunReport> {
-    store.recoverExpiredLeases({ now: now() })
+    recoverExpired()
     // Slice CC (M8): the daily gate runs before claiming, so blocked tasks stay
     // queued (and are picked up after midnight) instead of failing.
     if (dailyTokenBudget !== null) {
@@ -1036,7 +1082,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
   return {
     owner,
     runOnce,
-    recover: () => store.recoverExpiredLeases({ now: now() }),
+    recover: recoverExpired,
     cancel(taskId) {
       const controller = activeAttempts.get(taskId)
       if (controller === undefined) return false

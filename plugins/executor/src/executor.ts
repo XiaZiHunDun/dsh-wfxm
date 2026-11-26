@@ -74,6 +74,12 @@ export interface ExecFailure {
   status: 'failed'
   summary: string
   failure: FailureKind
+  /**
+   * P6-4: the specific code for receipts, `/diag` and the diagnosability
+   * metric (`timeout`, `rate_limited`, `sandbox-denied`, …). Falls back to
+   * `failure` for callers that only know the kind.
+   */
+  errorCode?: string
   usage?: ExecutorUsage
 }
 
@@ -425,7 +431,12 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
     const intent = task.intent?.trim() ?? ''
     if (intent.length === 0) {
       finish('failed', { code: 'invalid_input', message: 'task has an empty intent; nothing to run' })
-      return { status: 'failed', failure: 'invalid_input', summary: 'task has an empty intent; nothing to run' }
+      return {
+        status: 'failed',
+        failure: 'invalid_input',
+        errorCode: 'invalid_input',
+        summary: 'task has an empty intent; nothing to run',
+      }
     }
     // Slice AP: context is an appendix, so the intent always comes first.
     // Slice BE: the hierarchy and data zone sit between the intent and the
@@ -444,10 +455,13 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
           `workdir resolver threw: ${error instanceof Error ? error.message : String(error)}`,
           maxSummary,
         )
-        finish('failed', { code: 'workdir-resolver', message: summary })
+        const code = (error as { code?: unknown } | null)?.code
+        const errorCode = typeof code === 'string' && code !== '' ? code : 'workdir-resolver'
+        finish('failed', { code: errorCode, message: summary })
         return {
           status: 'failed',
           failure: 'unknown',
+          errorCode,
           summary,
         }
       }
@@ -483,12 +497,14 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         return { inputTokens, outputTokens, costUsd }
       }
 
-      const fail = (failure: FailureKind, summary: string): void => {
+      const fail = (failure: FailureKind, summary: string, code?: string): void => {
         const usage = usageOf()
-        finish('failed', { code: lastRunCode ?? failure, message: summary })
+        const errorCode = code ?? lastRunCode ?? failure
+        finish('failed', { code: errorCode, message: summary })
         resolve({
           status: 'failed',
           failure,
+          errorCode,
           summary: truncate(summary, maxSummary),
           ...(usage === undefined ? {} : { usage }),
         })
@@ -504,7 +520,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
             label: `attempt ${hooks.attempt}`,
           }).id
         } catch (error) {
-          fail('unknown', `checkpoint begin failed: ${error instanceof Error ? error.message : String(error)}`)
+          fail('unknown', `checkpoint begin failed: ${error instanceof Error ? error.message : String(error)}`, 'checkpoint-failed')
           return
         }
       }
@@ -567,7 +583,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         })
       } catch (error) {
         closeCheckpoint('aborted')
-        fail('unknown', `spawn ${dshBin} threw: ${error instanceof Error ? error.message : String(error)}`)
+        fail('unknown', `spawn ${dshBin} threw: ${error instanceof Error ? error.message : String(error)}`, 'spawn-failed')
         return
       }
 
@@ -799,44 +815,52 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         if (spawnError !== null) {
           closeCheckpoint('aborted')
           if (spawnError.code === 'ENOENT') {
-            fail('not_found', `dsh binary not found: ${dshBin}`)
+            fail('not_found', `dsh binary not found: ${dshBin}`, 'dsh-not-found')
           } else {
-            fail('unknown', `spawn ${dshBin} failed: ${spawnError.message}`)
+            fail('unknown', `spawn ${dshBin} failed: ${spawnError.message}`, 'spawn-failed')
           }
           return
         }
         if (cancelled) {
           closeCheckpoint('aborted')
-          fail('conflict', 'cancelled by owner')
+          fail('conflict', 'cancelled by owner', 'cancelled')
           return
         }
         if (leaseLost) {
           closeCheckpoint('aborted')
-          fail('conflict', 'lease lost while the child ran; killed the attempt')
+          fail('conflict', 'lease lost while the child ran; killed the attempt', 'lease-lost')
           return
         }
         if (budgetExceeded) {
           closeCheckpoint('aborted')
           const used = inputTokens + outputTokens
-          fail('budget_exceeded', `budget-exceeded: used ${used} tokens > limit ${tokenBudget}`)
+          fail('budget_exceeded', `budget-exceeded: used ${used} tokens > limit ${tokenBudget}`, 'budget-exceeded')
           return
         }
         if (timedOut) {
           closeCheckpoint('aborted')
-          fail('transient', `dsh run timed out after ${timeoutMs}ms and was killed`)
+          fail('transient', `dsh run timed out after ${timeoutMs}ms and was killed`, 'timeout')
           return
         }
         if (runError !== null) {
           closeCheckpoint('aborted')
           const kind = classifyText(`${runError.code} ${runError.message}`) ?? 'unknown'
-          fail(kind, `dsh run error ${runError.code}: ${runError.message}`)
+          fail(
+            kind,
+            `dsh run error ${runError.code}: ${runError.message}`,
+            typeof runError.code === 'string' && runError.code !== '' ? runError.code : undefined,
+          )
           return
         }
         if (code !== 0) {
           closeCheckpoint('aborted')
           const detail = tail(stderrText)
           const kind = classifyText(detail) ?? 'unknown'
-          fail(kind, `dsh exited ${signal === null ? `code ${code}` : `signal ${signal}`}: ${detail || '(no stderr)'}`)
+          fail(
+            kind,
+            `dsh exited ${signal === null ? `code ${code}` : `signal ${signal}`}: ${detail || '(no stderr)'}`,
+            lastRunCode ?? 'exit-code',
+          )
           return
         }
 

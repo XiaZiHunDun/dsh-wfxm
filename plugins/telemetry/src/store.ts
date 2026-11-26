@@ -173,6 +173,8 @@ export interface TelemetryStoreOptions {
   queueLimit?: number
   batchSize?: number
   flushIntervalMs?: number
+  /** SQLite busy wait; P6-4 drills lower it to surface SQLITE_BUSY quickly. */
+  busyTimeoutMs?: number
   perTaskLimitBytes?: number
   dailyLimitBytes?: number
   diskWarnRatio?: number
@@ -697,7 +699,7 @@ export function createTelemetryStore(options: TelemetryStoreOptions): TelemetryS
   if (options.dbPath !== ':memory:') mkdirSync(dirname(options.dbPath), { recursive: true })
   const db = new DatabaseConstructor(options.dbPath)
   db.pragma('journal_mode = WAL')
-  db.pragma('busy_timeout = 5000')
+  db.pragma(`busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs ?? 5_000))}`)
   migrate(db)
 
   const insertEvent = db.prepare(`
