@@ -201,9 +201,11 @@
         "plugins/gateway/src/suggestion-command.ts",
         "scripts/eval/nightly.mjs",
         "deploy/systemd/dsh-wfxm-eval.timer",
+        "scripts/lib/notify-spool.mjs",
+        "scripts/health-alert.mjs",
         "scripts/serve.mjs"
       ],
-      "note": "2026-11-26 核查：使用→收集→分析已自动；P7-1 回流、P7-2 日常测评、P7-3 建议采纳（稳定 id + 做/忽略命令 + 任务关联）、P7-4 回放回测已落地。门禁通知（P7-5）、指标进规则（P7-6）仍未做，故仍为 partial"
+      "note": "2026-11-27 核查：使用→收集→分析已自动；P7-1 回流、P7-2 日常测评、P7-3 建议采纳（稳定 id + 做/忽略命令 + 任务关联）、P7-4 回放回测、P7-5 门禁失败飞书通知（release 落 spool → health timer 代发）已落地。仅 P7-6（指标进规则）未做，故仍为 partial"
     }
   ]
 }

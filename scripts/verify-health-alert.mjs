@@ -7,7 +7,7 @@
  *   node scripts/verify-health-alert.mjs
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -17,6 +17,7 @@ import {
   runHealthAlert,
   shouldSend,
 } from './health-alert.mjs'
+import { drainNotifications, notifyDir, readNotifyState, writeNotification } from './lib/notify-spool.mjs'
 
 let passed = 0
 let failed = 0
@@ -126,6 +127,119 @@ await check('聊天 id 从 threads 表读取', async () => {
   assert.equal(readChatId(dbPath), 'oc_last')
   assert.equal(readChatId(join(stateDir, 'missing.sqlite')), null)
   return 'oc_last'
+})
+
+await check('门禁通知：落 spool → 发送一次并记状态，重复轮次不重发', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-notify-'))
+  const dir = notifyDir(root)
+  const statePath = join(root, 'notify.state')
+  const file = writeNotification({
+    dir,
+    kind: 'release-gate',
+    text: '阻断 A',
+    now: new Date('2026-11-27T01:02:03Z'),
+  })
+  assert(file !== null && existsSync(file), 'notification not written')
+
+  const sent = []
+  const deps = {
+    dir,
+    statePath,
+    loadChatId: () => 'oc_1',
+    send: async (text, chatId) => sent.push({ text, chatId }),
+  }
+  const first = await drainNotifications(deps)
+  assert.equal(first.status, 'sent')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].text, '阻断 A')
+  assert.equal(sent[0].chatId, 'oc_1')
+
+  const second = await drainNotifications(deps)
+  assert.equal(second.status, 'up-to-date')
+  assert.equal(sent.length, 1)
+  assert.deepEqual(readNotifyState(statePath).handled, [file.split('/').pop()])
+
+  writeNotification({ dir, text: '阻断 B', now: new Date('2026-11-27T01:03:04Z') })
+  const third = await drainNotifications(deps)
+  assert.equal(third.status, 'sent')
+  assert.equal(sent.length, 2)
+  assert.equal(sent[1].text, '阻断 B')
+  rmSync(root, { recursive: true, force: true })
+  return '1 → 0 → 1'
+})
+
+await check('门禁通知：没有 chat 时保留待发，chat 出现后补发', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-notify-'))
+  const dir = notifyDir(root)
+  const statePath = join(root, 'notify.state')
+  writeNotification({ dir, text: '等 chat' })
+
+  const sent = []
+  const base = { dir, statePath, send: async (text) => sent.push(text) }
+  const none = await drainNotifications({ ...base, loadChatId: () => null })
+  assert.equal(none.status, 'no-chat')
+  assert.equal(sent.length, 0)
+  assert.deepEqual(readNotifyState(statePath).handled, [])
+
+  const later = await drainNotifications({ ...base, loadChatId: () => 'oc_1' })
+  assert.equal(later.status, 'sent')
+  assert.equal(sent.length, 1)
+  rmSync(root, { recursive: true, force: true })
+  return 'no-chat → sent'
+})
+
+await check('门禁通知：发送失败不标记，下一轮重试', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-notify-'))
+  const dir = notifyDir(root)
+  const statePath = join(root, 'notify.state')
+  writeNotification({ dir, text: '重试我' })
+
+  let attempts = 0
+  const sent = []
+  const send = async (text) => {
+    attempts += 1
+    if (attempts === 1) throw new Error('feishu down')
+    sent.push(text)
+  }
+  const first = await drainNotifications({ dir, statePath, loadChatId: () => 'oc_1', send })
+  assert.equal(first.status, 'send-failed')
+  assert.equal(sent.length, 0)
+  assert.deepEqual(readNotifyState(statePath).handled, [])
+
+  const second = await drainNotifications({ dir, statePath, loadChatId: () => 'oc_1', send })
+  assert.equal(second.status, 'sent')
+  assert.equal(sent.length, 1)
+  rmSync(root, { recursive: true, force: true })
+  return 'retried'
+})
+
+await check('门禁通知：坏文件标记处理，不无限重试', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-notify-'))
+  const dir = notifyDir(root)
+  const statePath = join(root, 'notify.state')
+  writeNotification({ dir, text: '先把目录建出来' })
+  writeFileSync(join(dir, '20260101T000000000Z-1-gate.json'), '{not json')
+
+  const sent = []
+  const result = await drainNotifications({
+    dir,
+    statePath,
+    loadChatId: () => 'oc_1',
+    send: async (text) => sent.push(text),
+  })
+  assert.equal(result.status, 'sent')
+  assert.equal(sent.length, 1)
+  assert.equal(readNotifyState(statePath).handled.length, 2)
+  const again = await drainNotifications({
+    dir,
+    statePath,
+    loadChatId: () => 'oc_1',
+    send: async (text) => sent.push(text),
+  })
+  assert.equal(again.status, 'up-to-date')
+  assert.equal(sent.length, 1)
+  rmSync(root, { recursive: true, force: true })
+  return 'bad file skipped'
 })
 
 rmSync(stateDir, { recursive: true, force: true })

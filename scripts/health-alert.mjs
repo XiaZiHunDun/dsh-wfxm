@@ -6,6 +6,10 @@
  * script: if `dsh-wfxm` is not active it sends one Feishu message to the owner's
  * chat, then stays quiet for a cooldown so a crash loop does not spam.
  *
+ * P7-5: the same timer drains `<release root>/notify/` — release-gate failures
+ * are queued by `release.mjs` (which runs without Feishu credentials) and sent
+ * here on the next tick.
+ *
  * Exported pieces are dependency-injected so the unit test never touches
  * systemd, Feishu, or the production DB.
  */
@@ -14,6 +18,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+
+import { drainNotifications } from './lib/notify-spool.mjs'
 
 export const DEFAULT_COOLDOWN_MS = 30 * 60_000
 export const DEFAULT_STATE_PATH = '/var/lib/dsh-wfxm/health-alert.state'
@@ -134,13 +140,27 @@ async function sendFeishu(text, chatId, env = process.env) {
 async function main() {
   const dataDir = process.env.DSH_WFXM_DATA_DIR ?? '/var/lib/dsh-wfxm'
   const cooldownMinutes = Number(process.env.DSH_WFXM_HEALTH_ALERT_MINUTES ?? '30')
+  const loadChatId = () => process.env.DSH_WFXM_HEALTH_CHAT_ID ?? readChatId(join(dataDir, 'ops.sqlite'))
+  const send = (text, chatId) => sendFeishu(text, chatId)
+
+  // P7-5：发布用户没有飞书凭据，门禁失败通知在这里代发；发送失败不记状态，下一轮重试。
+  const notify = await drainNotifications({
+    dir: process.env.DSH_WFXM_NOTIFY_DIR ?? '/opt/dsh-wfxm/notify',
+    statePath: process.env.DSH_WFXM_NOTIFY_STATE ?? join(dataDir, 'notify.state'),
+    loadChatId,
+    send,
+  })
+  if (notify.status === 'sent' || notify.status === 'send-failed' || notify.status === 'no-chat') {
+    console.log(`health-alert: notify ${notify.status}（${notify.sent} 条）${notify.error === undefined ? '' : `：${notify.error}`}`)
+  }
+
   const result = await runHealthAlert({
     checkService: systemctlIsActive,
     statePath: process.env.DSH_WFXM_HEALTH_STATE ?? DEFAULT_STATE_PATH,
     cooldownMs: Number.isFinite(cooldownMinutes) ? cooldownMinutes * 60_000 : DEFAULT_COOLDOWN_MS,
     target: hostname(),
-    loadChatId: () => process.env.DSH_WFXM_HEALTH_CHAT_ID ?? readChatId(join(dataDir, 'ops.sqlite')),
-    send: (text, chatId) => sendFeishu(text, chatId),
+    loadChatId,
+    send,
   })
   console.log(`health-alert: ${result.status}`)
 }

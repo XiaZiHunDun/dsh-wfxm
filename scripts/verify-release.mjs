@@ -35,8 +35,8 @@ function check(name, fn) {
   }
 }
 
-function run(args) {
-  const env = { ...process.env }
+function run(args, extraEnv = {}) {
+  const env = { ...process.env, ...extraEnv }
   delete env.LD_LIBRARY_PATH
   try {
     const stdout = execFileSync(process.execPath, [releaseScript, ...args, '--root', root], {
@@ -119,6 +119,26 @@ check('重复版本与不存在的版本都被拒绝', () => {
   const missing = run(['switch', '--version', 'nope'])
   assert(missing.code === 1 && missing.output.includes('no such release'), missing.output)
   return 'both exit 1'
+})
+
+check('硬门禁失败：prepare 退出 1 且给 owner 留下通知（P7-5）', () => {
+  const emptyEngine = mkdtempSync(join(tmpdir(), 'wfxm-no-engine-'))
+  const gate = run(['prepare', '--version', 'gated'], {
+    EVAL_HARD_GATE: '1',
+    AGENT_EVAL_ROOT: emptyEngine,
+  })
+  rmSync(emptyEngine, { recursive: true, force: true })
+  assert(gate.code === 1, `hard gate did not block (exit ${gate.code}): ${gate.output}`)
+  assert(gate.output.includes('eval hard gate blocked'), gate.output)
+
+  const dir = join(root, 'notify')
+  const names = existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.json')) : []
+  assert(names.length === 1, `expected 1 queued notification, got ${names.length}`)
+  const item = JSON.parse(readFileSync(join(dir, names[0]), 'utf8'))
+  assert(item.kind === 'release-gate', `kind=${String(item.kind)}`)
+  assert(item.text.includes('gated'), item.text)
+  assert(item.text.includes('硬门禁'), item.text)
+  return `${names[0]} → spool`
 })
 
 check('gc 永不删除 current，只按数量清理更旧的', () => {

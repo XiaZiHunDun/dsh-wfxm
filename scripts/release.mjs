@@ -31,10 +31,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { hostname } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { evalHardGate } from './lib/eval-gate.mjs'
+import { notifyDir, writeNotification } from './lib/notify-spool.mjs'
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const args = process.argv.slice(2)
@@ -59,6 +61,34 @@ const REQUIRED = [
 function fail(message) {
   console.error(`release: ${message}`)
   process.exit(1)
+}
+
+/** execFileSync 的 message 不含 stderr，而门禁原因通常只在 stderr 里。 */
+function describeFailure(error) {
+  const stderr = error?.stderr == null ? '' : String(error.stderr).trim()
+  const raw = stderr === '' ? (error instanceof Error ? error.message : String(error)) : stderr
+  return raw.length > 500 ? `${raw.slice(0, 500)}…` : raw
+}
+
+/**
+ * P7-5：硬门禁阻断时，除非 0 退出外，再给 owner 留一条飞书可见的通知。
+ *
+ * 发布用户没有飞书凭据，这里只落 spool；`dsh-wfxm-health.timer`（2 分钟）取走后代发。
+ * 写通知失败只告警：阻断结论不受影响。
+ */
+function queueGateFailure(detail) {
+  const target = writeNotification({
+    dir: notifyDir(root),
+    kind: 'release-gate',
+    text: [
+      `[发布门禁] dsh-wfxm ${version ?? '(未指定版本)'} 被硬门禁阻断`,
+      `主机：${hostname()}`,
+      `时间：${new Date().toISOString()}`,
+      `原因：${detail}`,
+      '修复后重新执行 release prepare。',
+    ].join('\n'),
+  })
+  if (target === null) console.warn('release: 无法写入通知队列（阻断结果不变）')
 }
 
 function checkVersion(value) {
@@ -142,8 +172,11 @@ function snapshotEval() {
   try {
     execFileSync(process.execPath, [script], { stdio: 'pipe', timeout: 180_000 })
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    if (hard) fail(`release: eval hard gate blocked — ${detail}`)
+    const detail = describeFailure(error)
+    if (hard) {
+      queueGateFailure(detail)
+      fail(`eval hard gate blocked — ${detail}`)
+    }
     console.warn(`release: eval snapshot skipped — ${detail}`)
   }
 }
