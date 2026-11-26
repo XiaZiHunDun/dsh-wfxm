@@ -120,6 +120,7 @@ export function createRuleForeground(options: RuleForegroundOptions): Foreground
       riskLevel: plan.risk,
       originMsgId: result.inbox.msgId,
       projectId: result.project?.projectId ?? null,
+      correlationId: result.inbox.id,
     })
     for (const assertion of plan.assertions) tasks.addAssertion(task.id, assertion)
     tasks.bindThread({

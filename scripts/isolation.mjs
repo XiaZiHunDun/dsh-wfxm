@@ -14,6 +14,7 @@
 
 import { createMemoryStore } from '@dsh-wfxm/knowledge'
 import { createIsolationService, createTaskStore } from '@dsh-wfxm/tasks'
+import { createTelemetryStore } from '@dsh-wfxm/telemetry'
 import { parseServeConfig } from './lib/startup.mjs'
 
 const EXIT_CONFLICT = 2
@@ -53,8 +54,13 @@ async function main(argv) {
   const config = parseServeConfig(process.env)
   const tasks = createTaskStore(config.dbPath)
   const memory = createMemoryStore(config.dbPath)
+  const telemetry = createTelemetryStore({
+    dbPath: config.dbPath,
+    traceDir: `${config.dataDir}/traces`,
+  })
   const service = createIsolationService({
     tasks,
+    telemetry,
     logger: {
       info: (message) => console.log(message),
       warn: (message) => console.error(message),
@@ -183,6 +189,7 @@ async function main(argv) {
   } finally {
     memory.close()
     tasks.close()
+    telemetry.close()
   }
 }
 

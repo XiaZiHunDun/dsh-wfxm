@@ -47,6 +47,7 @@ export const TELEMETRY_ATTR_KEYS: ReadonlySet<string> = new Set([
   'grant_id',
   'provider',
   'tool_call_id',
+  'topic',
   'error_stage',
   'degraded',
 ])

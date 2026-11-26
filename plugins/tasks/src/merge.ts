@@ -25,6 +25,7 @@ import { TaskError } from './model.js'
 import type { CommandResult, CommandRunner } from './isolation.js'
 import { realRun } from './isolation.js'
 import type { TaskStore } from './store.js'
+import { noteTelemetry, type TaskTelemetryPort } from './telemetry.js'
 
 export const DEFAULT_MERGE_TIMEOUT_MS = 60_000
 export const DEFAULT_LOCK_TIMEOUT_MS = 30_000
@@ -52,6 +53,8 @@ export interface IsolationServiceOptions {
   retentionMs?: number
   now?: () => Date
   logger?: { info?(message: string): void; warn?(message: string): void } | null
+  /** P6-1: merge spans; absent means no telemetry. */
+  telemetry?: TaskTelemetryPort | null
 }
 
 export interface MergeOptions {
@@ -139,6 +142,7 @@ export function createIsolationService(options: IsolationServiceOptions): Isolat
   const lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS
   const retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS
   const now = options.now ?? (() => new Date())
+  const telemetry = options.telemetry ?? null
 
   /** In-process queue per repository; the lock file covers other processes. */
   const queues = new Map<string, Promise<unknown>>()
@@ -381,8 +385,26 @@ export function createIsolationService(options: IsolationServiceOptions): Isolat
       }
     }
 
-    const dir = await lockDirectory(root)
-    return withRepoLock(dir, () => withGitResourceLock(taskId, root, async () => {
+    const startedAt = now()
+    const span = `merge:${task.id}:${task.attempt}`
+    const traceId = task.correlationId ?? task.id
+    noteTelemetry(telemetry, {
+      event: 'merge.started',
+      level: 'info',
+      phase: 'merge',
+      traceId,
+      spanId: span,
+      parentSpanId: `task:${task.id}`,
+      taskId: task.id,
+      taskRef: task.taskRef ?? undefined,
+      attempt: task.attempt,
+      status: 'running',
+      attrs: { merge_state: task.mergeState, branch: task.branch },
+    })
+
+    try {
+      const dir = await lockDirectory(root)
+      return await withRepoLock(dir, () => withGitResourceLock(taskId, root, async () => {
       // Re-read under the lock: another process may have merged meanwhile.
       const fresh = requireTask(taskId)
       if (fresh.mergeState !== 'none' && fresh.mergeState !== 'conflict') {
@@ -412,6 +434,20 @@ export function createIsolationService(options: IsolationServiceOptions): Isolat
           updated = requireTask(taskId)
         }
         options.logger?.info?.(`[merge] ${fresh.taskRef ?? fresh.id}: merged into ${targetBranch}`)
+        noteTelemetry(telemetry, {
+          event: 'merge.succeeded',
+          level: 'info',
+          phase: 'merge',
+          traceId,
+          spanId: span,
+          parentSpanId: `task:${task.id}`,
+          taskId: task.id,
+          taskRef: task.taskRef ?? undefined,
+          attempt: task.attempt,
+          status: 'merged',
+          durationMs: Math.max(0, now().getTime() - startedAt.getTime()),
+          attrs: { merge_state: 'merged', branch },
+        })
         return {
           task: updated,
           state: 'merged' as const,
@@ -444,6 +480,21 @@ export function createIsolationService(options: IsolationServiceOptions): Isolat
         options.logger?.warn?.(
           `[merge] ${fresh.taskRef ?? fresh.id}: conflict in ${conflictPaths.length} file(s)`,
         )
+        noteTelemetry(telemetry, {
+          event: 'merge.conflict',
+          level: 'warn',
+          phase: 'merge',
+          traceId,
+          spanId: span,
+          parentSpanId: `task:${task.id}`,
+          taskId: task.id,
+          taskRef: task.taskRef ?? undefined,
+          attempt: task.attempt,
+          status: 'conflict',
+          durationMs: Math.max(0, now().getTime() - startedAt.getTime()),
+          error: { code: 'merge-conflict', message: `${conflictPaths.length} file(s)` },
+          attrs: { merge_state: 'conflict', branch },
+        })
         return {
           task: requireTask(taskId),
           state: 'conflict' as const,
@@ -462,7 +513,30 @@ export function createIsolationService(options: IsolationServiceOptions): Isolat
         merged.code === 128 ? 'transient' : 'unknown',
         `git merge failed: ${merged.stderr.trim() || `exit ${merged.code}`}`,
       )
-    }))
+      }))
+    } catch (error) {
+      const code = typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : typeof (error as { kind?: unknown }).kind === 'string'
+          ? (error as { kind: string }).kind
+          : 'merge-failed'
+      noteTelemetry(telemetry, {
+        event: 'merge.failed',
+        level: 'error',
+        phase: 'merge',
+        traceId,
+        spanId: span,
+        parentSpanId: `task:${task.id}`,
+        taskId: task.id,
+        taskRef: task.taskRef ?? undefined,
+        attempt: task.attempt,
+        status: 'failed',
+        durationMs: Math.max(0, now().getTime() - startedAt.getTime()),
+        error: { code, message: error instanceof Error ? error.message : String(error) },
+        attrs: { branch: task.branch },
+      })
+      throw error
+    }
   }
 
   async function release(

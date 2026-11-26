@@ -333,11 +333,41 @@ export interface RequestApprovalResult {
   outboxId: string
 }
 
+/** P6-1: the host only needs emit/flush/close; serve.mjs owns the instance. */
+export interface HostTelemetryPort {
+  emit(event: Record<string, unknown>): boolean
+  beginAttempt(input: {
+    taskId: string
+    attempt: number
+    traceId: string
+    executor?: string
+    model?: string
+    sessionRef?: string
+    traceRef?: string
+    startedAt?: string | number | Date
+  }): unknown
+  finishAttempt(taskId: string, attempt: number, input: {
+    outcome: 'succeeded' | 'failed' | 'cancelled'
+    failureKind?: string
+    errorCode?: string
+    summary?: string
+    finishedAt?: string | number | Date
+    model?: string
+    inputTokens?: number
+    outputTokens?: number
+    costUsd?: number
+  }): boolean
+  flush(): Promise<unknown> | unknown
+  close(): void
+}
+
 export interface WfxmHostOptions {
   /** Same `ops.sqlite` for ① and ⑤ (`schema_migrations` keeps them apart). */
   dbPath: string
   /** The execute seam; `createDshExecutor(...)` in production, a stub in tests. */
   executor: TaskExecutor
+  /** P6-1: structured trace; absent means no telemetry. */
+  telemetry?: HostTelemetryPort | null
   /** Absent = routing only (no outbound delivery). */
   transport?: OutboxTransport | null
   /** Defaults to the deterministic rule foreground. */
@@ -482,6 +512,17 @@ function payloadString(payload: Json, key: string): string | null {
 export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   const now = options.now ?? (() => new Date())
   const logger = options.logger ?? null
+  const telemetry = options.telemetry ?? null
+
+  /** P6-1: telemetry must never change a host decision. */
+  function noteTelemetry(event: Record<string, unknown>): void {
+    if (telemetry === null) return
+    try {
+      telemetry.emit(event)
+    } catch (error) {
+      logger?.warn?.(`telemetry emit failed: ${messageOf(error)}`)
+    }
+  }
   const evalConfig = options.eval === undefined ? {} : options.eval
   const evalEnabled = evalConfig !== null
   const evalSnapshotPath = evalConfig?.snapshotPath === undefined
@@ -563,6 +604,23 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
   function onSent(item: OutboxItem, externalMsgId: string): void {
     const receiptId = receiptRelay.receiptIdOf(item)
     if (receiptId !== null) receiptRelay.settle(receiptId, externalMsgId)
+    if (item.taskId !== null) {
+      const task = tasks.getTask(item.taskId)
+      if (task !== null) {
+        noteTelemetry({
+          event: 'receipt.sent',
+          level: 'info',
+          phase: 'deliver',
+          traceId: task.correlationId,
+          spanId: `delivery:${item.id}`,
+          parentSpanId: `task:${task.id}`,
+          taskId: task.id,
+          attempt: task.attempt,
+          status: 'sent',
+          attrs: { receipt_id: receiptId ?? item.id, topic: item.topic },
+        })
+      }
+    }
     if (item.topic === RECEIPT_TOPIC) bindReceiptAnchor(item, externalMsgId)
     // The card is a view (AR10): remember where it is so the decision can
     // patch it later instead of leaving a stale "please confirm" on screen.
@@ -590,6 +648,31 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       ...options.dispatcher ?? {},
       ...dispatcherLogger === null ? {} : { logger: dispatcherLogger },
       onSent,
+      onFailed: (item, detail) => {
+        const task = item.taskId === null ? null : tasks.getTask(item.taskId)
+        noteTelemetry({
+          event: 'delivery.failed',
+          level: detail.final ? 'error' : 'warn',
+          phase: 'deliver',
+          traceId: task?.correlationId ?? item.id,
+          spanId: `delivery:${item.id}`,
+          ...task === null ? {} : {
+            parentSpanId: `task:${task.id}`,
+            taskId: task.id,
+            attempt: task.attempt,
+          },
+          status: detail.final ? 'failed' : 'retrying',
+          error: {
+            code: detail.final ? 'delivery-failed' : 'delivery-retry',
+            message: detail.message,
+            retryable: detail.retryable,
+          },
+          attrs: {
+            topic: item.topic,
+            ...item.taskId === null ? {} : { receipt_id: item.id },
+          },
+        })
+      },
     })
 
   const workerOptions = options.worker ?? {}
@@ -598,6 +681,7 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     execute: options.executor,
     snapshot: options.snapshot ?? null,
     changes: changes === null ? null : createTaskChangePort(changes),
+    telemetry,
     now,
     ...workerOptions.owner === undefined ? {} : { owner: workerOptions.owner },
     ...workerOptions.leaseMs === undefined ? {} : { leaseMs: workerOptions.leaseMs },
@@ -1253,6 +1337,17 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       input,
     )
 
+    noteTelemetry({
+      event: 'message.received',
+      level: 'info',
+      phase: 'ingest',
+      traceId: result.inbox.id,
+      spanId: result.inbox.id,
+      messageId: result.inbox.msgId,
+      ...result.thread === null ? {} : { threadId: result.thread.id },
+      status: result.duplicate ? 'duplicate' : 'accepted',
+      attrs: { channel: input.channelId },
+    })
     // P2-1/P2-3: `/eval` 直接回执，不进前台、不建任务；flag/promote/ignore 只写测评库。
     if (result.target.kind === 'eval') {
       await handleEvalCommand(result, result.target)
@@ -1477,6 +1572,17 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         threadId: result.thread?.id ?? null,
       })
       logger?.warn?.(reason)
+      noteTelemetry({
+        event: 'message.failed',
+        level: 'error',
+        phase: 'ingest',
+        traceId: result.inbox.id,
+        spanId: result.inbox.id,
+        messageId: result.inbox.msgId,
+        ...result.thread === null ? {} : { threadId: result.thread.id },
+        status: 'failed',
+        error: { code: 'foreground-unavailable', message: reason },
+      })
       return { result, foreground: null, error: 'foreground-unavailable' }
     }
 
@@ -1518,6 +1624,24 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
     if (turn.action === 'task-created') {
       const task = tasks.getTask(turn.taskId)
       const ref = task?.taskRef ?? turn.taskId.slice(0, 8)
+      if (task !== null) {
+        noteTelemetry({
+          event: 'task.created',
+          level: 'info',
+          phase: 'task',
+          traceId: task.correlationId,
+          spanId: `task:${task.id}`,
+          parentSpanId: task.correlationId,
+          taskId: task.id,
+          taskRef: task.taskRef ?? undefined,
+          round: task.round,
+          status: task.status,
+          attrs: {
+            risk_level: task.riskLevel,
+            ...task.projectId === null ? {} : { project: task.projectId },
+          },
+        })
+      }
       let ack = `收到，任务 ${ref} 已开始处理，完成后回执。`
 
       // Slice I: R2/R3 must be approved before the worker can claim them.
@@ -1769,6 +1893,11 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
 
     close() {
       stop()
+      try {
+        telemetry?.close()
+      } catch (error) {
+        logger?.warn?.(`telemetry close failed: ${messageOf(error)}`)
+      }
       tasks.close()
       gateway.close()
     },

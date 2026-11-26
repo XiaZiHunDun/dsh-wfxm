@@ -52,6 +52,7 @@ import {
   summarizeConversationDigest,
 } from '@dsh-wfxm/gateway'
 import { createWfxmHost, createRuleForeground } from '@dsh-wfxm/host'
+import { createTelemetryStore } from '@dsh-wfxm/telemetry'
 import {
   buildMailDigest,
   buildTodoExtractionPrompt,
@@ -170,6 +171,7 @@ async function main() {
 
   // Filled in by the startup steps, closed by `shutdown`.
   let stores = null
+  let telemetry = null
   let host = null
   let channel = null
   let decideRunner = null
@@ -218,6 +220,11 @@ async function main() {
           approvals.close()
           throw error
         }
+        // P6-1: one store for the whole process; the host owns its shutdown.
+        telemetry = createTelemetryStore({
+          dbPath: config.dbPath,
+          traceDir: join(config.dataDir, 'traces'),
+        })
         log('storage', { db: config.dbPath })
       },
     },
@@ -235,6 +242,7 @@ async function main() {
           createGrantStore,
           createWfxmHost,
           createDshExecutor,
+          createTelemetryStore,
           createDecisionRunner,
           createResourceProbe,
         })
@@ -256,6 +264,7 @@ async function main() {
           if (project === null) return config.workdir
           isolation ??= createIsolationResolver({
             tasks: stores.tasks,
+            telemetry,
             logger: {
               info: (message) => log('isolation', message),
               warn: (message) => log('isolation:warn', message),
@@ -266,6 +275,7 @@ async function main() {
         const executor = createDshExecutor({
           dshBin: config.dshBin,
           env: { ...process.env },
+          telemetry,
           defaultWorkdir: config.workdir,
           workdirResolver: config.worktreeIsolation ? workdirResolver : undefined,
           timeoutMs: config.executorTimeoutMs,
@@ -308,6 +318,7 @@ async function main() {
         host = createWfxmHost({
           dbPath: config.dbPath,
           executor,
+          telemetry,
           transport: forwardedTransport,
           duplicateWindowMs: config.duplicateWindowSeconds * 1000,
           snapshot: snapshotPort,
@@ -1132,6 +1143,9 @@ async function main() {
     }
     try {
       host?.close()
+      // The host owns the telemetry store; only close it here when startup
+      // failed before the host existed.
+      if (host === null) telemetry?.close()
       stores?.approvals.close()
       stores?.grants.close()
       stores?.memory.close()

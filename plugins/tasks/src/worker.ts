@@ -12,6 +12,12 @@ import { commitWorktreeChanges } from './isolation.js'
 import type { Task, ThreadResult } from './model.js'
 import { DEFAULT_RESOURCE_TTL_SEC, declaredResources } from './resource-locks.js'
 import type { AcquireResourceLocksResult, TaskStore } from './store.js'
+import {
+  attemptSpanId,
+  noteTelemetry,
+  taskSpanId,
+  type TaskTelemetryPort,
+} from './telemetry.js'
 import { completeTask, type VerifyContext } from './verify.js'
 
 /** Port error classes (15 §五); the worker maps them to task-level actions. */
@@ -144,6 +150,8 @@ export interface TaskWorkerOptions {
    * an executor saying "succeeded" is not enough (13 §3.3).
    */
   verify?: VerifyContext
+  /** P6-1: structured trace + attempt rows; absent means no telemetry. */
+  telemetry?: TaskTelemetryPort | null
   owner?: string
   leaseMs?: number
   heartbeatMs?: number
@@ -292,6 +300,126 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     }
   }
 
+  /**
+   * P6-1: attempt-level trace. Outcomes must survive telemetry failures, so
+   * every call is best-effort and only reports through `onError`.
+   */
+  const telemetry = options.telemetry ?? null
+  const openAttempts = new Map<string, { attempt: number; startedAt: number }>()
+
+  function beginAttemptTracking(task: Task): void {
+    const startedAt = now()
+    openAttempts.set(task.id, { attempt: task.attempt, startedAt: startedAt.getTime() })
+    noteTelemetry(telemetry, {
+      event: 'task.claimed',
+      level: 'info',
+      phase: 'task',
+      traceId: task.correlationId,
+      spanId: taskSpanId(task.id),
+      parentSpanId: task.correlationId,
+      taskId: task.id,
+      taskRef: task.taskRef ?? undefined,
+      round: task.round,
+      attempt: task.attempt,
+      status: 'running',
+      attrs: { risk_level: task.riskLevel, isolation: task.isolation },
+    }, options.onError)
+    noteTelemetry(telemetry, {
+      event: 'attempt.started',
+      level: 'info',
+      phase: 'attempt',
+      traceId: task.correlationId,
+      spanId: attemptSpanId(task.id, task.attempt),
+      parentSpanId: taskSpanId(task.id),
+      taskId: task.id,
+      taskRef: task.taskRef ?? undefined,
+      round: task.round,
+      attempt: task.attempt,
+      status: 'running',
+      ...task.sessionId === null ? {} : { attrs: { session_ref: task.sessionId } },
+    }, options.onError)
+    try {
+      telemetry?.beginAttempt({
+        taskId: task.id,
+        attempt: task.attempt,
+        traceId: task.correlationId,
+        traceRef: task.correlationId,
+        startedAt,
+      })
+    } catch (error) {
+      options.onError?.(error)
+    }
+  }
+
+  function finishAttemptTracking(task: Task, input: {
+    outcome: 'succeeded' | 'failed' | 'cancelled'
+    failureKind?: string
+    errorCode?: string
+    summary?: string
+    usage?: ExecUsage
+    /** Terminal task status; omitted for retries and pre-execution skips. */
+    terminalStatus?: 'succeeded' | 'failed' | 'waiting_input' | 'cancelled' | 'paused'
+  }): void {
+    const open = openAttempts.get(task.id)
+    if (open === undefined) return
+    openAttempts.delete(task.id)
+    const finishedAt = now()
+    const durationMs = Math.max(0, finishedAt.getTime() - open.startedAt)
+    try {
+      telemetry?.finishAttempt(task.id, open.attempt, {
+        outcome: input.outcome,
+        ...input.failureKind === undefined ? {} : { failureKind: input.failureKind },
+        ...input.errorCode === undefined ? {} : { errorCode: input.errorCode },
+        ...input.summary === undefined ? {} : { summary: input.summary },
+        finishedAt,
+        ...input.usage === undefined ? {} : {
+          inputTokens: input.usage.inputTokens,
+          outputTokens: input.usage.outputTokens,
+          costUsd: input.usage.costUsd,
+        },
+      })
+    } catch (error) {
+      options.onError?.(error)
+    }
+    noteTelemetry(telemetry, {
+      event: 'attempt.finished',
+      level: input.outcome === 'failed' ? 'error' : 'info',
+      phase: 'attempt',
+      traceId: task.correlationId,
+      spanId: attemptSpanId(task.id, open.attempt),
+      parentSpanId: taskSpanId(task.id),
+      taskId: task.id,
+      taskRef: task.taskRef ?? undefined,
+      round: task.round,
+      attempt: open.attempt,
+      status: input.outcome,
+      durationMs,
+      ...input.outcome !== 'failed' ? {} : {
+        error: {
+          code: input.errorCode ?? input.failureKind ?? 'unknown',
+          ...input.failureKind === undefined ? {} : { kind: input.failureKind },
+          ...input.summary === undefined ? {} : { message: input.summary },
+        },
+      },
+    }, options.onError)
+    if (input.terminalStatus === undefined) return
+    noteTelemetry(telemetry, {
+      event: 'task.settled',
+      level: input.terminalStatus === 'succeeded' ? 'info' : 'warn',
+      phase: 'task',
+      traceId: task.correlationId,
+      spanId: taskSpanId(task.id),
+      parentSpanId: task.correlationId,
+      taskId: task.id,
+      taskRef: task.taskRef ?? undefined,
+      round: task.round,
+      attempt: open.attempt,
+      status: input.terminalStatus,
+      durationMs,
+      ...input.errorCode === undefined ? {} : { error: { code: input.errorCode } },
+    }, options.onError)
+  }
+
   async function settle(task: Task, outcome: ExecOutcome, wakeAt: string | null): Promise<TaskRunReport> {
     // Slice BK (I5): count usage on every settle path, including retries and
     // needs-input, so cost is not lost when a run ends early.
@@ -307,6 +435,13 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     if (outcome.status === 'needs_input') {
       try {
         store.parkForInput({ taskId: task.id, question: outcome.question })
+        finishAttemptTracking(task, {
+          outcome: 'cancelled',
+          failureKind: 'needs_input',
+          summary: outcome.question,
+          usage: outcome.usage,
+          terminalStatus: 'waiting_input',
+        })
         return {
           taskId: task.id,
           outcome: 'needs-input',
@@ -317,6 +452,13 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         }
       } catch (error) {
         options.onError?.(error)
+        finishAttemptTracking(task, {
+          outcome: 'cancelled',
+          failureKind: 'cancelled',
+          summary: messageOf(error),
+          usage: outcome.usage,
+          terminalStatus: 'cancelled',
+        })
         return {
           taskId: task.id,
           outcome: 'skipped',
@@ -341,16 +483,112 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         // 分支干净，所以进入 `succeeded` 前由 worker 提交一次（干净则不提交）。
         // 失败由下方 catch 统一收敛，错误码 `commit-failed` 会写进失败原因。
         if (latest.isolation === 'worktree') {
-          await commitWorktreeChanges(latest)
+          const startedAt = now()
+          const span = `isolation.commit:${task.id}:${task.attempt}`
+          noteTelemetry(telemetry, {
+            event: 'isolation.commit.started',
+            level: 'info',
+            phase: 'isolation',
+            traceId: task.correlationId,
+            spanId: span,
+            parentSpanId: attemptSpanId(task.id, task.attempt),
+            taskId: task.id,
+            taskRef: task.taskRef ?? undefined,
+            attempt: task.attempt,
+            status: 'running',
+            attrs: { worktree: latest.worktreePath, isolation: latest.isolation },
+          }, options.onError)
+          try {
+            await commitWorktreeChanges(latest)
+            noteTelemetry(telemetry, {
+              event: 'isolation.commit.succeeded',
+              level: 'info',
+              phase: 'isolation',
+              traceId: task.correlationId,
+              spanId: span,
+              parentSpanId: attemptSpanId(task.id, task.attempt),
+              taskId: task.id,
+              taskRef: task.taskRef ?? undefined,
+              attempt: task.attempt,
+              status: 'succeeded',
+              durationMs: Math.max(0, now().getTime() - startedAt.getTime()),
+              attrs: { worktree: latest.worktreePath },
+            }, options.onError)
+          } catch (error) {
+            noteTelemetry(telemetry, {
+              event: 'isolation.commit.failed',
+              level: 'error',
+              phase: 'isolation',
+              traceId: task.correlationId,
+              spanId: span,
+              parentSpanId: attemptSpanId(task.id, task.attempt),
+              taskId: task.id,
+              taskRef: task.taskRef ?? undefined,
+              attempt: task.attempt,
+              status: 'failed',
+              durationMs: Math.max(0, now().getTime() - startedAt.getTime()),
+              error: { code: errorCodeOf(error) ?? 'commit-failed', message: messageOf(error) },
+              attrs: { worktree: latest.worktreePath },
+            }, options.onError)
+            throw error
+          }
         }
         const verify = options.verify === undefined
           ? undefined
           : { ...options.verify, cwd: latest.worktreePath ?? options.verify.cwd }
-        await completeTask(store, task.id, {
-          ...verify ?? {},
-          summary: outcome.summary,
-          ...outcome.evidenceLocator === undefined ? {} : { evidenceLocator: outcome.evidenceLocator },
-        })
+        const verifyStartedAt = now()
+        const verifySpan = `verify:${task.id}:${task.attempt}`
+        noteTelemetry(telemetry, {
+          event: 'verify.started',
+          level: 'info',
+          phase: 'verify',
+          traceId: task.correlationId,
+          spanId: verifySpan,
+          parentSpanId: attemptSpanId(task.id, task.attempt),
+          taskId: task.id,
+          taskRef: task.taskRef ?? undefined,
+          attempt: task.attempt,
+          status: 'running',
+        }, options.onError)
+        try {
+          await completeTask(store, task.id, {
+            ...verify ?? {},
+            summary: outcome.summary,
+            ...outcome.evidenceLocator === undefined ? {} : { evidenceLocator: outcome.evidenceLocator },
+          })
+        } catch (error) {
+          noteTelemetry(telemetry, {
+            event: 'verify.failed',
+            level: 'error',
+            phase: 'verify',
+            traceId: task.correlationId,
+            spanId: verifySpan,
+            parentSpanId: attemptSpanId(task.id, task.attempt),
+            taskId: task.id,
+            taskRef: task.taskRef ?? undefined,
+            attempt: task.attempt,
+            status: 'failed',
+            durationMs: Math.max(0, now().getTime() - verifyStartedAt.getTime()),
+            error: {
+              code: errorCodeOf(error) ?? 'verification-failed',
+              message: messageOf(error),
+            },
+          }, options.onError)
+          throw error
+        }
+        noteTelemetry(telemetry, {
+          event: 'verify.succeeded',
+          level: 'info',
+          phase: 'verify',
+          traceId: task.correlationId,
+          spanId: verifySpan,
+          parentSpanId: attemptSpanId(task.id, task.attempt),
+          taskId: task.id,
+          taskRef: task.taskRef ?? undefined,
+          attempt: task.attempt,
+          status: 'succeeded',
+          durationMs: Math.max(0, now().getTime() - verifyStartedAt.getTime()),
+        }, options.onError)
         // Slice AS: the Verifier's verdict is what gates delivery, so artifacts
         // are reported only after `completeTask` succeeded.
         if (outcome.attachments !== undefined && outcome.attachments.length > 0) {
@@ -362,6 +600,12 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         }
         // Slice AV: the change is accepted (kept), never auto-rolled back.
         noteChange('keep', task, outcome.summary.slice(0, 500))
+        finishAttemptTracking(task, {
+          outcome: 'succeeded',
+          summary: outcome.summary,
+          usage: outcome.usage,
+          terminalStatus: 'succeeded',
+        })
         return {
           taskId: task.id,
           outcome: 'succeeded',
@@ -381,6 +625,14 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
           options.onError?.(transitionError)
         }
         noteChange('markFailed', task, messageOf(error))
+        finishAttemptTracking(task, {
+          outcome: 'failed',
+          failureKind: 'unknown',
+          errorCode: errorCodeOf(error) ?? 'verification-failed',
+          summary: messageOf(error),
+          usage: outcome.usage,
+          terminalStatus: 'failed',
+        })
         return {
           taskId: task.id,
           outcome: 'failed',
@@ -402,6 +654,13 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         reason: `${outcome.failure}: ${outcome.summary}`,
         now: now(),
       })
+      finishAttemptTracking(task, {
+        outcome: 'failed',
+        failureKind: outcome.failure,
+        errorCode: outcome.failure,
+        summary: outcome.summary,
+        usage: outcome.usage,
+      })
       return {
         taskId: task.id,
         outcome: 'retried',
@@ -422,6 +681,14 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     // Slice AV: terminal failure is the half-application signal; startup
     // recovery decides whether to roll this task's writes back.
     noteChange('markFailed', task, outcome.summary)
+    finishAttemptTracking(task, {
+      outcome: 'failed',
+      failureKind: outcome.failure,
+      errorCode: outcome.failure,
+      summary: outcome.summary,
+      usage: outcome.usage,
+      terminalStatus: 'failed',
+    })
     return {
       taskId: task.id,
       outcome: 'failed',
@@ -451,15 +718,19 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
     }
     const task = store.claimTask({ owner, leaseMs, now: now() })
     if (task === null) return idle()
+    beginAttemptTracking(task)
 
-    const stale = (): TaskRunReport => ({
-      taskId: task.id,
-      outcome: 'skipped',
-      failure: null,
-      skipped: 'stale-lease',
-      attempt: task.attempt,
-      wakeAt: null,
-    })
+    const stale = (): TaskRunReport => {
+      finishAttemptTracking(task, { outcome: 'cancelled', failureKind: 'stale-lease' })
+      return {
+        taskId: task.id,
+        outcome: 'skipped',
+        failure: null,
+        skipped: 'stale-lease',
+        attempt: task.attempt,
+        wakeAt: null,
+      }
+    }
 
     // 13 §3.4: R3 must snapshot first; a failure refuses execution, it never
     // means "do it anyway".
@@ -470,6 +741,13 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
           to: 'failed',
           summary: 'R3 refused: no snapshot port configured',
           reason: 'snapshot-unavailable',
+        })
+        finishAttemptTracking(task, {
+          outcome: 'failed',
+          failureKind: 'snapshot-refused',
+          errorCode: 'snapshot-unavailable',
+          summary: 'R3 refused: no snapshot port configured',
+          terminalStatus: 'failed',
         })
         return {
           taskId: task.id,
@@ -492,6 +770,13 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
           to: 'failed',
           summary: `snapshot failed: ${messageOf(error)}`,
           reason: 'snapshot-failed',
+        })
+        finishAttemptTracking(task, {
+          outcome: 'failed',
+          failureKind: 'snapshot-refused',
+          errorCode: 'snapshot-failed',
+          summary: `snapshot failed: ${messageOf(error)}`,
+          terminalStatus: 'failed',
         })
         return {
           taskId: task.id,
@@ -516,6 +801,13 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         to: 'failed',
         summary: `resource lease failed: ${messageOf(error)}`,
         reason: 'resource-invalid',
+      })
+      finishAttemptTracking(task, {
+        outcome: 'failed',
+        failureKind: classify(error),
+        errorCode: 'resource-invalid',
+        summary: `resource lease failed: ${messageOf(error)}`,
+        terminalStatus: 'failed',
       })
       return {
         taskId: task.id,
@@ -545,6 +837,13 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
           summary: `resource lease failed: ${messageOf(error)}`,
           reason: 'resource-invalid',
         })
+        finishAttemptTracking(task, {
+          outcome: 'failed',
+          failureKind: classify(error),
+          errorCode: 'resource-invalid',
+          summary: `resource lease failed: ${messageOf(error)}`,
+          terminalStatus: 'failed',
+        })
         return {
           taskId: task.id,
           outcome: 'failed',
@@ -563,6 +862,7 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
           blocking: grant.conflicts,
           now: now(),
         })
+        finishAttemptTracking(task, { outcome: 'cancelled', failureKind: 'resource-conflict' })
         return {
           taskId: task.id,
           outcome: 'skipped',
@@ -640,6 +940,13 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
         } catch (releaseError) {
           options.onError?.(releaseError)
         }
+        finishAttemptTracking(task, {
+          outcome: 'failed',
+          failureKind: 'change-refused',
+          errorCode: begun.code ?? 'change-record-failed',
+          summary: `change ledger refused: ${begun.code ?? 'unknown'}`,
+          terminalStatus: 'failed',
+        })
         return {
           taskId: task.id,
           outcome: 'failed',
@@ -694,6 +1001,11 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
       } catch (error) {
         options.onError?.(error)
       }
+      finishAttemptTracking(task, {
+        outcome: 'cancelled',
+        failureKind: latest.status,
+        terminalStatus: latest.status,
+      })
       return {
         taskId: task.id,
         outcome: 'skipped',

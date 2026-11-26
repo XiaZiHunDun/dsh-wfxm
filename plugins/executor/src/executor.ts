@@ -91,6 +91,11 @@ export type ExecOutcome = ExecSuccess | ExecFailure | ExecNeedsInput
 export interface ExecutorTaskRef {
   id: string
   intent: string
+  /**
+   * P6-1: `tasks.correlation_id` — the trace id shared with the gateway
+   * message, attempt rows and the Verifier. Absent means no trace.
+   */
+  correlationId?: string | null
   projectId?: string | null
   riskLevel?: string
   /**
@@ -111,6 +116,11 @@ export interface ExecutorHooks {
   readonly attempt: number
   /** Aborted by the owner (`停止 <ref>`); the child is killed and the outcome is `conflict`. */
   signal?: AbortSignal
+}
+
+/** P6-1: only `emit` is needed; the host injects the real telemetry store. */
+export interface ExecutorTelemetryPort {
+  emit(event: Record<string, unknown>): boolean
 }
 
 export type TaskExecutorFn = (
@@ -157,6 +167,8 @@ export interface DshExecutorOptions {
   maxSummaryChars?: number
   /** Non-fatal internal errors (e.g. checkpoint close) surface here. */
   onError?: (error: unknown) => void
+  /** P6-1: structured step/tool trace; absent means no telemetry. */
+  telemetry?: ExecutorTelemetryPort | null
 }
 
 export const DEFAULT_TIMEOUT_MS = 600_000
@@ -335,6 +347,13 @@ interface RunEvent {
   reason?: { kind?: unknown; error?: { code?: unknown; message?: unknown } }
   sessionId?: unknown
   text?: unknown
+  /** `tool_call` / `tool_result` fields (dsh names them `tool` or `name`). */
+  tool?: unknown
+  name?: unknown
+  id?: unknown
+  input?: unknown
+  ok?: unknown
+  durationMs?: unknown
   usage?: { inputTokens?: unknown; outputTokens?: unknown }
 }
 
@@ -353,8 +372,59 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
   const checkpoints = options.checkpoints ?? null
 
   return async function execute(task, hooks) {
+    const telemetry = options.telemetry ?? null
+    const traceId = typeof task.correlationId === 'string' && task.correlationId !== ''
+      ? task.correlationId
+      : null
+    const traced = telemetry !== null && traceId !== null
+    const taskSpan = `task:${task.id}`
+    const attemptSpan = `attempt:${task.id}:${hooks.attempt}`
+    const startedAt = Date.now()
+    let stepSeq = 0
+    let toolSeq = 0
+    let currentStep: { seq: number; span: string } | null = null
+    let lastToolSpan: string | null = null
+    let lastRunCode: string | null = null
+
+    const note = (event: Record<string, unknown>): void => {
+      if (!traced) return
+      telemetry.emit(event)
+    }
+    const finish = (
+      status: 'succeeded' | 'failed' | 'needs_input',
+      detail: { code?: string; message?: string } = {},
+    ): void => {
+      note({
+        event: 'executor.finished',
+        level: status === 'failed' ? 'error' : 'info',
+        phase: 'execute',
+        traceId: traceId as string,
+        spanId: attemptSpan,
+        parentSpanId: taskSpan,
+        taskId: task.id,
+        attempt: hooks.attempt,
+        status,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        attrs: { provider: 'dsh' },
+        ...status !== 'failed' ? {} : {
+          error: {
+            code: detail.code ?? lastRunCode ?? 'executor-failed',
+            ...detail.message === undefined ? {} : { message: detail.message },
+          },
+        },
+      })
+    }
+    const ensureStep = (): { seq: number; span: string } => {
+      if (currentStep === null) {
+        stepSeq += 1
+        currentStep = { seq: stepSeq, span: `step:${task.id}:${hooks.attempt}:${stepSeq}` }
+      }
+      return currentStep
+    }
+
     const intent = task.intent?.trim() ?? ''
     if (intent.length === 0) {
+      finish('failed', { code: 'invalid_input', message: 'task has an empty intent; nothing to run' })
       return { status: 'failed', failure: 'invalid_input', summary: 'task has an empty intent; nothing to run' }
     }
     // Slice AP: context is an appendix, so the intent always comes first.
@@ -370,17 +440,27 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         // the resolver is allowed to be async; refusing still returns null/''.
         resolved = await options.workdirResolver(task)
       } catch (error) {
+        const summary = truncate(
+          `workdir resolver threw: ${error instanceof Error ? error.message : String(error)}`,
+          maxSummary,
+        )
+        finish('failed', { code: 'workdir-resolver', message: summary })
         return {
           status: 'failed',
           failure: 'unknown',
-          summary: truncate(`workdir resolver threw: ${error instanceof Error ? error.message : String(error)}`, maxSummary),
+          summary,
         }
       }
       if (resolved === null || resolved.trim() === '') {
+        const summary = truncate(
+          `no workspace resolved for task ${task.id} (project ${task.projectId ?? 'none'})`,
+          maxSummary,
+        )
+        finish('failed', { code: 'not_found', message: summary })
         return {
           status: 'failed',
           failure: 'not_found',
-          summary: truncate(`no workspace resolved for task ${task.id} (project ${task.projectId ?? 'none'})`, maxSummary),
+          summary,
         }
       }
       cwd = resolved
@@ -405,6 +485,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
 
       const fail = (failure: FailureKind, summary: string): void => {
         const usage = usageOf()
+        finish('failed', { code: failure, message: summary })
         resolve({
           status: 'failed',
           failure,
@@ -463,6 +544,19 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
       } else {
         delete env.DSH_WFXM_APPROVED_LEVEL
       }
+
+      note({
+        event: 'executor.started',
+        level: 'info',
+        phase: 'execute',
+        traceId: traceId as string,
+        spanId: attemptSpan,
+        parentSpanId: taskSpan,
+        taskId: task.id,
+        attempt: hooks.attempt,
+        status: 'running',
+        attrs: { provider: 'dsh' },
+      })
 
       let child
       try {
@@ -559,9 +653,88 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
           textFallback.push(event.text)
         } else if (event.type === 'final' && typeof event.text === 'string') {
           finalText = event.text
+        } else if (event.type === 'tool_call') {
+          const toolName = typeof event.tool === 'string'
+            ? event.tool
+            : typeof event.name === 'string' ? event.name : 'unknown'
+          const step = ensureStep()
+          toolSeq += 1
+          lastToolSpan = `tool:${task.id}:${hooks.attempt}:${step.seq}:${toolSeq}`
+          note({
+            event: 'tool.call',
+            level: 'debug',
+            phase: 'tool',
+            traceId: traceId as string,
+            spanId: lastToolSpan,
+            parentSpanId: step.span,
+            taskId: task.id,
+            attempt: hooks.attempt,
+            status: 'running',
+            tool: {
+              name: toolName,
+              ...event.input === undefined ? {} : {
+                args: typeof event.input === 'string' ? event.input : JSON.stringify(event.input),
+              },
+            },
+            ...typeof event.id === 'string' ? { attrs: { tool_call_id: event.id } } : {},
+          })
+        } else if (event.type === 'tool_result') {
+          const toolName = typeof event.tool === 'string'
+            ? event.tool
+            : typeof event.name === 'string' ? event.name : 'unknown'
+          const step = currentStep ?? { seq: Math.max(stepSeq, 1), span: attemptSpan }
+          note({
+            event: 'tool.result',
+            level: 'debug',
+            phase: 'tool',
+            traceId: traceId as string,
+            spanId: lastToolSpan ?? step.span,
+            parentSpanId: step.span,
+            taskId: task.id,
+            attempt: hooks.attempt,
+            status: event.ok === false ? 'failed' : 'succeeded',
+            tool: {
+              name: toolName,
+              ...typeof event.ok === 'boolean' ? { exitCode: event.ok ? 0 : 1 } : {},
+              ...typeof event.durationMs === 'number' ? { durationMs: event.durationMs } : {},
+            },
+            ...typeof event.id === 'string' ? { attrs: { tool_call_id: event.id } } : {},
+          })
+          lastToolSpan = null
         } else if (event.type === 'status' && event.phase === 'step_end') {
-          inputTokens += Number(event.usage?.inputTokens) || 0
-          outputTokens += Number(event.usage?.outputTokens) || 0
+          const inputDelta = Number(event.usage?.inputTokens) || 0
+          const outputDelta = Number(event.usage?.outputTokens) || 0
+          inputTokens += inputDelta
+          outputTokens += outputDelta
+          const step = ensureStep()
+          note({
+            event: 'executor.step',
+            level: 'debug',
+            phase: 'execute',
+            traceId: traceId as string,
+            spanId: step.span,
+            parentSpanId: attemptSpan,
+            taskId: task.id,
+            attempt: hooks.attempt,
+            status: 'succeeded',
+            attrs: {
+              step: step.seq,
+              ...sessionId === null ? {} : { session_ref: sessionId },
+            },
+            ...inputDelta === 0 && outputDelta === 0 ? {} : {
+              model: {
+                inputTokens: inputDelta,
+                outputTokens: outputDelta,
+                costUsd: pricing === null
+                  ? 0
+                  : Number((
+                      (inputDelta / 1_000_000) * pricing.inputPerMTok
+                      + (outputDelta / 1_000_000) * pricing.outputPerMTok
+                    ).toFixed(6)),
+              },
+            },
+          })
+          currentStep = null
           // Slice CC (M8): budget is enforced mid-run, not after the fact.
           if (
             tokenBudget !== null
@@ -578,8 +751,9 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         ) {
           const code = event.reason.error?.code
           const message = event.reason.error?.message
+          lastRunCode = typeof code === 'string' ? code : 'unknown'
           runError = {
-            code: typeof code === 'string' ? code : 'unknown',
+            code: lastRunCode,
             message: typeof message === 'string' ? message : 'run failed',
           }
         }
@@ -674,6 +848,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
             // so a later run starts clean.
             closeCheckpoint('aborted')
             const usage = usageOf()
+            finish('needs_input', { code: 'needs_input', message: question })
             resolve({
               status: 'needs_input',
               question: truncate(question, 500),
@@ -693,6 +868,7 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
           ? `\n附件忽略：${parsed.ignored.join('；')}`
           : ''
         const usage = usageOf()
+        finish('succeeded')
         resolve({
           status: 'succeeded',
           summary: truncate(`${body}${notes}`, maxSummary),

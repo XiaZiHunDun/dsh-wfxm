@@ -19,6 +19,7 @@ import { existsSync } from 'node:fs'
 import { isAbsolute, join, resolve, sep } from 'node:path'
 import type { Task, TaskAssertion } from './model.js'
 import type { TaskStore } from './store.js'
+import { noteTelemetry, type TaskTelemetryPort } from './telemetry.js'
 
 export const DEFAULT_GIT_TIMEOUT_MS = 30_000
 export const DEFAULT_PREPARE_TIMEOUT_MS = 600_000
@@ -53,6 +54,8 @@ export interface IsolationResolverOptions {
   prepareTimeoutMs?: number
   now?: () => Date
   logger?: { info?(message: string): void; warn?(message: string): void } | null
+  /** P6-1: prepare spans; absent means no telemetry. */
+  telemetry?: TaskTelemetryPort | null
 }
 
 export function realRun(
@@ -193,6 +196,7 @@ export function createIsolationResolver(
   const gitTimeoutMs = options.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS
   const prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS
   const now = options.now ?? (() => new Date())
+  const telemetry = options.telemetry ?? null
 
   async function git(root: string, args: string[]): Promise<CommandResult> {
     return run('git', ['-C', root, ...args], { cwd: root, timeoutMs: gitTimeoutMs })
@@ -281,19 +285,62 @@ export function createIsolationResolver(
     )
 
     if (hasPrepare) {
+      const startedAt = now()
+      const span = `isolation.prepare:${task.id}:${task.attempt}`
+      noteTelemetry(telemetry, {
+        event: 'isolation.prepare.started',
+        level: 'info',
+        phase: 'isolation',
+        traceId: task.correlationId,
+        spanId: span,
+        parentSpanId: `attempt:${task.id}:${task.attempt}`,
+        taskId: task.id,
+        taskRef: task.taskRef ?? undefined,
+        attempt: task.attempt,
+        status: 'running',
+        attrs: { worktree: worktreePath, prepare_state: 'running' },
+      })
       const prepared = await run('/bin/bash', ['-lc', project.prepareCmd as string], {
         cwd: worktreePath,
         timeoutMs: prepareTimeoutMs,
       })
       if (prepared.code !== 0) {
         tasks.setIsolation(task.id, { prepareState: 'failed' })
-        throw new Error(
-          `isolation: prepare failed (exit ${prepared.code}): ${prepared.stderr.trim().slice(-500)}`,
-        )
+        const summary = `isolation: prepare failed (exit ${prepared.code}): ${prepared.stderr.trim().slice(-500)}`
+        noteTelemetry(telemetry, {
+          event: 'isolation.prepare.failed',
+          level: 'error',
+          phase: 'isolation',
+          traceId: task.correlationId,
+          spanId: span,
+          parentSpanId: `attempt:${task.id}:${task.attempt}`,
+          taskId: task.id,
+          taskRef: task.taskRef ?? undefined,
+          attempt: task.attempt,
+          status: 'failed',
+          durationMs: Math.max(0, now().getTime() - startedAt.getTime()),
+          error: { code: 'prepare-failed', message: summary },
+          attrs: { worktree: worktreePath, prepare_state: 'failed' },
+        })
+        throw new Error(summary)
       }
       tasks.setIsolation(task.id, {
         prepareState: 'done',
         preparedAt: now().toISOString(),
+      })
+      noteTelemetry(telemetry, {
+        event: 'isolation.prepare.succeeded',
+        level: 'info',
+        phase: 'isolation',
+        traceId: task.correlationId,
+        spanId: span,
+        parentSpanId: `attempt:${task.id}:${task.attempt}`,
+        taskId: task.id,
+        taskRef: task.taskRef ?? undefined,
+        attempt: task.attempt,
+        status: 'succeeded',
+        durationMs: Math.max(0, now().getTime() - startedAt.getTime()),
+        attrs: { worktree: worktreePath, prepare_state: 'done' },
       })
       options.logger?.info?.(`[isolation] ${task.taskRef ?? task.id}: prepare done`)
     }

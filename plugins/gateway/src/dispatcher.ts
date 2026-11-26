@@ -41,6 +41,15 @@ export interface OutboxDispatcherOptions {
    */
   onSent?: (item: OutboxItem, externalMsgId: string) => void
   /**
+   * P6-1 delivery telemetry. `final` is true when the row will not be retried.
+   * A throwing hook never changes delivery semantics.
+   */
+  onFailed?: (item: OutboxItem, detail: {
+    message: string
+    retryable: boolean
+    final: boolean
+  }) => void
+  /**
    * Failure visibility (Slice Q): a scheduled retry is `warn`, a give-up is
    * `error`. Only ids/topics/counts are logged — never the payload.
    */
@@ -83,6 +92,13 @@ export function createOutboxDispatcher(options: OutboxDispatcherOptions): Outbox
       // carries ids/counts only; payload text stays in the (redacted) outbox.
       const recordFailure = (item: OutboxItem, message: string, retryable: boolean): void => {
         const after = store.markOutboxFailed(item.id, { error: message, retryable, now: now() })
+        if (options.onFailed !== undefined) {
+          try {
+            options.onFailed(item, { message, retryable, final: after.status === 'failed' })
+          } catch {
+            // Delivery semantics outrank telemetry.
+          }
+        }
         if (after.status === 'failed') {
           report.failed += 1
           options.logger?.error?.(
