@@ -83,7 +83,7 @@
         "plugins/tasks/src/expert.ts",
         "plugins/knowledge/src/store.ts"
       ],
-      "note": "Slice CH（2026-11-26）：ExpertExecutor + `/expert` + 项目/全局默认 + 未知专家硬失败（expert-unavailable）+ AR34 治理穿透验收；只注册 dsh，第二个真实专家与“问一次写回”未做"
+      "note": "Slice CH（2026-11-26）：ExpertExecutor + `/expert` + 项目/全局默认 + 未知专家硬失败（expert-unavailable）+ AR34 治理穿透验收；真实飞书任务 rg7y3d92tf（expert=dsh）成功，/diag 含“专家：dsh”；只注册 dsh，第二个真实专家与“问一次写回”未做"
     },
     {
       "id": "N6",
