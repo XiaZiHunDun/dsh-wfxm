@@ -149,6 +149,7 @@ export function formatEvalHelp(): string {
     '/eval findings — 列出未处理失败项（带 finding 短 id）',
     '/eval flag <原因> — 引用一条消息，人工标记为 finding',
     '/eval promote <id> — 生成候选任务到 eval/candidates/（需 AGENT_EVAL_ROOT）',
+    '/eval fix <id> — 为 finding 建一条修复任务（走正常审批与执行链）',
     '/eval from-task <任务号> — 把一条失败任务的脱敏轨迹回流成候选',
     '/eval ignore <id> — 关闭 finding',
     '/eval run l2 — 开发机跑离线五套件（需 AGENT_EVAL_ROOT）',

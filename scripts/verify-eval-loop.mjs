@@ -264,6 +264,8 @@ await check('/eval parses status, findings, help and rejects other subcommands',
   assert.deepEqual(parseEvalCommand('/eval flag 回答不对'), { kind: 'flag', reason: '回答不对' })
   assert.equal(parseEvalCommand('/eval flag')?.kind, 'unsupported')
   assert.deepEqual(parseEvalCommand('/eval promote abc123'), { kind: 'promote', ref: 'abc123' })
+  assert.deepEqual(parseEvalCommand('/eval fix abc123'), { kind: 'fix', ref: 'abc123' })
+  assert.equal(parseEvalCommand('/eval fix')?.kind, 'unsupported')
   assert.deepEqual(parseEvalCommand('/eval ignore #abc123'), { kind: 'ignore', ref: '#abc123' })
   assert.equal(parseEvalCommand('/eval promote')?.kind, 'unsupported')
   assert.deepEqual(parseEvalCommand('/eval from-task nhdn6m3wuh'), { kind: 'from-task', ref: 'nhdn6m3wuh' })
@@ -772,6 +774,53 @@ await check('/eval from-task turns a failed task into a redacted candidate', asy
   assert.match(texts(transport).at(-1) ?? '', /只有失败任务可回流/)
   await say(host, '/eval from-task nosuchtask')
   assert.match(texts(transport).at(-1) ?? '', /找不到任务/)
+  host.close()
+  evalStore.close()
+  return true
+})
+
+await check('/eval fix links a finding to one fix task', async () => {
+  const { host, transport, evalStore } = makeHost({ snapshotPath, rateLimitMs: 0 })
+  await pair(host)
+  const { finding } = evalStore.recordProductionFinding({
+    taskId: 'nfix01',
+    title: '生产失败：nfix01',
+    detail: 'eval/candidates/x.ndjson',
+  })
+  const short = finding.id.slice(0, 8)
+
+  await say(host, `/eval fix ${short}`)
+  assert.match(texts(transport).at(-1) ?? '', /已建修复任务/)
+  const fixTask = host.stores.tasks.listTasks().find((task) => task.intent.includes('修复测评失败'))
+  assert.ok(fixTask !== undefined)
+  assert.equal(fixTask.riskLevel, 'R1')
+  assert.equal(evalStore.resolveFinding(finding.id).finding.fixTaskId, fixTask.id)
+
+  // findings 列表带出修复任务短 id，处理提示包含 /eval fix。
+  await say(host, '/eval findings')
+  const listed = texts(transport).at(-1) ?? ''
+  assert.match(listed, new RegExp(`修复 ${fixTask.id.slice(0, 8)}`))
+  assert.match(listed, /\/eval fix <id>/)
+
+  // 同一个 finding 不重复建任务。
+  const before = host.stores.tasks.listTasks().length
+  await say(host, `/eval fix ${short}`)
+  assert.match(texts(transport).at(-1) ?? '', /已有修复任务/)
+  assert.equal(host.stores.tasks.listTasks().length, before)
+
+  // 已忽略的 finding 不建任务。
+  const ignored = evalStore.recordProductionFinding({ taskId: 'nfix02', title: '生产失败：nfix02' }).finding
+  evalStore.setFindingStatus(ignored.id, 'ignored')
+  await say(host, `/eval fix ${ignored.id.slice(0, 8)}`)
+  assert.match(texts(transport).at(-1) ?? '', /已忽略/)
+
+  // 关联任务已不存在（被清理）时允许重建。
+  const retry = evalStore.recordProductionFinding({ taskId: 'nfix03', title: '生产失败：nfix03' }).finding
+  evalStore.setFindingFixTask(retry.id, 'gone-task')
+  await say(host, `/eval fix ${retry.id.slice(0, 8)}`)
+  assert.match(texts(transport).at(-1) ?? '', /已建修复任务/)
+  assert.notEqual(evalStore.resolveFinding(retry.id).finding.fixTaskId, 'gone-task')
+
   host.close()
   evalStore.close()
   return true

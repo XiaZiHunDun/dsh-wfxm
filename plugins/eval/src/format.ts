@@ -44,15 +44,16 @@ export function formatEvalDbFindings(findings: readonly EvalFinding[]): string {
     ...findings.slice(0, 20).map((item) => {
       const label = item.taskId === '' ? `${item.suite}（套件未全过）` : item.taskId
       const detail = item.detailDigest.replace(/^sha256:[0-9a-f]+ ?/, '').trim()
-      return `- [${item.id.slice(0, 8)}] ${label} · ${item.suite}${detail === '' ? '' : `（${detail}）`}`
+      const fix = item.fixTaskId === null ? '' : ` · 修复 ${item.fixTaskId.slice(0, 8)}`
+      return `- [${item.id.slice(0, 8)}] ${label} · ${item.suite}${detail === '' ? '' : `（${detail}）`}${fix}`
     }),
     ...(findings.length > 20 ? ['（仅显示前 20 项）'] : []),
-    '处理：/eval promote <id> · /eval ignore <id>',
+    '处理：/eval fix <id> · /eval promote <id> · /eval ignore <id>',
   ].join('\n')
 }
 
 export function formatEvalFlagRecorded(finding: EvalFinding): string {
-  return `已记录 finding [${finding.id.slice(0, 8)}]（source=flag）；处理：/eval promote ${finding.id.slice(0, 8)} 或 /eval ignore ${finding.id.slice(0, 8)}。`
+  return `已记录 finding [${finding.id.slice(0, 8)}]（source=flag）；处理：/eval fix ${finding.id.slice(0, 8)}、/eval promote ${finding.id.slice(0, 8)} 或 /eval ignore ${finding.id.slice(0, 8)}。`
 }
 
 export function formatEvalFlagNeedsQuote(): string {
@@ -118,6 +119,26 @@ export function formatEvalFindingIgnored(finding: EvalFinding): string {
 
 export function formatEvalFindingAlready(finding: EvalFinding): string {
   return `finding [${finding.id.slice(0, 8)}] 已是 ${finding.status}，无需重复处理。`
+}
+
+/** G2: finding → 修复任务；任务仍走正常审批与执行链，不绕过闸门。 */
+export function formatEvalFixCreated(finding: EvalFinding, taskRef: string): string {
+  return [
+    `已建修复任务 ${taskRef}（finding [${finding.id.slice(0, 8)}]）。`,
+    '任务走正常审批与执行链；回测通过后 nightly 会把 finding 置 verified。',
+  ].join('\n')
+}
+
+export function formatEvalFixExists(finding: EvalFinding): string {
+  const ref = finding.fixTaskId === null ? '?' : finding.fixTaskId.slice(0, 8)
+  return `finding [${finding.id.slice(0, 8)}] 已有修复任务 ${ref}；不重复创建。`
+}
+
+/** `verified` 无需修复；`ignored` 要先恢复处理。 */
+export function formatEvalFixNotNeeded(finding: EvalFinding): string {
+  return finding.status === 'verified'
+    ? `finding [${finding.id.slice(0, 8)}] 已验证通过，无需修复任务。`
+    : `finding [${finding.id.slice(0, 8)}] 已忽略；先恢复处理再建修复任务。`
 }
 
 export interface EvalWeeklyInput {

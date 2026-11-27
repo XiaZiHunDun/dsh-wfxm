@@ -55,6 +55,8 @@ export interface EvalFinding {
   source: EvalFindingSource
   status: EvalFindingStatus
   promotedTaskId: string | null
+  /** G2: `/eval fix` 建出的 dsh 修复任务；与候选 id 分开。 */
+  fixTaskId: string | null
   /** P7-4: 最近一次回放通过 / 失败的时间；未回放过为 null。 */
   verifiedAt: string | null
   regressedAt: string | null
@@ -166,6 +168,8 @@ export interface EvalStore {
   /** 按完整 id 或唯一前缀找 finding。 */
   resolveFinding(ref: string): FindingResolution
   setFindingStatus(id: string, status: EvalFindingStatus, promotedTaskId?: string | null): EvalFinding | null
+  /** G2: 记录 finding 对应的修复任务（`/eval fix`）；重建时覆盖。 */
+  setFindingFixTask(id: string, taskId: string): EvalFinding | null
   /** P7-4: 候选回放结果落到 finding：PASS → verified，FAIL → regressed。 */
   recordReplays(outcomes: readonly ReplayOutcome[]): ReplayTally
   /** 周报里的闭环计数。 */
@@ -222,6 +226,7 @@ interface FindingRow {
   source: EvalFindingSource
   status: EvalFindingStatus
   promoted_task_id: string | null
+  fix_task_id: string | null
   verified_at: string | null
   regressed_at: string | null
   created_at: string
@@ -257,6 +262,7 @@ function toFinding(row: FindingRow): EvalFinding {
     source: row.source,
     status: row.status,
     promotedTaskId: row.promoted_task_id,
+    fixTaskId: row.fix_task_id ?? null,
     verifiedAt: row.verified_at ?? null,
     regressedAt: row.regressed_at ?? null,
     createdAt: row.created_at,
@@ -313,6 +319,7 @@ export function createEvalStore(dbPath: string): EvalStore {
   const selectFindingById = db.prepare('SELECT * FROM eval_findings WHERE id = ?')
   const selectFindingByPrefix = db.prepare('SELECT * FROM eval_findings WHERE id LIKE ? ORDER BY created_at DESC LIMIT 2')
   const updateFindingStatus = db.prepare('UPDATE eval_findings SET status = ?, promoted_task_id = ? WHERE id = ?')
+  const updateFindingFixTask = db.prepare('UPDATE eval_findings SET fix_task_id = ? WHERE id = ?')
   const insertFlag = db.prepare(`
     INSERT INTO eval_flags(id, message_id, thread_id, verdict, reason_digest, trace_ref, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -476,6 +483,12 @@ export function createEvalStore(dbPath: string): EvalStore {
     promotedTaskId?: string | null,
   ): EvalFinding | null {
     updateFindingStatus.run(status, promotedTaskId ?? null, id)
+    const row = selectFindingById.get(id) as FindingRow | undefined
+    return row === undefined ? null : toFinding(row)
+  }
+
+  function setFindingFixTask(id: string, taskId: string): EvalFinding | null {
+    updateFindingFixTask.run(taskId, id)
     const row = selectFindingById.get(id) as FindingRow | undefined
     return row === undefined ? null : toFinding(row)
   }
@@ -646,6 +659,7 @@ export function createEvalStore(dbPath: string): EvalStore {
     recordProductionFinding,
     resolveFinding,
     setFindingStatus,
+    setFindingFixTask,
     recordReplays,
     countFindingsByStatus,
     syncSnapshot,

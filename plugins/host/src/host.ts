@@ -56,6 +56,9 @@ import {
   formatEvalFindingAlready,
   formatEvalFindingIgnored,
   formatEvalFindingMissing,
+  formatEvalFixCreated,
+  formatEvalFixExists,
+  formatEvalFixNotNeeded,
   formatEvalFlagNeedsQuote,
   formatEvalFlagRecorded,
   formatEvalFromTaskCreated,
@@ -1472,6 +1475,62 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       const promoted = await evalPromoter.promote(finding)
       if (promoted.ok) evalStore.setFindingStatus(finding.id, 'promoted', promoted.taskId)
       reply(formatEvalPromoted(promoted), promoted.ok ? 'promoted' : 'promote-failed')
+      return
+    }
+
+    // G2: finding → 修复任务。与候选（promoted_task_id）分开记录；任务仍走
+    // 正常审批与执行链，不绕过治理闸门。上一个修复任务失败/取消时允许重建。
+    if (target.command.kind === 'fix') {
+      if (evalStore === null) {
+        reply('测评库未启用，无法建修复任务。', 'fix-disabled')
+        return
+      }
+      const resolution = evalStore.resolveFinding(target.command.ref)
+      if ('error' in resolution) {
+        reply(formatEvalFindingMissing(target.command.ref, resolution.error), 'finding-missing')
+        return
+      }
+      const finding = resolution.finding
+      if (finding.status === 'ignored' || finding.status === 'verified') {
+        reply(formatEvalFixNotNeeded(finding), 'fix-not-needed')
+        return
+      }
+      if (finding.fixTaskId !== null) {
+        const existing = tasks.getTask(finding.fixTaskId)
+        const retryable = existing === null
+          || existing.status === 'failed'
+          || existing.status === 'cancelled'
+        if (!retryable) {
+          reply(formatEvalFixExists(finding), 'fix-exists')
+          return
+        }
+      }
+      const intent = `修复测评失败：${finding.title}`
+      const plan = planTaskRisk(intent, 'R1')
+      const task = tasks.createTask({
+        intent,
+        riskLevel: plan.risk,
+        originMsgId: result.inbox.msgId,
+        projectId: result.project?.projectId ?? null,
+        correlationId: result.inbox.id,
+      })
+      for (const assertion of plan.assertions) tasks.addAssertion(task.id, assertion)
+      if (result.thread !== null) {
+        try {
+          tasks.bindThread({
+            taskId: task.id,
+            threadId: result.thread.id,
+            relation: 'default_owner',
+            anchorMsgId: result.inbox.msgId,
+          })
+        } catch (error) {
+          // 线程已有 live default owner（15 §9.6）：任务已建，不必因此失败；
+          // 后续消息继续归原任务，finding 关联仍然成立。
+          logger?.warn?.(`fix task ${task.taskRef ?? task.id} not bound: ${messageOf(error)}`)
+        }
+      }
+      evalStore.setFindingFixTask(finding.id, task.id)
+      reply(formatEvalFixCreated(finding, task.taskRef ?? task.id.slice(0, 8)), 'fix-created')
       return
     }
 
