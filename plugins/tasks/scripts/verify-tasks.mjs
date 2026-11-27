@@ -2027,6 +2027,22 @@ await check('expired leases are reclaimed: requeue while attempts remain, fail w
     && first.failed.includes(exhausted.id)
 })
 
+await check('leaving running or retrying aborts the attempt\'s open checkpoint', () => {
+  const cpStore = createTaskStore(join(dir, 'checkpoint-abort.sqlite'))
+  const failed = cpStore.createTask({ intent: 'will fail', riskLevel: 'R1' })
+  cpStore.claimTask({ owner: 'worker-cp', leaseMs: 60_000 })
+  const failedCp = cpStore.beginCheckpoint({ taskId: failed.id })
+  cpStore.transition(failed.id, { to: 'failed', summary: 'boom' })
+  const retried = cpStore.createTask({ intent: 'will retry', riskLevel: 'R1' })
+  cpStore.claimTask({ owner: 'worker-cp', leaseMs: 60_000 })
+  const retriedCp = cpStore.beginCheckpoint({ taskId: retried.id })
+  cpStore.requeueTask({ taskId: retried.id, owner: 'worker-cp', delayMs: 0 })
+  const aborted = cpStore.getCheckpoint(failedCp.id)?.status === 'aborted'
+    && cpStore.getCheckpoint(retriedCp.id)?.status === 'aborted'
+  cpStore.close()
+  return aborted
+})
+
 await check('worker.cancel aborts the active attempt and skips settlement', async () => {
   const cancelStore = createTaskStore(join(dir, 'cancel.sqlite'))
   let started = null

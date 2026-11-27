@@ -1635,6 +1635,13 @@ export function createTaskStore(dbPath: string): TaskStore {
     const finishedAt = terminal ? at : null
 
     db.transaction(() => {
+      // Every transition out of `running` ends that attempt (the child is done
+      // or being killed). Any checkpoint it left open is orphaned: close it as
+      // aborted so a later rollback/analytics does not see a phantom open step
+      // (2026-11-27：失败路径只置 failed，checkpoint 永久 open).
+      if (task.status === 'running' && input.to !== 'running') {
+        abortOpenCheckpointsStmt.run(at, taskId)
+      }
       updateTransition.run(input.to, attempt, startedAt, finishedAt, taskId)
       appendEvent(taskId, eventTypeFor(task.status, input.to), {
         from: task.status,
@@ -1918,6 +1925,7 @@ export function createTaskStore(dbPath: string): TaskStore {
       const now = input.now ?? new Date()
       const wakeAt = new Date(now.getTime() + Math.max(0, input.delayMs)).toISOString()
       db.transaction(() => {
+        abortOpenCheckpointsStmt.run(now.toISOString(), input.taskId)
         const changed = requeueTaskRow.run(wakeAt, input.taskId, input.owner)
         if (changed.changes !== 1) {
           throw new TaskError('conflict', `task ${input.taskId} lost its lease`)
