@@ -262,3 +262,18 @@ export function formatSuggestionDigest(entries: readonly SuggestionEntry[]): str
   lines.push('回复「做 #1」或「做 #sug_xxxxxxxx」按正常审批流程发起；「忽略 #1」记录为已忽略，不会自动执行。')
   return lines.join('\n')
 }
+
+/** 周报用的建议采纳统计（tasks `countSuggestions` 的返回结构与本类型兼容）。 */
+export interface SuggestionStats {
+  total: number
+  accepted: number
+  ignored: number
+  pending: number
+}
+
+/** §六 第 3 条：近 7 天建议的采纳率；没有建议时整段省略。 */
+export function formatSuggestionWeekly(stats: SuggestionStats | null): string | null {
+  if (stats === null || stats.total === 0) return null
+  const rate = Math.round((stats.accepted / stats.total) * 100)
+  return `建议（近 7 天）：${stats.total} 条 · 采纳 ${stats.accepted} · 忽略 ${stats.ignored} · 待定 ${stats.pending}（采纳率 ${rate}%）`
+}

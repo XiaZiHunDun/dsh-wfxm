@@ -13,7 +13,7 @@
  * - **lifecycle**: worker loop + outbox pump, started and stopped together.
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
 
 import {
@@ -69,6 +69,12 @@ import {
   formatEvalFromTaskNoTrace,
   formatEvalFromTaskNotFailed,
   formatEvalPromoted,
+  formatEvalRefreshDone,
+  formatEvalRefreshDraftMissing,
+  formatEvalRefreshFixStatus,
+  formatEvalRefreshNoFix,
+  formatEvalRefreshNotPromoted,
+  formatEvalRefreshToolsMissing,
   formatEvalRunFailed,
   formatEvalRunFinished,
   formatEvalRunRealHint,
@@ -1587,6 +1593,93 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         lines: result.lines,
         findingId: finding.id,
       }), 'from-task-done')
+      return
+    }
+
+    // P7 补口：修复任务成功后，用它的成功轨迹覆盖原候选（草稿与判据不变），
+    // 下一次 nightly 回放即可把 finding 判定为 verified；不新增候选、不改 finding。
+    if (target.command.kind === 'refresh') {
+      if (evalStore === null || evalFromTask === null || telemetry?.query === undefined) {
+        reply(formatEvalFromTaskDisabled(), 'refresh-disabled')
+        return
+      }
+      const resolution = evalStore.resolveFinding(target.command.ref)
+      if ('error' in resolution) {
+        reply(formatEvalFindingMissing(target.command.ref, resolution.error), 'finding-missing')
+        return
+      }
+      const finding = resolution.finding
+      if (finding.status !== 'promoted' || finding.promotedTaskId === null) {
+        reply(formatEvalRefreshNotPromoted(finding), 'refresh-not-promoted')
+        return
+      }
+      if (finding.fixTaskId === null) {
+        reply(formatEvalRefreshNoFix(finding), 'refresh-no-fix')
+        return
+      }
+      const fixTask = tasks.getTask(finding.fixTaskId)
+      const fixRef = fixTask?.taskRef ?? finding.fixTaskId.slice(0, 8)
+      if (fixTask === null) {
+        reply(formatEvalFromTaskMissing(fixRef), 'refresh-fix-missing')
+        return
+      }
+      if (fixTask.status !== 'succeeded') {
+        reply(formatEvalRefreshFixStatus(fixRef, fixTask.status), 'refresh-fix-status')
+        return
+      }
+      const candidateId = finding.promotedTaskId
+      if (!/^[A-Za-z0-9._-]+$/.test(candidateId)) {
+        reply(formatEvalRefreshDraftMissing(candidateId), 'refresh-draft')
+        return
+      }
+      let requiredTools: readonly string[]
+      try {
+        const draft = JSON.parse(
+          readFileSync(join(evalFromTask.candidatesDir, `${candidateId}.json`), 'utf8'),
+        ) as { expect?: { requiredTools?: unknown } }
+        const tools = draft.expect?.requiredTools
+        requiredTools = Array.isArray(tools) ? tools.filter((tool): tool is string => typeof tool === 'string') : []
+      } catch {
+        reply(formatEvalRefreshDraftMissing(candidateId), 'refresh-draft')
+        return
+      }
+      const events = telemetry.query({ taskId: fixTask.id, limit: 5000 }).rows
+      if (events.length === 0) {
+        reply(formatEvalFromTaskNoTrace(fixRef), 'refresh-no-trace')
+        return
+      }
+      const candidateInput = {
+        task: fixTask,
+        events,
+        attempts: telemetry.attempts?.(fixTask.id) ?? [],
+        outDir: evalFromTask.candidatesDir,
+        root: evalFromTask.root,
+        label: 'prod',
+        fileName: candidateId,
+        onExists: 'overwrite' as const,
+        writeDraft: false,
+      }
+      // 先 dry-run：新轨迹必须覆盖旧草稿要求的工具，否则不覆盖已有证据。
+      const preview = createTrajectoryCandidate({ ...candidateInput, dryRun: true })
+      if (!preview.ok) {
+        reply(formatEvalFromTaskNoTrace(fixRef), 'refresh-preview')
+        return
+      }
+      const previewDraft = preview.draft.expect as { requiredTools?: unknown } | undefined
+      const newTools = Array.isArray(previewDraft?.requiredTools)
+        ? previewDraft.requiredTools.filter((tool): tool is string => typeof tool === 'string')
+        : []
+      const missing = requiredTools.filter((tool) => !newTools.includes(tool))
+      if (missing.length > 0) {
+        reply(formatEvalRefreshToolsMissing(missing), 'refresh-tools')
+        return
+      }
+      const written = createTrajectoryCandidate(candidateInput)
+      if (!written.ok) {
+        reply(formatEvalFromTaskNoTrace(fixRef), 'refresh-write')
+        return
+      }
+      reply(formatEvalRefreshDone({ candidateId, taskRef: fixRef, lines: written.lines }), 'refresh-done')
       return
     }
 

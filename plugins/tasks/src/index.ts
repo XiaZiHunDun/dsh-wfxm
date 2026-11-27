@@ -80,7 +80,9 @@ export type {
   ListSuggestionsOptions,
   SuggestionItem,
   SuggestionRecord,
+  SuggestionStats,
   SuggestionStatus,
+  SuggestionWindow,
   WakeTaskInput,
 } from './store.js'
 export { createTaskStore } from './store.js'

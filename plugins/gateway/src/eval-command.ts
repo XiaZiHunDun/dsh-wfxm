@@ -12,6 +12,7 @@ export type EvalCommand =
   | { kind: 'flag'; reason: string }
   | { kind: 'promote'; ref: string }
   | { kind: 'fix'; ref: string }
+  | { kind: 'refresh'; ref: string }
   | { kind: 'ignore'; ref: string }
   | { kind: 'from-task'; ref: string }
   | { kind: 'help' }
@@ -47,11 +48,12 @@ export function parseEvalCommand(text: string): EvalCommand | null {
     }
     case 'promote':
     case 'fix':
+    case 'refresh':
     case 'ignore': {
       const ref = (rest[0] ?? '').trim()
       return ref === ''
         ? { kind: 'unsupported', detail: `用法：/eval ${sub.toLowerCase()} <finding-id>` }
-        : { kind: sub.toLowerCase() as 'promote' | 'fix' | 'ignore', ref }
+        : { kind: sub.toLowerCase() as 'promote' | 'fix' | 'refresh' | 'ignore', ref }
     }
     case 'from-task': {
       const ref = (rest[0] ?? '').trim()
@@ -62,7 +64,7 @@ export function parseEvalCommand(text: string): EvalCommand | null {
     default:
       return {
         kind: 'unsupported',
-        detail: `P2-3/P7 支持 /eval、/eval findings、/eval run l2|real、/eval flag、/eval promote、/eval fix、/eval ignore、/eval from-task、/eval help；收到 ${rest.length === 0 ? sub : args}`,
+        detail: `P2-3/P7 支持 /eval、/eval findings、/eval run l2|real、/eval flag、/eval promote、/eval fix、/eval refresh、/eval ignore、/eval from-task、/eval help；收到 ${rest.length === 0 ? sub : args}`,
       }
   }
 }

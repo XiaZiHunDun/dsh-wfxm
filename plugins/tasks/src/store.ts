@@ -102,6 +102,19 @@ export interface ListSuggestionsOptions {
   limit?: number
 }
 
+/** 建议采纳率的统计窗口（按 `created_at` 落在 [from, to)）。 */
+export interface SuggestionWindow {
+  from: Date
+  to: Date
+}
+
+export interface SuggestionStats {
+  total: number
+  accepted: number
+  ignored: number
+  pending: number
+}
+
 export interface TransitionInput {
   to: TaskStatus
   /** Required for terminal transitions: the receipt the owner will see. */
@@ -247,6 +260,8 @@ export interface TaskStore {
   acceptSuggestion(id: string, taskId: string): SuggestionRecord | null
   ignoreSuggestion(id: string): SuggestionRecord | null
   listSuggestions(options?: ListSuggestionsOptions): SuggestionRecord[]
+  /** §六 第 3 条：窗口内建议的采纳率统计（按 created_at）。 */
+  countSuggestions(input: SuggestionWindow): SuggestionStats
   /**
    * Read-only health check for the task lifecycle: no lease-less `running`, no
    * unclaimable `queued`, no event seq gap, no terminal row without a receipt.
@@ -887,6 +902,15 @@ export function createTaskStore(dbPath: string): TaskStore {
   const listSuggestionsByStatus = db.prepare(
     'SELECT * FROM suggestions WHERE status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
   )
+  const countSuggestionsWindow = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      COALESCE(SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END), 0) AS accepted,
+      COALESCE(SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END), 0) AS ignored,
+      COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS pending
+      FROM suggestions
+     WHERE created_at >= ? AND created_at < ?
+  `)
   const clearSuggestionOrdinals = db.prepare('UPDATE suggestions SET ordinal = 0 WHERE digest_day = ?')
   const updateSuggestionOrdinal = db.prepare('UPDATE suggestions SET digest_day = ?, ordinal = ? WHERE id = ?')
   const insertSuggestion = db.prepare(`
@@ -1693,6 +1717,19 @@ export function createTaskStore(dbPath: string): TaskStore {
     return (rows as SuggestionRow[]).map(toSuggestion)
   }
 
+  function countSuggestions(input: SuggestionWindow): SuggestionStats {
+    const row = countSuggestionsWindow.get(
+      input.from.toISOString(),
+      input.to.toISOString(),
+    ) as { total: number; accepted: number; ignored: number; pending: number }
+    return {
+      total: Number(row.total),
+      accepted: Number(row.accepted),
+      ignored: Number(row.ignored),
+      pending: Number(row.pending),
+    }
+  }
+
   return {
     createTask(input) {
       if (typeof input.intent !== 'string' || input.intent.trim() === '') {
@@ -1806,6 +1843,8 @@ export function createTaskStore(dbPath: string): TaskStore {
     ignoreSuggestion,
 
     listSuggestions,
+
+    countSuggestions,
 
     recordUsage,
 

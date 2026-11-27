@@ -43,6 +43,13 @@ export interface TrajectoryCandidateInput {
   label?: string
   /** CLI 默认覆盖；`/eval from-task` 用 `refuse` 避免重复落盘。 */
   onExists?: 'overwrite' | 'refuse'
+  /**
+   * 覆盖输出文件名（不含扩展名）。`/eval refresh` 用原候选 id，
+   * 让回放结果仍匹配同一条 finding。
+   */
+  fileName?: string
+  /** 默认写草稿；只覆盖轨迹（刷新候选）时置 false。 */
+  writeDraft?: boolean
   /** 只计算不写盘（`trace.mjs export --dry-run`）。 */
   dryRun?: boolean
 }
@@ -150,7 +157,10 @@ export function createTrajectoryCandidate(input: TrajectoryCandidateInput): Traj
   if (events.length === 0) return { ok: false, reason: 'no-events' }
 
   const label = (input.label ?? 'prod').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || 'prod'
-  const id = `dsh-${label}-${hash8(input.task.correlationId ?? input.task.id)}`
+  const id = input.fileName ?? `dsh-${label}-${hash8(input.task.correlationId ?? input.task.id)}`
+  if (input.fileName !== undefined && !/^[A-Za-z0-9._-]+$/.test(input.fileName)) {
+    return { ok: false, reason: 'outside-root' }
+  }
   const tracePath = join(input.outDir, `${id}.ndjson`)
   const draftPath = join(input.outDir, `${id}.json`)
   const traceFile = relative(input.root, tracePath).split('\\').join('/')
@@ -183,7 +193,7 @@ export function createTrajectoryCandidate(input: TrajectoryCandidateInput): Traj
   if (input.dryRun !== true) {
     mkdirSync(input.outDir, { recursive: true })
     writeFileSync(tracePath, `${lines.join('\n')}\n`)
-    writeFileSync(draftPath, `${JSON.stringify(draft, null, 2)}\n`)
+    if (input.writeDraft !== false) writeFileSync(draftPath, `${JSON.stringify(draft, null, 2)}\n`)
   }
   return {
     ok: true,

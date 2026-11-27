@@ -66,6 +66,12 @@ export {
   formatEvalFromTaskNoTrace,
   formatEvalFromTaskNotFailed,
   formatEvalPromoted,
+  formatEvalRefreshDone,
+  formatEvalRefreshDraftMissing,
+  formatEvalRefreshFixStatus,
+  formatEvalRefreshNoFix,
+  formatEvalRefreshNotPromoted,
+  formatEvalRefreshToolsMissing,
   formatEvalRunFailed,
   formatEvalRunFinished,
   formatEvalRunRealHint,
@@ -73,4 +79,4 @@ export {
   formatEvalRunStarted,
   formatEvalWeekly,
 } from './format.js'
-export type { EvalWeeklyInput } from './format.js'
+export type { EvalRefreshDone, EvalWeeklyInput } from './format.js'

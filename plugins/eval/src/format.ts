@@ -141,6 +141,42 @@ export function formatEvalFixNotNeeded(finding: EvalFinding): string {
     : `finding [${finding.id.slice(0, 8)}] 已忽略；先恢复处理再建修复任务。`
 }
 
+export interface EvalRefreshDone {
+  candidateId: string
+  taskRef: string
+  lines: number
+}
+
+/** P7 补口：修复成功后用新轨迹覆盖原候选，不改草稿与判据。 */
+export function formatEvalRefreshDone(input: EvalRefreshDone): string {
+  return [
+    `已用修复任务 ${input.taskRef} 的成功轨迹刷新候选 ${input.candidateId}（${input.lines} 行；草稿与判据未变）。`,
+    '下次 nightly 回放通过即把 finding 置 verified；仍失败则保持 promoted。',
+  ].join('\n')
+}
+
+export function formatEvalRefreshNotPromoted(finding: EvalFinding): string {
+  if (finding.status === 'verified') return `finding [${finding.id.slice(0, 8)}] 已验证通过，无需刷新候选。`
+  if (finding.status === 'ignored') return `finding [${finding.id.slice(0, 8)}] 已忽略；先恢复处理再刷新候选。`
+  return `finding [${finding.id.slice(0, 8)}] 还没有候选；先 /eval from-task <任务号>。`
+}
+
+export function formatEvalRefreshNoFix(finding: EvalFinding): string {
+  return `finding [${finding.id.slice(0, 8)}] 还没有修复任务；先用 /eval fix ${finding.id.slice(0, 8)} 建任务。`
+}
+
+export function formatEvalRefreshFixStatus(taskRef: string, status: string): string {
+  return `修复任务 ${taskRef} 当前为 ${status}；只有成功的修复任务才能刷新候选。`
+}
+
+export function formatEvalRefreshDraftMissing(candidateId: string): string {
+  return `候选 ${candidateId} 的草稿不可读，未覆盖轨迹；请人工确认 eval/candidates。`
+}
+
+export function formatEvalRefreshToolsMissing(tools: readonly string[]): string {
+  return `新轨迹缺少候选判据要求的工具（${tools.join('、')}）；草稿未变，未覆盖。`
+}
+
 export interface EvalWeeklyInput {
   runs: readonly EvalRun[]
   findings: readonly EvalFinding[]

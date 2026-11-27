@@ -2914,6 +2914,19 @@ await check('suggestions: stable ids, ordinal refs, accept/ignore suppression', 
     const quiet = suggestionStore.recordSuggestions({
       day: '2026-11-29', items, now: '2026-11-29T00:00:00.000Z',
     })
+    // §六 第 3 条：窗口内采纳率统计（示例数据 + 空窗口）。
+    const stats = suggestionStore.countSuggestions({
+      from: new Date('2026-11-26T00:00:00.000Z'),
+      to: new Date('2026-11-28T00:00:00.000Z'),
+    })
+    assert.deepEqual(stats, { total: 2, accepted: 1, ignored: 1, pending: 0 })
+    assert.deepEqual(
+      suggestionStore.countSuggestions({
+        from: new Date('2026-11-28T00:00:00.000Z'),
+        to: new Date('2026-11-30T00:00:00.000Z'),
+      }),
+      { total: 0, accepted: 0, ignored: 0, pending: 0 },
+    )
     return quiet.length === 0
       && suggestionStore.listSuggestions({ status: 'ignored' }).length === 1
   } finally {

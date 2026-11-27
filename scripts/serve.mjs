@@ -90,6 +90,7 @@ import {
   evaluateTraceHealth,
   formatRoutingWeekly,
   formatSuggestionDigest,
+  formatSuggestionWeekly,
   probeListeningPorts,
   probeLogErrors,
   readInspectionConfig,
@@ -1005,6 +1006,13 @@ async function main() {
           } catch (error) {
             log('weekly:trace:warn', error instanceof Error ? error.message : String(error))
           }
+          // §六 第 3 条：建议采纳率（按建议创建时间落在近 7 天窗口）。
+          let suggestionSection = null
+          try {
+            suggestionSection = formatSuggestionWeekly(taskStore.countSuggestions({ from, to }))
+          } catch (error) {
+            log('weekly:suggestion:warn', error instanceof Error ? error.message : String(error))
+          }
           // G8：路由决策与任务结果按专家聚合；没有决策时整段省略。
           let routingSection = null
           try {
@@ -1018,7 +1026,7 @@ async function main() {
           } catch (error) {
             log('weekly:routing:warn', error instanceof Error ? error.message : String(error))
           }
-          return [tasks, conversations, evalSection, routingSection, traceSection]
+          return [tasks, conversations, evalSection, suggestionSection, routingSection, traceSection]
             .filter((section) => section !== null && section !== '')
             .join('\n') || null
         },

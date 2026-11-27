@@ -266,6 +266,8 @@ await check('/eval parses status, findings, help and rejects other subcommands',
   assert.deepEqual(parseEvalCommand('/eval promote abc123'), { kind: 'promote', ref: 'abc123' })
   assert.deepEqual(parseEvalCommand('/eval fix abc123'), { kind: 'fix', ref: 'abc123' })
   assert.equal(parseEvalCommand('/eval fix')?.kind, 'unsupported')
+  assert.deepEqual(parseEvalCommand('/eval refresh abc123'), { kind: 'refresh', ref: 'abc123' })
+  assert.equal(parseEvalCommand('/eval refresh')?.kind, 'unsupported')
   assert.deepEqual(parseEvalCommand('/eval ignore #abc123'), { kind: 'ignore', ref: '#abc123' })
   assert.equal(parseEvalCommand('/eval promote')?.kind, 'unsupported')
   assert.deepEqual(parseEvalCommand('/eval from-task nhdn6m3wuh'), { kind: 'from-task', ref: 'nhdn6m3wuh' })
@@ -774,6 +776,131 @@ await check('/eval from-task turns a failed task into a redacted candidate', asy
   assert.match(texts(transport).at(-1) ?? '', /只有失败任务可回流/)
   await say(host, '/eval from-task nosuchtask')
   assert.match(texts(transport).at(-1) ?? '', /找不到任务/)
+  host.close()
+  evalStore.close()
+  return true
+})
+
+await check('/eval refresh overwrites the candidate with the fix task trace', async () => {
+  const candidatesDir = join(dir, 'eval-refresh', 'candidates')
+  const fake = makeFakeTelemetry({})
+  const { host, transport, evalStore } = makeHost(
+    { snapshotPath, rateLimitMs: 0, fromTask: { candidatesDir, root: dir } },
+    fake,
+  )
+  await pair(host)
+  const failEvents = [
+    { ts: '2026-11-24T09:59:00.000Z', event: 'tool.call', level: 'info', phase: 'execute', status: 'ok', error: null, tool: { name: 'svc_list', exitCode: null } },
+    { ts: '2026-11-24T09:59:30.000Z', event: 'attempt.finished', level: 'error', phase: 'execute', status: 'failed', error: { code: 'verification-failed', kind: 'failed' }, tool: null },
+  ]
+  const task = host.stores.tasks.createTask({
+    intent: '列出受管服务', riskLevel: 'R1', maxAttempts: 1, correlationId: 'refresh-fail',
+  })
+  host.stores.tasks.claimTask({ owner: 'test', leaseMs: 60_000, taskId: task.id })
+  host.stores.tasks.transition(task.id, { to: 'failed', summary: '验证失败', reason: 'test' })
+  fake.query = (input) => {
+    const rows = input.taskId === task.id ? failEvents : []
+    return { rows, count: rows.length }
+  }
+  fake.attempts = (taskId) => (taskId === task.id ? [{ summary: '缺文件' }] : [])
+
+  await say(host, `/eval from-task ${task.taskRef ?? task.id}`)
+  const finding = evalStore.listFindings({ status: 'promoted' })[0]
+  assert.ok(finding !== undefined)
+  const short = finding.id.slice(0, 8)
+  const tracePath = join(candidatesDir, `${finding.promotedTaskId}.ndjson`)
+  const draftPath = join(candidatesDir, `${finding.promotedTaskId}.json`)
+  const traceBefore = readFileSync(tracePath, 'utf8')
+  const draftBefore = readFileSync(draftPath, 'utf8')
+
+  // 还没有修复任务。
+  await say(host, `/eval refresh ${short}`)
+  assert.match(texts(transport).at(-1) ?? '', /还没有修复任务/)
+
+  // 修复任务存在但未成功：拒绝刷新，旧证据不动。
+  await say(host, `/eval fix ${short}`)
+  const fixTask = host.stores.tasks.listTasks().find((item) => item.intent.includes('修复测评失败'))
+  assert.ok(fixTask !== undefined)
+  // 网关对 60 秒内同文案判重，这里换一种 ref 写法避免被当成重复消息。
+  await say(host, `/eval refresh ${finding.id}`)
+  assert.match(texts(transport).at(-1) ?? '', /只有成功的修复任务/)
+  assert.equal(readFileSync(tracePath, 'utf8'), traceBefore)
+  assert.equal(readFileSync(draftPath, 'utf8'), draftBefore)
+
+  // 成功的修复轨迹：轨迹被替换，草稿与判据保持原样，不新增候选。
+  const okEvents = [
+    { ts: '2026-11-24T10:00:00.000Z', event: 'tool.call', level: 'info', phase: 'execute', status: 'ok', error: null, tool: { name: 'svc_list', exitCode: null } },
+    { ts: '2026-11-24T10:00:10.000Z', event: 'tool.result', level: 'info', phase: 'execute', status: 'ok', error: null, tool: { name: 'svc_list', exitCode: 0 } },
+    { ts: '2026-11-24T10:00:20.000Z', event: 'executor.step', level: 'info', phase: 'execute', status: 'ok', error: null, tool: null },
+  ]
+  fake.query = (input) => {
+    const rows = input.taskId === fixTask.id ? okEvents : (input.taskId === task.id ? failEvents : [])
+    return { rows, count: rows.length }
+  }
+  fake.attempts = (taskId) => {
+    if (taskId === fixTask.id) return [{ summary: '已修复' }]
+    return taskId === task.id ? [{ summary: '缺文件' }] : []
+  }
+  host.stores.tasks.claimTask({ owner: 'test', leaseMs: 60_000, taskId: fixTask.id })
+  host.stores.tasks.transition(fixTask.id, { to: 'succeeded', summary: '修复完成' })
+
+  await say(host, `/eval refresh #${short}`)
+  assert.ok(
+    texts(transport).some((text) => /已用修复任务 .* 的成功轨迹刷新候选/.test(text)),
+    `refresh reply missing: ${texts(transport).slice(-3).join(' | ')}`,
+  )
+  const traceAfter = readFileSync(tracePath, 'utf8')
+  assert.notEqual(traceAfter, traceBefore)
+  assert.match(traceAfter, /"name":"svc_list"/)
+  assert.doesNotMatch(traceAfter, /turn_end/)
+  assert.equal(readFileSync(draftPath, 'utf8'), draftBefore)
+  assert.equal(readdirSync(candidatesDir).filter((name) => name.endsWith('.json')).length, 1)
+  assert.equal(evalStore.resolveFinding(finding.id).finding.status, 'promoted')
+
+  // 已验证的 finding 无需刷新（换写法避开同文案判重）。
+  evalStore.setFindingStatus(finding.id, 'verified')
+  await say(host, `/eval refresh #${finding.id}`)
+  assert.match(texts(transport).at(-1) ?? '', /已验证通过，无需刷新候选/)
+
+  host.close()
+  evalStore.close()
+  return true
+})
+
+await check('/eval refresh refuses a trace missing the candidate tools', async () => {
+  const candidatesDir = join(dir, 'eval-refresh-tools', 'candidates')
+  mkdirSync(candidatesDir, { recursive: true })
+  const candidateId = 'dsh-prod-00000001'
+  writeFileSync(join(candidatesDir, `${candidateId}.json`), `${JSON.stringify({
+    id: candidateId,
+    kind: 'chat',
+    turns: ['x'],
+    expect: { requiredTools: ['write'] },
+    runtimeHints: { dsh: { traceFile: 'eval/candidates/x.ndjson' } },
+  })}\n`)
+  writeFileSync(join(candidatesDir, `${candidateId}.ndjson`), `${JSON.stringify({ type: 'session', sessionId: 'old' })}\n`)
+
+  const fake = makeFakeTelemetry({})
+  const { host, transport, evalStore } = makeHost(
+    { snapshotPath, rateLimitMs: 0, fromTask: { candidatesDir, root: dir } },
+    fake,
+  )
+  await pair(host)
+  const { finding } = evalStore.recordProductionFinding({ taskId: 'nrefresh03', title: '生产失败：nrefresh03' })
+  evalStore.setFindingStatus(finding.id, 'promoted', candidateId)
+  const fixTask = host.stores.tasks.createTask({ intent: '修复测评失败：x', riskLevel: 'R1', maxAttempts: 1 })
+  host.stores.tasks.claimTask({ owner: 'test', leaseMs: 60_000, taskId: fixTask.id })
+  host.stores.tasks.transition(fixTask.id, { to: 'succeeded', summary: 'ok' })
+  evalStore.setFindingFixTask(finding.id, fixTask.id)
+  fake.query = () => ({
+    rows: [{ ts: '2026-11-24T10:00:00.000Z', event: 'tool.call', level: 'info', phase: 'execute', status: 'ok', error: null, tool: { name: 'svc_list', exitCode: null } }],
+    count: 1,
+  })
+  fake.attempts = () => []
+
+  await say(host, `/eval refresh ${finding.id.slice(0, 8)}`)
+  assert.match(texts(transport).at(-1) ?? '', /缺少候选判据要求的工具/)
+  assert.match(readFileSync(join(candidatesDir, `${candidateId}.ndjson`), 'utf8'), /"sessionId":"old"/)
   host.close()
   evalStore.close()
   return true

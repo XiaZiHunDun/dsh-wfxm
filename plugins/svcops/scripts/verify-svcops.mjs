@@ -9,6 +9,7 @@ import {
   formatRoutingWeekly,
   formatSuggestionDigest,
   formatSuggestions,
+  formatSuggestionWeekly,
   readTraceHealthConfig,
   SvcOpsError,
 } from '../lib/index.js'
@@ -334,6 +335,13 @@ await check('G8 routing: 失败率越线才生成建议（样本不足保持安�
     && list[0].risk === 'R1'
     && list[0].action.includes('专家 builder')
     && list[0].evidence.includes('失败 4/8（50%）')
+})
+
+await check('§六 第 3 条：周报建议采纳率（无建议时省略）', () => {
+  const text = formatSuggestionWeekly({ total: 4, accepted: 2, ignored: 1, pending: 1 })
+  return text === '建议（近 7 天）：4 条 · 采纳 2 · 忽略 1 · 待定 1（采纳率 50%）'
+    && formatSuggestionWeekly({ total: 0, accepted: 0, ignored: 0, pending: 0 }) === null
+    && formatSuggestionWeekly(null) === null
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

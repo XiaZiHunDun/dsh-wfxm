@@ -57,6 +57,7 @@ export {
   evaluateTraceHealth,
   formatSuggestionDigest,
   formatSuggestions,
+  formatSuggestionWeekly,
   readTraceHealthConfig,
 } from './suggestions.js'
 export type {
@@ -65,6 +66,7 @@ export type {
   SuggestionBudget,
   SuggestionEntry,
   SuggestionInput,
+  SuggestionStats,
   TraceBreach,
   TraceBreachKind,
   TraceHealth,

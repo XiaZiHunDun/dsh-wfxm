@@ -209,7 +209,7 @@
         "scripts/health-alert.mjs",
         "scripts/serve.mjs"
       ],
-      "note": "2026-11-27 核查：使用→收集→分析已自动；P7-1 回流、P7-2 日常测评、P7-3 建议采纳、P7-4 回放回测、P7-5 门禁失败飞书通知、P7-6 轨迹阈值进建议与即时告警、G2 finding→修复任务（`/eval fix`）、G8 路由/专家成功率进周报与建议均已落地。§六 第 1 条已用真实样本走通一次（任务 `cbxnkqjg4d` 失败 → 候选 `dsh-prod-5261d9fb` → 修复后重跑 `qsusjvcjre` 成功 → 刷新轨迹回放 PASS，finding `949d5a25` 变 verified；刷新暂用一次性脚本）。仍为 partial：仅缺 §六 第 2 条连续两周真实流转"
+      "note": "2026-11-27 核查：使用→收集→分析已自动；P7-1 回流、P7-2 日常测评、P7-3 建议采纳（周报含近 7 天采纳率）、P7-4 回放回测、P7-5 门禁失败飞书通知、P7-6 轨迹阈值进建议与即时告警、G2 finding→修复任务（`/eval fix`）、G8 路由/专家成功率进周报与建议均已落地；`/eval refresh <finding>` 用修复任务成功轨迹刷新候选（草稿不变）。§六 第 1 条已用真实样本走通一次（任务 `cbxnkqjg4d` 失败 → 候选 `dsh-prod-5261d9fb` → 修复后重跑 `qsusjvcjre` 成功 → 刷新轨迹回放 PASS，finding `949d5a25` 变 verified）。仍为 partial：仅缺 §六 第 2 条连续两周真实流转"
     }
   ]
 }

@@ -151,6 +151,7 @@ export function formatEvalHelp(): string {
     '/eval promote <id> — 生成候选任务到 eval/candidates/（需 AGENT_EVAL_ROOT）',
     '/eval fix <id> — 为 finding 建一条修复任务（走正常审批与执行链）',
     '/eval from-task <任务号> — 把一条失败任务的脱敏轨迹回流成候选',
+    '/eval refresh <id> — 用修复任务的成轨迹刷新该 finding 的候选（草稿不变）',
     '/eval ignore <id> — 关闭 finding',
     '/eval run l2 — 开发机跑离线五套件（需 AGENT_EVAL_ROOT）',
     '/eval run real — 真实套件只在 CI/nightly 执行',
