@@ -71,6 +71,20 @@ export type {
   TraceHealthThresholds,
 } from './suggestions.js'
 export {
+  DEFAULT_EXPERT_THRESHOLDS,
+  aggregateRouting,
+  evaluateExpertHealth,
+  formatRoutingWeekly,
+} from './routing.js'
+export type {
+  ExpertBreach,
+  ExpertOutcome,
+  ExpertThresholds,
+  RoutingDecisionLike,
+  RoutingStats,
+  RoutingTaskLike,
+} from './routing.js'
+export {
   parseExpectedPorts,
   parseThresholds,
   readInspectionConfig,

@@ -85,8 +85,10 @@ import {
   createInspectionPatrol,
   createResourceProbe,
   createSystemdAdapter,
+  aggregateRouting,
   deriveSuggestions,
   evaluateTraceHealth,
+  formatRoutingWeekly,
   formatSuggestionDigest,
   probeListeningPorts,
   probeLogErrors,
@@ -1003,7 +1005,20 @@ async function main() {
           } catch (error) {
             log('weekly:trace:warn', error instanceof Error ? error.message : String(error))
           }
-          return [tasks, conversations, evalSection, traceSection]
+          // G8：路由决策与任务结果按专家聚合；没有决策时整段省略。
+          let routingSection = null
+          try {
+            const routing = aggregateRouting({
+              decisions: gatewayStore.listRouteDecisions(),
+              tasks: taskStore.listTasks(),
+              from,
+              to,
+            })
+            routingSection = routing === null ? null : formatRoutingWeekly(routing)
+          } catch (error) {
+            log('weekly:routing:warn', error instanceof Error ? error.message : String(error))
+          }
+          return [tasks, conversations, evalSection, routingSection, traceSection]
             .filter((section) => section !== null && section !== '')
             .join('\n') || null
         },
@@ -1070,6 +1085,13 @@ async function main() {
             ? { tokens: usage.inputTokens + usage.outputTokens, limit: config.dailyTokenBudget }
             : null
           const metrics = readTraceMetrics(since, to)
+          // G8：专家失败率进同一组建议；没有路由决策时为 null。
+          let routingStats = null
+          try {
+            routingStats = aggregateRouting({ decisions: gatewayStore.listRouteDecisions(), tasks, from: since, to })
+          } catch (error) {
+            log('patrol:warn', `routing stats failed: ${error instanceof Error ? error.message : String(error)}`)
+          }
           // P7-3: 建议落库后带稳定 id 展示；已采纳/已忽略的同内容不再出现。
           const derived = deriveSuggestions({
             candidates,
@@ -1090,6 +1112,7 @@ async function main() {
                   },
                   thresholds: traceThresholds,
                 },
+            routing: routingStats === null ? null : { experts: routingStats.experts },
           })
           const records = taskStore.recordSuggestions({
             day: dayKey(to),

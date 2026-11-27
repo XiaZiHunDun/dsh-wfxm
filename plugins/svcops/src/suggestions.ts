@@ -5,6 +5,8 @@
  */
 
 import { CANDIDATE_RULES, type CandidateInput } from './inspection/candidates.js'
+import { DEFAULT_EXPERT_THRESHOLDS, evaluateExpertHealth } from './routing.js'
+import type { ExpertOutcome, ExpertThresholds } from './routing.js'
 
 export interface FailureBreakdown {
   /** `attempt >= maxAttempts` at terminal failure. */
@@ -57,6 +59,8 @@ export interface SuggestionInput {
   budget?: SuggestionBudget | null
   /** P7-6：轨迹指标越过阈值时追加建议；`null`/缺省时不改变现有规则。 */
   trace?: { health: TraceHealth; thresholds?: TraceHealthThresholds } | null
+  /** G8：专家失败率越线时追加建议；`null`/缺省时不改变现有规则。 */
+  routing?: { experts: readonly ExpertOutcome[]; thresholds?: ExpertThresholds } | null
   max?: number
 }
 
@@ -182,6 +186,19 @@ export function deriveSuggestions(input: SuggestionInput): Suggestion[] {
     for (const breach of evaluateTraceHealth(input.trace.health, input.trace.thresholds)) {
       suggestions.push({
         action: TRACE_ACTIONS[breach.kind],
+        evidence: breach.reason,
+        risk: 'R1',
+      })
+    }
+  }
+
+  if (input.routing !== null && input.routing !== undefined) {
+    for (const breach of evaluateExpertHealth(
+      input.routing.experts,
+      input.routing.thresholds ?? DEFAULT_EXPERT_THRESHOLDS,
+    )) {
+      suggestions.push({
+        action: `排查专家 ${breach.expert ?? '未指派'} 近 7 天失败率偏高，决定继续路由或调整分工`,
         evidence: breach.reason,
         risk: 'R1',
       })

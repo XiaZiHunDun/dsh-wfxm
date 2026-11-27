@@ -1,8 +1,12 @@
 import {
+  DEFAULT_EXPERT_THRESHOLDS,
   DEFAULT_TRACE_HEALTH_THRESHOLDS,
+  aggregateRouting,
   createSystemdAdapter,
   deriveSuggestions,
+  evaluateExpertHealth,
   evaluateTraceHealth,
+  formatRoutingWeekly,
   formatSuggestionDigest,
   formatSuggestions,
   readTraceHealthConfig,
@@ -277,6 +281,59 @@ await check('P7-6 trace: env 配置与默认值', () => {
     && custom.thresholds.minAttempts === 3
     && bad.warnings.length === 1
     && bad.thresholds.failRate === DEFAULT_TRACE_HEALTH_THRESHOLDS.failRate
+})
+
+await check('G8 routing: 窗口内聚合路由、项目命中与专家成功率', () => {
+  const decisions = [
+    { action: 'answer', targetTaskId: null, projectId: 'p1', projectMatchedBy: 'explicit', createdAt: '2026-11-20T10:00:00.000Z' },
+    { action: 'attach', targetTaskId: 't1', projectId: 'p1', projectMatchedBy: 'sticky', createdAt: '2026-11-21T10:00:00.000Z' },
+    { action: 'attach', targetTaskId: 't2', projectId: null, projectMatchedBy: null, createdAt: '2026-11-22T10:00:00.000Z' },
+    { action: 'ask', targetTaskId: null, projectId: null, projectMatchedBy: null, createdAt: '2026-11-23T10:00:00.000Z' },
+    { action: 'attach', targetTaskId: 't-out', projectId: null, projectMatchedBy: null, createdAt: '2026-10-01T10:00:00.000Z' },
+  ]
+  const tasks = [
+    { id: 't1', expert: 'builder', status: 'succeeded' },
+    { id: 't2', expert: 'builder', status: 'failed' },
+    { id: 't-out', expert: 'builder', status: 'failed' },
+  ]
+  const stats = aggregateRouting({
+    decisions,
+    tasks,
+    from: new Date('2026-11-19T00:00:00Z'),
+    to: new Date('2026-11-26T00:00:00Z'),
+  })
+  const text = formatRoutingWeekly(stats)
+  return stats.decisions === 4
+    && stats.actions[0].action === 'attach' && stats.actions[0].count === 2
+    && stats.projects.length === 2
+    && stats.experts.length === 1
+    && stats.experts[0].finished === 2
+    && stats.experts[0].failed === 1
+    && text.includes('路由（近 7 天）：决策 4')
+    && text.includes('项目命中：')
+    && text.includes('专家：builder 2 · 成功 1/2（50%）')
+    && aggregateRouting({ decisions: decisions.slice(4), tasks, from: new Date('2026-11-19T00:00:00Z'), to: new Date('2026-11-26T00:00:00Z') }) === null
+})
+
+await check('G8 routing: 失败率越线才生成建议（样本不足保持安静）', () => {
+  const hot = [{ expert: 'builder', routed: 8, finished: 8, succeeded: 4, failed: 4 }]
+  const cold = [{ expert: 'builder', routed: 4, finished: 4, succeeded: 1, failed: 3 }]
+  const breaches = evaluateExpertHealth(hot)
+  const list = deriveSuggestions({
+    candidates: [],
+    failures: { retryExhausted: 0, nonRetryable: 0, conflicts: 0 },
+    reviewFacts: 0,
+    budget: null,
+    routing: { experts: hot },
+  })
+  return DEFAULT_EXPERT_THRESHOLDS.minFinished === 5
+    && breaches.length === 1
+    && breaches[0].reason.includes('失败 4/8（50%）')
+    && evaluateExpertHealth(cold).length === 0
+    && list.length === 1
+    && list[0].risk === 'R1'
+    && list[0].action.includes('专家 builder')
+    && list[0].evidence.includes('失败 4/8（50%）')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
