@@ -23,6 +23,7 @@ import {
   createReceiptRelay,
   createTaskProgressRelay,
   ingestInbound,
+  parseEvalCommand,
   parseSuggestionCommand,
   redactedText,
   type DispatchReport,
@@ -1749,8 +1750,12 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       attrs: { channel: input.channelId },
     })
     // P2-1/P2-3: `/eval` 直接回执，不进前台、不建任务；flag/promote/ignore 只写测评库。
-    if (result.target.kind === 'eval') {
-      await handleEvalCommand(result, result.target)
+    // 落在活跃任务线程里时网关会把它标成 attach，所以按文本再解析一次，避免被任务补料吞掉。
+    const evalCommand = result.target.kind === 'eval'
+      ? result.target.command
+      : parseEvalCommand(textOf(input.content) ?? '')
+    if (evalCommand !== null && !result.duplicate) {
+      await handleEvalCommand(result, { kind: 'eval', command: evalCommand })
       return { result, foreground: null, error: null }
     }
     // P6-2: owner diagnostics bypass the foreground/model entirely.

@@ -826,6 +826,38 @@ await check('/eval fix links a finding to one fix task', async () => {
   return true
 })
 
+await check('/eval commands are not swallowed by a live task thread', async () => {
+  const { host, transport, evalStore } = makeHost({ snapshotPath, rateLimitMs: 0 })
+  await pair(host)
+  const { finding } = evalStore.recordProductionFinding({
+    taskId: 'nfix04',
+    title: '生产失败：nfix04',
+  })
+  // 把一条 queued 任务绑成线程的 live default owner：网关随后会把消息标成 attach，
+  // host 仍须按文本识别 /eval，否则命令会被任务补料吞掉。
+  const { result } = await say(host, '/eval findings')
+  const live = host.stores.tasks.createTask({
+    intent: '占住线程',
+    riskLevel: 'R1',
+    maxAttempts: 1,
+    correlationId: 'hold-thread',
+  })
+  host.stores.tasks.bindThread({
+    taskId: live.id,
+    threadId: result.result.thread.id,
+    relation: 'default_owner',
+    anchorMsgId: 'hold-anchor',
+  })
+
+  await say(host, `/eval fix ${finding.id.slice(0, 8)}`)
+  assert.match(texts(transport).at(-1) ?? '', /已建修复任务/)
+  assert.notEqual(evalStore.resolveFinding(finding.id).finding.fixTaskId, null)
+
+  host.close()
+  evalStore.close()
+  return true
+})
+
 await check('weekly report shows the production backlog', async () => {
   const to = new Date('2026-11-25T12:00:00.000Z')
   const from = new Date(to.getTime() - 7 * 86_400_000)
