@@ -811,6 +811,27 @@ await check('an inflated R3 decision degrades instead of creating an R3 task', a
     && tasks[0].riskLevel === 'R1'
 })
 
+await check('oversized new-task message replies with the limit instead of dropping it', async () => {
+  let decided = 0
+  const { host } = makeHost({
+    decide: async () => {
+      decided += 1
+      return '{"action":"reply","text":"不该走到这里"}'
+    },
+  })
+  await pair(host)
+  const { result } = await say(host, 'x'.repeat(501))
+  const tasks = host.stores.tasks.listTasks()
+  host.close()
+  // 2026-11-27 生产实测：消息超过 500 字时规则前台抛错，用户收不到任何回执。
+  return result.error === null
+    && result.foreground?.action === 'reply'
+    && result.foreground.note === 'intent-too-long'
+    && result.foreground.text.includes('500 字上限')
+    && decided === 0
+    && tasks.length === 0
+})
+
 await check('no fallback configured means a loud failure, not a dropped message', async () => {
   const { host } = makeHost({ decide: async () => 'not json at all' })
   // Rebuild the same DB host without a fallback is not possible; assert the

@@ -22,7 +22,7 @@
 import type { IngestResult } from '@dsh-wfxm/gateway'
 import { EXPERT_USAGE, parseExpertDirective, planTaskRisk } from '@dsh-wfxm/tasks'
 import type { RiskLevel, TaskStore } from '@dsh-wfxm/tasks'
-import { parseDecision, type Decision, type DecisionRepeat } from './decision.js'
+import { DEFAULT_MAX_INTENT_CHARS, parseDecision, type Decision, type DecisionRepeat } from './decision.js'
 import { buildDecisionPrompt, type ConversationTurn } from './prompt.js'
 import { createQuickAnswer, type QuickAnswer, type QuickChecks, type ResourceSnapshot } from './quick-answer.js'
 
@@ -411,6 +411,17 @@ export function createOrchestratorForeground(options: OrchestratorForegroundOpti
     const taskExpert = live === null ? directive.expert : null
     if (live === null && directive.usage) {
       return { action: 'reply', text: EXPERT_USAGE, threadId: thread.id }
+    }
+    // ⑤ 拒绝超过上限的新任务 intent。这里先答一句，既省一次决策，也避免规则前台
+    // 在 createTask 里抛错后被宿主只记日志、用户收不到任何回执（2026-11-27 实测）。
+    const maxIntentChars = options.maxIntentChars ?? DEFAULT_MAX_INTENT_CHARS
+    if (live === null && promptText.length > maxIntentChars) {
+      return {
+        action: 'reply',
+        text: `这条消息有 ${promptText.length} 字，超过单个任务的 ${maxIntentChars} 字上限；请压缩后重发，或拆成几条依次发送。`,
+        threadId: thread.id,
+        note: 'intent-too-long',
+      }
     }
     const nowAt = clock()
     // 本轮只读一次：prompt 里的序号与取消时用的是同一份列表。
