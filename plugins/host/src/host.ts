@@ -2001,7 +2001,11 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
         })
         : taskId === null
           // ① never invents a target: an unanchored command must ask for the ref.
-          ? `没有找到要${commandWord}的任务：请带上任务号，例如「${commandWord} abc123」。`
+          ? result.followUp?.ambiguous === true
+            ? `有多个任务在执行：${(result.followUp.candidates ?? [])
+              .map((id) => tasks.getTask(id)?.taskRef ?? id.slice(0, 8))
+              .join(' / ')}，请用「${commandWord} <任务号>」指定。`
+            : `没有找到要${commandWord}的任务：请带上任务号，例如「${commandWord} abc123」。`
           : `控制通道不可用，${commandWord}命令未执行。`
       gateway.enqueueOutbox({
         topic: 'say',

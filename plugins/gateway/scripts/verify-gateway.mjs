@@ -608,6 +608,8 @@ await check('default triage is deterministic and protocol-agnostic', () => {
     && defaultTriage({ ...base, content: { control: 'stop' } }) === 'control'
     && defaultTriage({ ...base, content: { text: '停止 29b3ywszfu' } }) === 'control'
     && defaultTriage({ ...base, content: { text: 'stop abcd1234' } }) === 'control'
+    && defaultTriage({ ...base, content: { text: '停止' } }) === 'control'
+    && defaultTriage({ ...base, content: { text: '停止一下手头的事' } }) === 'chat'
     && defaultTriage({ ...base, content: { text: '请停止这个任务' } }) === 'chat'
     && defaultTriage({ ...base, content: { text: '继续' } }) === 'chat'
     && defaultTriage({ ...base, content: { text: '/status' } }) === 'command'
@@ -1380,6 +1382,22 @@ await check('a live anchored follow-up is relayed and the reply anchor is bound'
     && relayCalls[1].taskId === 'task_one'
     && relayCalls[1].inboxId === result.inbox.id
     && result.inbox.status === 'triaged'
+})
+
+await check('a bare 停止 with a single live task becomes a control command', async () => {
+  const result = await ingestInbound({ store: anchorStore }, {
+    channelId: 'cli_anc',
+    msgId: 'evt_stop_bare',
+    externalUserId: 'open_anc',
+    content: { text: '停止' },
+    chatId: 'chat_one',
+  })
+  return result.bypassReason === 'control'
+    && result.target.kind === 'control'
+    && result.target.command === 'stop'
+    && result.followUp.taskId !== null
+    && result.control?.skipped === 'no-port'
+    && result.disposition.action === 'stop'
 })
 
 await check('a finished task is never attached without an anchor reply', async () => {

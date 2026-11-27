@@ -299,11 +299,14 @@ function controlCommand(content: Json): string | null {
     const trimmed = text.trim()
     const global = GLOBAL_ALIASES[trimmed] ?? GLOBAL_ALIASES[trimmed.toLowerCase()]
     if (global !== undefined) return global
-    // English may stand alone (`stop`); Chinese must carry a ref, because words
-    // like 继续 are ordinary chat ("继续") and must not hijack the conversation.
+    // English may stand alone (`stop`). For Chinese, 停止/暂停/状态 may also stand
+    // alone: a whole message of just "停止" is a stop, not a supplement (2026-11-27
+    // 实测：它被当成补充指令，任务重跑后还以 succeeded 回执「已按停止终止」).
+    // 继续/恢复 stay ref-only — "继续" alone is ordinary chat.
     const english = /^\s*(stop|pause|resume|rollback|status)(?:\s+[A-Za-z0-9_-]{4,})?\s*$/i.exec(text)
+    const bareChinese = /^\s*(停止|暂停|状态)\s*$/.exec(text)
     const chinese = /^\s*(停止|暂停|继续|恢复|回滚|状态)\s+[A-Za-z0-9_-]{4,}\s*$/.exec(text)
-    const token = english?.[1] ?? chinese?.[1]
+    const token = english?.[1] ?? bareChinese?.[1] ?? chinese?.[1]
     if (token !== undefined) {
       const canonical = CONTROL_ALIASES[token] ?? CONTROL_ALIASES[token.toLowerCase()]
       if (canonical !== undefined) return canonical
