@@ -2006,13 +2006,18 @@ await check('expired leases are reclaimed: requeue while attempts remain, fail w
   const exhausted = leaseStore.createTask({ intent: 'lease dead', riskLevel: 'R1', maxAttempts: 1 })
   const claimed = leaseStore.claimTask({ owner: 'worker-A', leaseMs: 100, now: workerNow() })
   const claimedAgain = leaseStore.claimTask({ owner: 'worker-A', leaseMs: 100, now: workerNow() })
+  leaseStore.beginCheckpoint({ taskId: retryable.id })
+  leaseStore.beginCheckpoint({ taskId: exhausted.id })
   workerAdvance(500)
   const first = leaseStore.recoverExpiredLeases({ now: workerNow() })
   const retryableRow = leaseStore.getTask(retryable.id)
   const exhaustedRow = leaseStore.getTask(exhausted.id)
   const receipts = leaseStore.listReceipts(exhausted.id)
+  // 重启/租约过期的 attempt 不能留下 open checkpoint。
+  const leftover = [...leaseStore.listCheckpoints(retryable.id), ...leaseStore.listCheckpoints(exhausted.id)]
   leaseStore.close()
-  return claimed.id === retryable.id
+  return leftover.every((checkpoint) => checkpoint.status === 'aborted')
+    && claimed.id === retryable.id
     && claimedAgain.id === exhausted.id
     && retryableRow.status === 'queued'
     && retryableRow.leaseOwner === null

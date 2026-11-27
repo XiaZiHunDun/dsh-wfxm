@@ -1217,6 +1217,10 @@ export function createTaskStore(dbPath: string): TaskStore {
     UPDATE task_checkpoints SET status = ?, closed_at = ?
      WHERE id = ? AND status = 'open'
   `)
+  const abortOpenCheckpointsStmt = db.prepare(`
+    UPDATE task_checkpoints SET status = 'aborted', closed_at = ?
+     WHERE task_id = ? AND status = 'open'
+  `)
 
   const wakeTaskRow = db.prepare(`
     UPDATE tasks
@@ -1963,6 +1967,11 @@ export function createTaskStore(dbPath: string): TaskStore {
         lease_expires_at: string | null
       }>
       for (const row of expired) {
+        // The attempt that owned this lease is gone. Its open step boundaries
+        // must be closed as aborted, otherwise a retry leaves an orphan `open`
+        // checkpoint forever and a later rollback has no clear edge
+        // (2026-11-27 实测：重启后 attempt 1 的 checkpoint 一直 open).
+        abortOpenCheckpointsStmt.run(now, row.id)
         if (row.attempt < row.max_attempts) {
           const changed = recoverExpiredRow.run(row.id, now)
           if (changed.changes === 1) {
