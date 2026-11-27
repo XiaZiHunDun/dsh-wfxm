@@ -313,7 +313,11 @@ export function createIsolationResolver(
         status: 'running',
         attrs: { worktree: worktreePath, prepare_state: 'running' },
       })
-      const prepared = await run('/bin/bash', ['-lc', project.prepareCmd as string], {
+      // `NODE_ENV=production` is a property of the server unit, not of the user's
+      // repo. Inheriting it made `pnpm install --frozen-lockfile` skip
+      // devDependencies, so `tsc` was missing in the worktree and every task had
+      // to repair node_modules itself (2026-11-27 实测).
+      const prepared = await run('/bin/bash', ['-lc', `unset NODE_ENV; ${project.prepareCmd as string}`], {
         cwd: worktreePath,
         timeoutMs: prepareTimeoutMs,
       })

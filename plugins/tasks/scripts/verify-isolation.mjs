@@ -186,6 +186,25 @@ await check('prepare_cmd 只跑一次，成功后记录 done + preparedAt', asyn
   return 'once'
 })
 
+await check('prepare 不继承服务进程的 NODE_ENV=production', async () => {
+  const root = makeRepo('prepare-node-env')
+  const project = makeProject(root, {
+    prepareCmd: `node -e "require('fs').writeFileSync('node-env.txt', process.env.NODE_ENV ?? 'unset')"`,
+  })
+  const previous = process.env.NODE_ENV
+  process.env.NODE_ENV = 'production'
+  try {
+    const task = store.createTask({ intent: 'prepare env', riskLevel: 'R0', projectId: 'p1' })
+    const cwd = await resolver(task, project, root)
+    // 继承 production 会让 pnpm/npm 跳过 devDependencies，worktree 里 tsc 缺失。
+    assert.equal(readFileSync(join(cwd, 'node-env.txt'), 'utf8'), 'unset')
+    return 'node_env unset'
+  } finally {
+    if (previous === undefined) delete process.env.NODE_ENV
+    else process.env.NODE_ENV = previous
+  }
+})
+
 await check('prepare 失败：任务失败且不回落共享 workspace', async () => {
   const root = makeRepo('prepare-fail')
   const project = makeProject(root, { prepareCmd: 'echo boom >&2; exit 7' })

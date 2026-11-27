@@ -164,6 +164,19 @@ await check('DSH_WFXM_TASK_ID / CHECKPOINT_ID / ATTEMPT reach the child env', ()
     && summary.includes('attempt=1')
 })
 
+// 服务的 NODE_ENV=production 不能进入任务子进程（会让 pnpm/npm 跳过 devDependencies）。
+const previousNodeEnv = process.env.NODE_ENV
+process.env.NODE_ENV = 'production'
+const nodeEnvTask = store.createTask({ intent: 'echo node env', riskLevel: 'R1' })
+const nodeEnvReport = await makeWorker({ STUB_MODE: 'env-echo' }).runOnce()
+if (previousNodeEnv === undefined) delete process.env.NODE_ENV
+else process.env.NODE_ENV = previousNodeEnv
+
+await check('NODE_ENV=production does not reach the task child', () => {
+  const summary = store.listReceipts(nodeEnvTask.id)[0]?.summary ?? ''
+  return nodeEnvReport.outcome === 'succeeded' && summary.includes('node_env=unset')
+})
+
 // Slice AX (E3): the project id crosses the process boundary; ③ reads it.
 const projectTask = store.createTask({ intent: 'echo the project', riskLevel: 'R1', projectId: 'proj-av' })
 const projectReport = await makeWorker({ STUB_MODE: 'env-echo' }).runOnce()

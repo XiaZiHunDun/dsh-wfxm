@@ -542,6 +542,10 @@ export function createDshExecutor(options: DshExecutorOptions = {}): TaskExecuto
         DSH_WFXM_TASK_ID: task.id,
         DSH_WFXM_ATTEMPT: String(hooks.attempt),
       }
+      // 服务进程的 `NODE_ENV=production` 描述的是宿主部署，不是用户仓库。让它
+      // 传进任务命令会让 `pnpm install`/`npm ci` 跳过 devDependencies
+      // （2026-11-27：worktree 里 tsc 缺失）。显式 options.env 仍可覆盖。
+      if (options.env?.NODE_ENV === undefined) delete env.NODE_ENV
       // Attribution keys only ever describe THIS attempt: a nested host could
       // leave stale values in `process.env`, and inheriting them would stamp the
       // child's pre-images onto the wrong checkpoint / project.
