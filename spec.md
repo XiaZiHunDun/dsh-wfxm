@@ -1092,14 +1092,17 @@ Phase 1 能建 worktree，但没有收尾：分支永远留在仓库、worktree 
 3. **干净检查**：主仓库 `git status --porcelain --untracked-files=no` 必须为空；
    worktree `git status --porcelain` 必须为空（未提交不合并，避免 cleanup 丢改动）。
 4. **分支存在**：`rev-parse --verify refs/heads/<branch>`；缺失 → `not-found`，不重建。
-5. 先写 `merge_state='pending'`，再 `git merge --no-ff --no-edit <branch> -m "merge <taskRef>: <intent≤72>"`。
+5. 先写 `merge_state='pending'`，再 `git merge --no-ff --no-edit <branch> -m "merge <taskRef>: <intent≤72>"`；
+   合并提交与 worker 提交共用显式身份 `-c user.name=dsh-wfxm -c user.email=dsh-wfxm@localhost`，
+   不依赖服务用户的 git config（2026-11-27 生产无身份导致合并失败）。
 6. **成功**：`merged` + `task.merge` 事件；随后 `worktree remove --force` + `branch -d`
    （删除失败仅告警、保留分支）；`--no-cleanup` 时只到 `merged`。
 7. **冲突**（存在 unmerged paths）：`git diff --name-only --diff-filter=U` 收集路径 →
    `git merge --abort` → `conflict` + 事件（含 paths）；**任务状态不变**；返回
    `{ state: 'conflict', conflictPaths }`。
-8. **其它非零**：若 `MERGE_HEAD` 存在则 abort；`merge_state` 恢复调用前值；抛
-   `TaskError('transient' | 'unknown', stderr)`。
+8. **其它非零**：若 `MERGE_HEAD` 存在则 abort；`merge_state` 恢复调用前值
+   （`pending→none` 是显式回退边，见 15 §10.5；不得因非法迁移掩盖 git 原始错误）；
+   抛 `TaskError('transient' | 'unknown', stderr)`。
 9. **幂等**：已 `merged` 再 merge → `invalid-task`；`conflict` 在人工解决后可用同一命令重试。
 
 ### V3 释放与清理

@@ -325,7 +325,10 @@ export function assertTransition(from: TaskStatus, to: TaskStatus): void {
  */
 export const ALLOWED_MERGE_TRANSITIONS: Record<MergeState, readonly MergeState[]> = {
   none: ['pending', 'abandoned'],
-  pending: ['merged', 'conflict', 'abandoned'],
+  // `pending → none` is not progress: it reverts an attempt that git refused to
+  // start (dirty index, unrelated histories, missing identity, …). Without it
+  // the failure path made an illegal transition and hid the git error.
+  pending: ['merged', 'conflict', 'abandoned', 'none'],
   conflict: ['pending', 'abandoned'],
   merged: [],
   abandoned: [],

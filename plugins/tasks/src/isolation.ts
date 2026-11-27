@@ -40,6 +40,22 @@ export interface CommandResult {
   stderr: string
 }
 
+/**
+ * Committer identity for every commit the service makes.
+ *
+ * The service user has no global `user.name`/`user.email`, so a plain
+ * `git commit` / `git merge` fails (2026-11-27 production merge aborted with
+ * "Author identity unknown"). Passing the identity with `-c` keeps task-owned
+ * commits reproducible and independent of the host's git config; both the
+ * worker commit and the merge commit use this one definition.
+ */
+export const GIT_COMMIT_IDENTITY: readonly string[] = [
+  '-c',
+  'user.name=dsh-wfxm',
+  '-c',
+  'user.email=dsh-wfxm@localhost',
+]
+
 export type CommandRunner = (
   command: string,
   args: string[],
@@ -142,10 +158,7 @@ export async function commitWorktreeChanges(
     throw commitFailure(`isolation: git add failed: ${added.stderr.trim() || `exit ${added.code}`}`)
   }
   const committed = await git([
-    '-c',
-    'user.name=dsh-wfxm',
-    '-c',
-    'user.email=dsh-wfxm@localhost',
+    ...GIT_COMMIT_IDENTITY,
     'commit',
     '-q',
     '-m',

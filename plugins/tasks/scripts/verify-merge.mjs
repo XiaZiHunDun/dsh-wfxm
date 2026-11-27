@@ -9,7 +9,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -64,6 +64,33 @@ function gitFails(cwd, args) {
   } catch {
     return true
   }
+}
+
+/**
+ * A CommandRunner that runs git with every identity source removed, the way the
+ * production service user runs (no global config, no GIT_* identity, fresh
+ * HOME). Reproduces "Author identity unknown" without touching the host config.
+ */
+function noIdentityRunner() {
+  const home = tempDir('no-identity-home')
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: home, GIT_CONFIG_NOSYSTEM: '1' }
+  for (const key of [
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL',
+    'EMAIL',
+  ]) {
+    delete env[key]
+  }
+  return (command, args, options) => new Promise((done) => {
+    execFile(command, args, { cwd: options.cwd, timeout: options.timeoutMs, env }, (error, stdout, stderr) => {
+      const code = error === null
+        ? 0
+        : typeof error.code === 'number' ? error.code : null
+      done({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') })
+    })
+  })
 }
 
 function makeRepo(label, content = 'base\n') {
@@ -295,6 +322,59 @@ await check('主仓库脏：拒绝合并，状态保持 none', async () => {
   )
   assert.equal(store.getTask(task.id).mergeState, 'none')
   return 'refused'
+})
+
+await check('无 git 身份：merge 自带提交身份，合并成功且作者固定', async () => {
+  const root = makeRepo('no-identity')
+  const project = makeProject('no-identity', root)
+  const { task, cwd } = await worktreeTask('no-identity', resolver, project)
+  commitFile(cwd, 'app.txt', 'identity free\n', 'task change')
+  succeed(task.id)
+
+  const anonymous = createIsolationService({ tasks: store, run: noIdentityRunner() })
+  const result = await anonymous.merge(task.id, project)
+  assert.equal(result.state, 'merged')
+  assert.equal(readFileSync(join(root, 'app.txt'), 'utf8'), 'identity free\n')
+  assert.equal(store.getTask(task.id).mergeState, 'merged')
+  // 2026-11-27 生产 bug：merge 未带身份 → Author identity unknown。作者必须固定，
+  // 不能依赖宿主机 git config。
+  assert.equal(
+    git(root, ['log', '-1', '--pretty=%an <%ae>|%cn <%ce>']).trim(),
+    'dsh-wfxm <dsh-wfxm@localhost>|dsh-wfxm <dsh-wfxm@localhost>',
+  )
+  return 'identity supplied'
+})
+
+await check('非冲突失败：恢复 none、保留 git 原始错误，之后仍可合并', async () => {
+  const root = makeRepo('merge-fail')
+  const project = makeProject('merge-fail', root)
+  const { task, cwd } = await worktreeTask('merge-fail', resolver, project)
+  commitFile(cwd, 'app.txt', 'recovered\n', 'task change')
+  succeed(task.id)
+
+  const failing = createIsolationService({
+    tasks: store,
+    run: (command, args, options) => {
+      if (command === 'git' && args.includes('merge') && !args.includes('--abort')) {
+        return Promise.resolve({
+          code: 128,
+          stdout: '',
+          stderr: 'fatal: refusing to merge unrelated histories\n',
+        })
+      }
+      return realRun(command, args, options)
+    },
+  })
+  await assert.rejects(
+    () => failing.merge(task.id, project),
+    (error) => error.code === 'transient' && error.message.includes('refusing to merge unrelated histories'),
+  )
+  // 回退是显式的 pending → none 边；不得因非法迁移掩盖真实 git 错误。
+  assert.equal(store.getTask(task.id).mergeState, 'none')
+
+  const result = await service.merge(task.id, project)
+  assert.equal(result.state, 'merged')
+  return 'recovered'
 })
 
 await check('分支缺失：not-found，不重建', async () => {

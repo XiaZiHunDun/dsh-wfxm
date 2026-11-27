@@ -23,7 +23,7 @@ import { join, resolve, sep } from 'node:path'
 import type { Task } from './model.js'
 import { TaskError } from './model.js'
 import type { CommandResult, CommandRunner } from './isolation.js'
-import { realRun } from './isolation.js'
+import { GIT_COMMIT_IDENTITY, realRun } from './isolation.js'
 import type { TaskStore } from './store.js'
 import { noteTelemetry, type TaskTelemetryPort } from './telemetry.js'
 
@@ -414,7 +414,18 @@ export function createIsolationService(options: IsolationServiceOptions): Isolat
       tasks.setIsolation(taskId, { mergeState: 'pending' })
 
       const message = `merge ${fresh.taskRef ?? fresh.id}: ${fresh.intent.slice(0, 72)}`
-      const merged = await git(root, ['merge', '--no-ff', '--no-edit', branch, '-m', message])
+      // `--no-ff` always creates a merge commit, so the merge needs the same
+      // explicit identity as the worker's commit (2026-11-27 production bug:
+      // no git identity → "Author identity unknown" → merge aborted).
+      const merged = await git(root, [
+        ...GIT_COMMIT_IDENTITY,
+        'merge',
+        '--no-ff',
+        '--no-edit',
+        branch,
+        '-m',
+        message,
+      ])
 
       if (merged.code === 0) {
         const headCommit = await git(root, ['rev-parse', 'HEAD'])
@@ -510,6 +521,9 @@ export function createIsolationService(options: IsolationServiceOptions): Isolat
 
       // Not a content conflict (dirty index, unrelated histories, …): undo the
       // pending marker so the task does not look stuck, then surface the error.
+      // `pending → none` is the explicit abort edge in the allowlist; without it
+      // this restore threw `invalid-task` and masked the real git error
+      // (2026-11-27).
       tasks.setIsolation(taskId, { mergeState: previous })
       throw new TaskError(
         merged.code === 128 ? 'transient' : 'unknown',
