@@ -252,15 +252,15 @@ function wakeAck(input: { wake: WakeReport; taskRef: string | null }): string {
     }
     switch (input.wake.reason) {
       case 'not-found':
-        return `${target}没有可用的继续授权；这条按新消息处理。`
+        return `${target} 没有可用的继续授权；这条按新消息处理。`
       case 'scope-mismatch':
-        return `${target}的继续授权范围不匹配；这条按新消息处理。`
+        return `${target} 的继续授权范围不匹配；这条按新消息处理。`
       case 'expired':
-        return `${target}的继续授权已过期；这条按新消息处理。`
+        return `${target} 的继续授权已过期；这条按新消息处理。`
       case 'consumed':
-        return `${target}的继续授权已使用过；这条按新消息处理。`
+        return `${target} 的继续授权已使用过；这条按新消息处理。`
       case 'revoked':
-        return `继续${target}的授权已撤销；这条按新消息处理。`
+        return `继续 ${target} 的授权已撤销；这条按新消息处理。`
       default:
         return `当前身份无权继续${target}；这条按新消息处理。`
     }
