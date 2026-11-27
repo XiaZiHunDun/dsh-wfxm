@@ -189,13 +189,15 @@
     {
       "id": "P7",
       "name": "闭环体系自运转",
-      "state": "partial",
+      "state": "done",
       "phase": "v2",
       "evidence": [
         "docs/22-第七阶段闭环检查.md",
         "plugins/svcops/src/suggestions.ts",
         "plugins/eval/src/promote.ts",
         "plugins/eval/src/trajectory.ts",
+        "plugins/eval/src/format.ts",
+        "scripts/verify-eval-loop.mjs",
         "plugins/eval/migrations/002_replay_status.sql",
         "plugins/eval/migrations/003_fix_task.sql",
         "plugins/tasks/migrations/016_suggestions.sql",
@@ -209,7 +211,7 @@
         "scripts/health-alert.mjs",
         "scripts/serve.mjs"
       ],
-      "note": "2026-11-27 核查：使用→收集→分析已自动；P7-1 回流、P7-2 日常测评、P7-3 建议采纳（周报含近 7 天采纳率）、P7-4 回放回测、P7-5 门禁失败飞书通知、P7-6 轨迹阈值进建议与即时告警、G2 finding→修复任务（`/eval fix`）、G8 路由/专家成功率进周报与建议均已落地；`/eval refresh <finding>` 用修复任务成功轨迹刷新候选（草稿不变）。§六 第 1 条已用真实样本走通一次（任务 `cbxnkqjg4d` 失败 → 候选 `dsh-prod-5261d9fb` → 修复后重跑 `qsusjvcjre` 成功 → 刷新轨迹回放 PASS，finding `949d5a25` 变 verified）。仍为 partial：仅缺 §六 第 2 条连续两周真实流转"
+      "note": "2026-11-27 结项：六环节（使用→收集→分析→反馈→测评→再使用）已接通；P7-1 回流、P7-2 日常测评、P7-3 建议采纳（周报含近 7 天采纳率）、P7-4 回放回测、P7-5 门禁失败飞书通知、P7-6 轨迹阈值进建议与即时告警、G2 finding→修复任务、G8 路由/专家成功率、`/eval refresh` 刷新候选均已落地。真实样本：`cbxnkqjg4d` 失败 → 候选 `dsh-prod-5261d9fb` → 修复后 `qsusjvcjre` 成功 → 刷新回放 PASS，finding `949d5a25` 变 verified。§六第 2 条「连续两周」经 owner 决定转运行期观察，不阻塞结项。"
     }
   ]
 }
