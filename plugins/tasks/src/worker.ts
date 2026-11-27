@@ -579,6 +579,20 @@ export function createTaskWorker(options: TaskWorkerOptions): TaskWorker {
             throw error
           }
         }
+        // R1 是「默认有副作用」的等级（R0 才是纯只读）。计划层没有声明断言时，
+        // 用任务分支的 diff 作为最小可执行证明：什么都没改就不允许 succeeded
+        // （2026-11-27 实测：R1 代码任务以 `no-assertions` 通过，只能人工复验）。
+        if (
+          latest.isolation === 'worktree'
+          && latest.riskLevel === 'R1'
+          && latest.baseCommit !== null
+          && store.listAssertions(latest.id).length === 0
+        ) {
+          store.addAssertion(latest.id, {
+            kind: 'git_diff_matches',
+            spec: { ref: latest.baseCommit, expect: 'changed' },
+          })
+        }
         const verify = options.verify === undefined
           ? undefined
           : { ...options.verify, cwd: latest.worktreePath ?? options.verify.cwd }

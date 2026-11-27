@@ -462,6 +462,49 @@ await check('wake 拒绝时由前台接住：不单独发「无权唤醒」提�
     && task.status === 'succeeded'
 })
 
+await check('a new message in a thread with one finished task does not attempt a wake', async () => {
+  const { host } = makeHost()
+  await pair(host)
+  const first = await say(host, '第一件事')
+  const firstId = first.result.foreground.taskId
+  await host.runWorkerOnce()
+  await host.pump()
+  const second = await say(host, '第二件事：新任务')
+  const texts = host.stores.gateway.listOutbox()
+    .map((item) => item.payload.text)
+    .filter((text) => typeof text === 'string')
+  host.close()
+  // 2026-11-27：单条已结束任务的线程里，每条新消息都先回「无权继续任务 X」。
+  return second.result.foreground.action === 'task-created'
+    && second.result.foreground.taskId !== firstId
+    && (second.result.result.wake === undefined || second.result.result.wake === null)
+    && second.result.result.followUp?.taskId === null
+    && !texts.some((text) => text.includes('继续任务') || text.includes('继续授权'))
+})
+
+await check('a not-found wake denial says "no grant" instead of "not allowed"', async () => {
+  const grants = createGrantStore(join(dir, 'grants-not-found.sqlite'), { now })
+  const { host } = makeHost({ options: { grants } })
+  await pair(host)
+  const first = await say(host, '跑完就结束')
+  const taskId = first.result.foreground.taskId
+  await host.runWorkerOnce()
+  await host.pump()
+  const receiptMsgId = host.stores.tasks.listReceipts(taskId)[0].externalMsgId
+  // 空消息由规则前台回一句提示（不建任务），这样延迟的唤醒回执才会真正发出。
+  const reply = await say(host, '', { replyToMsgId: receiptMsgId })
+  const texts = host.stores.gateway.listOutbox()
+    .map((item) => item.payload.text)
+    .filter((text) => typeof text === 'string')
+  host.close()
+  return reply.result.result.wake !== null
+    && reply.result.result.wake.granted === false
+    && reply.result.result.wake.reason === 'not-found'
+    && reply.result.foreground.action === 'reply'
+    && texts.some((text) => text.includes('没有可用的继续授权'))
+    && !texts.some((text) => text.includes('无权继续'))
+})
+
 await check('a granted actor wakes the finished task into round 2 and queues the reply', async () => {
   const grants = createGrantStore(join(dir, 'grants.sqlite'), { now })
   const { host } = makeHost({ options: { grants } })

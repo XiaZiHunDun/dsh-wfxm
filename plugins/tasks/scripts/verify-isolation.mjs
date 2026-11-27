@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createMemoryStore } from '@dsh-wfxm/knowledge'
-import { createIsolationResolver, createTaskStore } from '../lib/index.js'
+import { createIsolationResolver, createTaskStore, createTaskWorker } from '../lib/index.js'
 
 let pass = 0
 let fail = 0
@@ -203,6 +203,62 @@ await check('prepare 不继承服务进程的 NODE_ENV=production', async () => 
     if (previous === undefined) delete process.env.NODE_ENV
     else process.env.NODE_ENV = previous
   }
+})
+
+async function runWorktreeTask(label, riskLevel, execute) {
+  const root = makeRepo(label)
+  const workerStore = createTaskStore(join(tempDir(`${label}-db`), 'ops.sqlite'))
+  const workerResolver = createIsolationResolver({ tasks: workerStore })
+  const task = workerStore.createTask({ intent: label, riskLevel, projectId: 'p1' })
+  await workerResolver(task, makeProject(root), root)
+  const worker = createTaskWorker({
+    store: workerStore,
+    owner: 'verify-isolation',
+    leaseMs: 60_000,
+    heartbeatMs: 60_000,
+    backoffMs: [1_000],
+    verify: { cwd: root },
+    execute,
+  })
+  const report = await worker.runOnce()
+  return { report, task: workerStore.getTask(task.id), assertions: workerStore.listAssertions(task.id) }
+}
+
+await check('R1 worktree 任务未声明断言时自动补 git_diff_matches 并通过', async () => {
+  const { report, task, assertions } = await runWorktreeTask('r1-assert', 'R1', (claimed) => {
+    writeFileSync(join(claimed.worktreePath, 'app.txt'), 'changed\n')
+    return { status: 'succeeded', summary: 'changed app.txt' }
+  })
+  // 2026-11-27：R1 代码任务此前以 no-assertions 通过，只能人工复验。
+  assert.equal(report.outcome, 'succeeded')
+  assert.equal(task.status, 'succeeded')
+  assert.equal(assertions.length, 1)
+  assert.equal(assertions[0].kind, 'git_diff_matches')
+  assert.equal(assertions[0].status, 'pass')
+  return '1 assertion passed'
+})
+
+await check('R1 worktree 任务没有产生改动时，断言失败而不是 succeeded', async () => {
+  const { report, task, assertions } = await runWorktreeTask('r1-no-change', 'R1', () => ({
+    status: 'succeeded',
+    summary: 'nothing changed',
+  }))
+  assert.equal(report.outcome, 'failed')
+  assert.equal(task.status, 'failed')
+  assert.equal(assertions.length, 1)
+  assert.equal(assertions[0].status, 'fail')
+  return 'verification-failed'
+})
+
+await check('R0 worktree 只读任务保持 no-assertions 且照常 succeeded', async () => {
+  const { report, task, assertions } = await runWorktreeTask('r0-read-only', 'R0', () => ({
+    status: 'succeeded',
+    summary: 'answered without changes',
+  }))
+  assert.equal(report.outcome, 'succeeded')
+  assert.equal(task.status, 'succeeded')
+  assert.equal(assertions.length, 0)
+  return 'no assertions (R0)'
 })
 
 await check('prepare 失败：任务失败且不回落共享 workspace', async () => {

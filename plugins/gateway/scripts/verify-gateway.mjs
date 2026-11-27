@@ -1290,17 +1290,19 @@ await check('two live tasks in one chat are ambiguous instead of guessed', () =>
     && resolution.candidates.includes('task_two_b')
 })
 
-await check('a single finished task is wakeable only after a Grant re-check (AR37)', () => {
+await check('a finished task is not woken without an explicit reply anchor (AR37)', () => {
   const resolution = resolveFollowUp(anchorStore, {
     channelId: 'cli_anc',
     chatId: 'chat_three',
     threadId: threadThree.id,
   })
-  return resolution.taskId === 'task_three'
-    && resolution.status === 'succeeded'
-    && resolution.matchedBy === 'single-wakeable'
-    && resolution.requiresGrantCheck === true
-    && resolution.candidates.length === 1
+  // 2026-11-27 实测：曾把「线程里唯一已结束任务」当成唤醒目标，导致每条新消息
+  // 都先回一句「无权继续任务 X」。唤醒只认 reply-to 锚点。
+  return resolution.taskId === null
+    && resolution.matchedBy === null
+    && resolution.requiresGrantCheck === false
+    && resolution.ambiguous === false
+    && resolution.candidates.length === 0
 })
 
 await check('ingest delivers an anchored follow-up to its task, not the orchestrator', async () => {
@@ -1335,9 +1337,11 @@ await check('ingest delivers an anchored follow-up to its task, not the orchestr
     && ambiguous.target.kind === 'ask'
     && ambiguous.target.candidates.length === 2
     && ambiguous.disposition.action === 'ask'
-    && wake.target.kind === 'task'
-    && wake.target.taskId === 'task_three'
-    && wake.followUp.requiresGrantCheck === true
+    // 非回复消息不再唤醒已结束任务，直接按新消息进前台。
+    && wake.target.kind === 'orchestrator'
+    && wake.bypassReason === null
+    && wake.wake === undefined
+    && wake.followUp.taskId === null
 })
 
 // ---- task relay: only the module API, never ⑤'s tables (AR33) ----------------
@@ -1378,7 +1382,7 @@ await check('a live anchored follow-up is relayed and the reply anchor is bound'
     && result.inbox.status === 'triaged'
 })
 
-await check('a finished task is attached but never enqueued before a Grant re-check', async () => {
+await check('a finished task is never attached without an anchor reply', async () => {
   relayCalls.length = 0
   const result = await ingestInbound({ store: anchorStore, relay: fakeRelay }, {
     channelId: 'cli_anc',
@@ -1387,12 +1391,14 @@ await check('a finished task is attached but never enqueued before a Grant re-ch
     content: { text: '再跑一次（第二次）' },
     chatId: 'chat_three',
   })
-  return result.relay.skipped === 'finished-needs-grant'
-    && result.relay.enqueued === false
-    && result.relay.inputId === null
+  // 非回复消息不再被「唯一已结束任务」吸走：没有 follow-up，也就不会有
+  // finished-needs-grant 的 relay 预览或唤醒。
+  return result.followUp.taskId === null
+    && result.followUp.requiresGrantCheck === false
+    && result.target.kind === 'orchestrator'
+    && (result.relay === null || result.relay === undefined)
     && relayCalls.every((call) => call.op !== 'enqueue')
-    && result.followUp.requiresGrantCheck === true
-    && result.inbox.status === 'triaged'
+    && result.inbox.status === 'routed'
 })
 
 await check('without a relay port the routing decision stands (no-port)', async () => {
@@ -1919,6 +1925,7 @@ await check('a command aimed at a finished task is not executed', async () => {
     content: { control: 'pause' },
     chatId: 'chat_three',
   })
+  // 结构化控制帧仍可指向「唯一已结束任务」；这里必须回答「不能执行」而不是沉默。
   return result.control.executed === false
     && result.control.skipped === 'not-live'
     && controlCalls.length === 0
@@ -2078,7 +2085,7 @@ await check('/use persists stickiness even when the chat has no session route', 
     && next.project.matchedBy === 'sticky'
 })
 
-await check('a stale single-wakeable anchor does not override the sticky project', async () => {
+await check('a stale finished anchor is not targeted, so the sticky project wins', async () => {
   const chatId = 'chat_stale'
   const thread = anchorStore.resolveThread({ channelId: 'cli_anc', chatId })
   const staleDb = new DatabaseConstructor(anchorPath)
@@ -2107,8 +2114,8 @@ await check('a stale single-wakeable anchor does not override the sticky project
     content: { text: '看下日志' },
     chatId,
   })
-  return followUp.matchedBy === 'single-wakeable'
-    && followUp.projectId === 'proj_beta'
+  return followUp.taskId === null
+    && followUp.matchedBy === null
     && next.project.projectId === 'proj_alpha'
     && next.project.matchedBy === 'sticky'
 })

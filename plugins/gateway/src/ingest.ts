@@ -174,6 +174,12 @@ export interface FollowUpQuery {
   replyToMsgId?: string | null
   /** Anchoring a paused task is only correct for structured control frames. */
   includePaused?: boolean
+  /**
+   * Only structured control frames may fall back to "the only finished task in
+   * this chat". Chat text must use an explicit reply anchor, otherwise every new
+   * message becomes a wake attempt (2026-11-27 实测噪音).
+   */
+  includeSingleFinished?: boolean
 }
 
 export interface IngestInboundInput {
@@ -399,9 +405,10 @@ interface AnchorAggregate {
 
 /**
  * Resolve a follow-up against the live task anchors of a chat (13 §3.3).
- * Anchors beat "the only live task"; without an anchor a single live task is
- * still unambiguous, two or more require asking. Nothing is inferred from the
- * text itself — no semantic guessing (13 §3.3 硬规则).
+ * Isolated anchors beat "the only live task"; without an anchor a single live
+ * task is still unambiguous, two or more require asking. A *finished* task is
+ * only wakeable through an explicit reply anchor — never through "it is the
+ * only one". Nothing is inferred from the text itself (13 §3.3 硬规则).
  */
 export function resolveFollowUp(
   store: GatewayStore,
@@ -501,35 +508,43 @@ export function resolveFollowUp(
     }
   }
 
-  const wakeable = all.filter(
-    (entry) => entry.status !== null && WAKEABLE_STATUSES.includes(entry.status),
-  )
-  if (wakeable.length === 1) {
-    return {
-      available: true,
-      taskId: wakeable[0].taskId,
-      status: wakeable[0].status,
-      round: wakeable[0].round,
-      projectId: wakeable[0].projectId,
-      ambiguous: false,
-      candidates: [wakeable[0].taskId],
-      matchedBy: 'single-wakeable',
-      requiresGrantCheck: true,
+  // A finished task is **not** guessed from "the only one in this chat": every
+  // unanchored message would otherwise become a wake attempt (and, when denied,
+  // a noisy "无权继续任务 X" bubble). 2026-11-27 实测：线程里只有一条已结束任务
+  // 时，新任务消息先被当成唤醒。Chat text now requires an explicit reply anchor
+  // (the `replyToMsgId` branch above); structured control frames opt in below.
+  if (query.includeSingleFinished === true) {
+    const wakeable = all.filter(
+      (entry) => entry.status !== null && WAKEABLE_STATUSES.includes(entry.status),
+    )
+    if (wakeable.length === 1) {
+      return {
+        available: true,
+        taskId: wakeable[0].taskId,
+        status: wakeable[0].status,
+        round: wakeable[0].round,
+        projectId: wakeable[0].projectId,
+        ambiguous: false,
+        candidates: [wakeable[0].taskId],
+        matchedBy: 'single-wakeable',
+        requiresGrantCheck: true,
+      }
+    }
+    if (wakeable.length > 1) {
+      return {
+        available: true,
+        taskId: null,
+        status: null,
+        round: null,
+        projectId: null,
+        ambiguous: true,
+        candidates: wakeable.map((entry) => entry.taskId),
+        matchedBy: null,
+        requiresGrantCheck: false,
+      }
     }
   }
-  if (wakeable.length > 1) {
-    return {
-      available: true,
-      taskId: null,
-      status: null,
-      round: null,
-      projectId: null,
-      ambiguous: true,
-      candidates: wakeable.map((entry) => entry.taskId),
-      matchedBy: null,
-      requiresGrantCheck: false,
-    }
-  }
+
 
   return {
     available: true,
@@ -1114,6 +1129,7 @@ export async function ingestInbound(
         threadId: thread.id,
         replyToMsgId: input.replyToMsgId ?? null,
         includePaused: true,
+        includeSingleFinished: true,
       })
     const targetTaskId = followUp !== null ? followUp.taskId : null
     const live = followUp !== null

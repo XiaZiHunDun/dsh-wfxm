@@ -244,9 +244,26 @@ function wakeAck(input: { wake: WakeReport; taskRef: string | null }): string {
       : `任务 ${ref} 已重新开始${round}。`
   }
   if (input.wake.granted === false) {
-    return ref === null
-      ? '当前身份无权继续该任务；这条按新消息处理。'
-      : `当前身份无权继续任务 ${ref}；这条按新消息处理。`
+    const target = ref === null ? '该任务' : `任务 ${ref}`
+    // ③ 的 `not-found` 是「没有这条继续授权」，不是「你有权但被拒」；文案必须
+    // 说清原因（2026-11-27 实测：not-found 被渲染成「无权」）。
+    if (input.wake.skipped === 'no-port') {
+      return '继续通道不可用；这条按新消息处理。'
+    }
+    switch (input.wake.reason) {
+      case 'not-found':
+        return `${target}没有可用的继续授权；这条按新消息处理。`
+      case 'scope-mismatch':
+        return `${target}的继续授权范围不匹配；这条按新消息处理。`
+      case 'expired':
+        return `${target}的继续授权已过期；这条按新消息处理。`
+      case 'consumed':
+        return `${target}的继续授权已使用过；这条按新消息处理。`
+      case 'revoked':
+        return `继续${target}的授权已撤销；这条按新消息处理。`
+      default:
+        return `当前身份无权继续${target}；这条按新消息处理。`
+    }
   }
   return ref === null ? '任务未继续执行。' : `任务 ${ref} 未继续执行。`
 }
