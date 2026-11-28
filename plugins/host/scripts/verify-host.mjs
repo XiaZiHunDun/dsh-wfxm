@@ -587,7 +587,7 @@ await check('an unversioned grant cannot wake under a versioned policy', async (
 
 // ---- 控制命令 ------------------------------------------------------------------------
 
-await check('stop cancels the live task, writes a receipt and answers in chat', async () => {
+await check('stop cancels the live task; the receipt is the only answer', async () => {
   const { host } = makeHost()
   await pair(host)
   const { result } = await say(host, '会被停掉')
@@ -614,7 +614,9 @@ await check('stop cancels the live task, writes a receipt and answers in chat', 
     chatId: CHAT,
   })
   const secondCount = acks().length
-  const ack = acks()[0]?.payload.text ?? ''
+  await host.pump()
+  const receiptsOut = host.stores.gateway.listOutbox()
+    .filter((item) => item.topic === 'task.receipt' && item.taskId === taskId)
   const ref = task?.taskRef ?? taskId.slice(0, 8)
   host.close()
   return stop.result.target.kind === 'control'
@@ -622,10 +624,13 @@ await check('stop cancels the live task, writes a receipt and answers in chat', 
     && stop.result.control.action === 'cancel'
     && task.status === 'cancelled'
     && receipts.length === 1
-    && firstCount === 1
-    && secondCount === 1
-    && ack.includes(ref)
-    && ack.includes('已取消')
+    // 一条指令只回一条：终态回执负责回答，控制 ack 不再重复（2026-11-27 双气泡）。
+    && firstCount === 0
+    && secondCount === 0
+    && receiptsOut.length === 1
+    && receiptsOut[0].payload.text.includes(ref)
+    && receiptsOut[0].payload.text.includes('已取消')
+    && receiptsOut[0].payload.text.includes('已按你的指令停止')
 })
 
 await check('control cancel aborts the running attempt before transitioning', () => {

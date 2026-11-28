@@ -1988,7 +1988,16 @@ export function createWfxmHost(options: WfxmHostOptions): WfxmHost {
       && (controlTarget.command === 'halt'
         || controlTarget.command === 'resume_all'
         || controlTarget.command === 'status_all')
-    if (controlTarget !== null && !globalCommand && !result.duplicate) {
+    // ⑤ writes a receipt for every terminal transition, so a successful cancel
+    // is already announced by the receipt relay ("任务 <号> 已取消。已按你的指令停止").
+    // Sending the control ack as well would show the owner two bubbles for one
+    // command (2026-11-27 实测): let the receipt be the single answer.
+    const cancelAnnouncedByReceipt = result.control !== null
+      && result.control !== undefined
+      && result.control.executed
+      && result.control.action === 'cancel'
+      && result.control.status === 'cancelled'
+    if (controlTarget !== null && !globalCommand && !result.duplicate && !cancelAnnouncedByReceipt) {
       const taskId = result.followUp?.taskId ?? controlTarget.taskId ?? null
       const task = taskId === null ? null : tasks.getTask(taskId)
       const commandWord = CONTROL_COMMAND_TEXT[controlTarget.command] ?? controlTarget.command
