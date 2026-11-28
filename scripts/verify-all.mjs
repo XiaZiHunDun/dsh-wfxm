@@ -7,6 +7,9 @@
  *   node scripts/verify-all.mjs --list
  *   node scripts/verify-all.mjs --only=gateway
  *
+ * `live` posts real messages into the owner's Feishu chat, so it only runs when
+ * `DSH_WFXM_VERIFY_LIVE=1` is set.
+ *
  * A new `verify-*.mjs` must be registered below: an unlisted file fails the
  * run, so CI can never silently lose coverage.
  */
@@ -19,6 +22,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const argv = process.argv.slice(2)
 const ci = argv.includes('--ci')
 const listOnly = argv.includes('--list')
+// The live suite posts real test bubbles into the owner's Feishu chat, so it is
+// opt-in: `DSH_WFXM_VERIFY_LIVE=1` (2026-11-28 实测：默认全量会把 stub 回执发进真实会话).
+const liveEnabled = process.env.DSH_WFXM_VERIFY_LIVE === '1'
 const only = argv.find((item) => item.startsWith('--only='))?.slice('--only='.length) ?? null
 
 /** `ci: false` = needs credentials / systemd / docker / a live ops DB. */
@@ -115,6 +121,7 @@ if (missing.length > 0) {
 
 const selected = SUITES
   .filter((suite) => (ci ? suite.ci : true))
+  .filter((suite) => liveEnabled || suite.name !== 'live')
   .filter((suite) => only === null || suite.file.includes(only))
 
 if (listOnly) {
@@ -154,6 +161,9 @@ const advisory = results.filter((item) => item.status === 'ADV')
 const passed = results.filter((item) => item.status === 'PASS')
 
 console.log(`\n${passed.length} passed · ${failed.length} failed · ${advisory.length} advisory · ${Date.now() - startedAll}ms`)
+if (!liveEnabled && !ci && only === null) {
+  console.log('  skipped: live — 会往真实飞书会话发消息；设 DSH_WFXM_VERIFY_LIVE=1 才跑')
+}
 for (const item of advisory) console.log(`  advisory: ${item.suite.name} (${item.suite.file})`)
 
 if (failed.length > 0) {

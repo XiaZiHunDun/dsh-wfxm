@@ -315,6 +315,8 @@
   **不需要任何人手输消息的全链路验证**用 `scripts/verify-live.mjs`（2026-11-11）：入站注入、其余全真
   （① ingest → 前台 → ⑤ worker → 执行器 → Verifier → ack/回执 → ① outbox → **真实飞书 API**，判定依据是拿回 `om_` 消息 id）；
   自建隔离库 `.wfxm/live/`，无需 `/bind`；`--dsh` 换真实 dsh headless，`DSH_WFXM_CHAT` 指定落到哪个会话。
+  **它会把真实气泡发进该会话**，因此 `scripts/verify-all.mjs` 默认跳过 `live`；需要跑时显式设 `DSH_WFXM_VERIFY_LIVE=1`
+  （2026-11-28：默认全量曾把 5 条 stub 测试消息发进 owner 的飞书私聊）。
   该脚本当场抓到并修掉两个真缺陷：① ack 的 `reply_to` 误用事件 id（飞书 99992354 拒收，改取 `content.externalMsgId`）；
   ② 任务终态后 `default_owner` 不释放，同会话下一条消息永远绑定失败（`bindThread` 改为只抢占**终态** owner 的槽位、
   保留 live 订阅以支撑 AR37 唤醒与回滚，`release_reason='superseded'`）。回归：host 19 / tasks 90 / gateway 100 /
